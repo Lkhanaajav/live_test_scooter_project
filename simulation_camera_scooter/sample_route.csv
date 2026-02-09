@@ -1,0 +1,8 @@
+# GPS Waypoints for OU Campus test route
+# Format: lat,lon,name
+# Add your own waypoints from Google Maps (right-click -> coordinates)
+35.207520,-97.445050,Start - Devon Energy Hall
+35.207800,-97.445200,Sidewalk Junction 1
+35.208100,-97.445500,Library Turn
+35.208400,-97.445100,Engineering Quad
+35.208700,-97.444800,Destination - Gallogly Hall
