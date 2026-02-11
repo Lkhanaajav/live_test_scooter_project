@@ -97,6 +97,17 @@ PATH_COLORS = [
 
 CALIBRATION_FILE = "bev_calibration.npy"
 
+# Frame stabilization (camera shake compensation)
+STABILIZATION_ENABLED = True
+STAB_SMOOTHING_RADIUS = 15       # frames for trajectory smoothing window
+STAB_MAX_CORRECTION_PX = 50      # max pixel shift correction per frame
+STAB_MAX_CORRECTION_DEG = 3.0    # max rotation correction (degrees)
+
+# Temporal mask smoothing (reduces segmentation flickering)
+MASK_SMOOTH_ALPHA = 0.6          # EMA weight for current frame (0-1)
+MASK_SMOOTH_CONSISTENCY_THRESH = 0.3  # IoU below this = likely shake artifact
+BEV_SMOOTH_ALPHA = 0.65          # BEV mask temporal smoothing weight
+
 
 # =============================================================================
 # Data Logger -- per-frame CSV for thesis experiments
@@ -516,6 +527,184 @@ class ScooterCommander:
 
 
 # =============================================================================
+# Frame Stabilization (camera shake compensation)
+# =============================================================================
+class FrameStabilizer:
+    """
+    Lightweight video stabilization using optical-flow trajectory smoothing.
+
+    How it works:
+      1. Detect feature points in the previous grayscale frame.
+      2. Track them into the current frame with Lucas-Kanade optical flow.
+      3. Estimate a rigid transform (translation + rotation) between frames.
+      4. Accumulate transforms into a "trajectory" (cumulative position).
+      5. Smooth the trajectory with a moving-average window.
+      6. Apply the difference (smoothed - actual) as a corrective warp.
+
+    This removes high-frequency camera shake while preserving the low-frequency
+    intentional motion (scooter turns, etc.).  Essential for reliable
+    segmentation and BEV projection from a vibrating scooter handlebar.
+    """
+
+    def __init__(self,
+                 smoothing_radius=STAB_SMOOTHING_RADIUS,
+                 max_shift_px=STAB_MAX_CORRECTION_PX,
+                 max_angle_deg=STAB_MAX_CORRECTION_DEG):
+        self.smoothing_radius = smoothing_radius
+        self.max_shift = float(max_shift_px)
+        self.max_angle = math.radians(max_angle_deg)
+        self.prev_gray = None
+        # Cumulative trajectory
+        self.cum_dx = 0.0
+        self.cum_dy = 0.0
+        self.cum_da = 0.0
+        # Trajectory history for moving-average smoothing
+        buf_len = smoothing_radius * 2 + 1
+        self.traj_x = deque(maxlen=buf_len)
+        self.traj_y = deque(maxlen=buf_len)
+        self.traj_a = deque(maxlen=buf_len)
+        # OpenCV feature-detection / optical-flow params
+        self._feat_params = dict(
+            maxCorners=200, qualityLevel=0.01, minDistance=30, blockSize=3
+        )
+        self._lk_params = dict(
+            winSize=(15, 15), maxLevel=2,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03)
+        )
+
+    def stabilize(self, frame):
+        """Return a shake-compensated copy of *frame* (BGR, uint8)."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        if self.prev_gray is None:
+            self.prev_gray = gray
+            self.traj_x.append(0.0)
+            self.traj_y.append(0.0)
+            self.traj_a.append(0.0)
+            return frame
+
+        # --- detect & track features ---
+        prev_pts = cv2.goodFeaturesToTrack(self.prev_gray, **self._feat_params)
+        if prev_pts is None or len(prev_pts) < 10:
+            self.prev_gray = gray
+            return frame
+
+        curr_pts, status, _ = cv2.calcOpticalFlowPyrLK(
+            self.prev_gray, gray, prev_pts, None, **self._lk_params
+        )
+        good = (status.ravel() == 1)
+        if good.sum() < 6:
+            self.prev_gray = gray
+            return frame
+
+        # --- estimate rigid motion (translation + rotation) ---
+        m, _ = cv2.estimateAffinePartial2D(prev_pts[good], curr_pts[good])
+        if m is None:
+            self.prev_gray = gray
+            return frame
+
+        dx = m[0, 2]
+        dy = m[1, 2]
+        da = math.atan2(m[1, 0], m[0, 0])
+
+        # --- accumulate trajectory ---
+        self.cum_dx += dx
+        self.cum_dy += dy
+        self.cum_da += da
+        self.traj_x.append(self.cum_dx)
+        self.traj_y.append(self.cum_dy)
+        self.traj_a.append(self.cum_da)
+
+        # --- smooth trajectory (moving average) ---
+        smooth_x = float(np.mean(self.traj_x))
+        smooth_y = float(np.mean(self.traj_y))
+        smooth_a = float(np.mean(self.traj_a))
+
+        # correction = smoothed - actual  (clamped for safety)
+        corr_dx = np.clip(smooth_x - self.cum_dx, -self.max_shift, self.max_shift)
+        corr_dy = np.clip(smooth_y - self.cum_dy, -self.max_shift, self.max_shift)
+        corr_da = np.clip(smooth_a - self.cum_da, -self.max_angle, self.max_angle)
+
+        # --- build corrective affine warp (rotate around frame center) ---
+        h, w = frame.shape[:2]
+        cx, cy = w / 2.0, h / 2.0
+        cos_a = math.cos(corr_da)
+        sin_a = math.sin(corr_da)
+        M = np.array([
+            [cos_a, -sin_a, (1 - cos_a) * cx + sin_a * cy + corr_dx],
+            [sin_a,  cos_a, -sin_a * cx + (1 - cos_a) * cy + corr_dy]
+        ], dtype=np.float64)
+
+        stabilized = cv2.warpAffine(frame, M, (w, h),
+                                     borderMode=cv2.BORDER_REPLICATE)
+        self.prev_gray = gray
+        return stabilized
+
+
+# =============================================================================
+# Temporal Mask Smoothing (reduces segmentation flickering)
+# =============================================================================
+class TemporalMaskSmoother:
+    """
+    Exponential moving average (EMA) smoother for binary segmentation masks.
+
+    When camera shake causes a sudden segmentation change (low IoU with the
+    running average), the smoother trusts the historical average more,
+    preventing transient mis-classifications from propagating to BEV / path.
+    """
+
+    def __init__(self, alpha=MASK_SMOOTH_ALPHA,
+                 consistency_thresh=MASK_SMOOTH_CONSISTENCY_THRESH):
+        """
+        Args:
+            alpha: EMA weight for current frame (higher = more responsive).
+            consistency_thresh: IoU below this triggers conservative blending.
+        """
+        self.alpha = alpha
+        self.consistency_thresh = consistency_thresh
+        self.running_avg = None
+
+    def smooth(self, mask_255):
+        """
+        Accept a uint8 binary mask (0 / 255) and return a temporally
+        smoothed binary mask (0 / 255).
+        """
+        mask_f = mask_255.astype(np.float32) / 255.0
+
+        if self.running_avg is None:
+            self.running_avg = mask_f.copy()
+            return mask_255
+
+        # Consistency check: IoU between current mask and running average
+        iou = self._iou(mask_f, self.running_avg)
+
+        if iou < self.consistency_thresh:
+            # Very different from history -- likely a shake artifact
+            effective_alpha = self.alpha * 0.25
+        elif iou < 0.5:
+            # Moderate change -- partially trust history
+            effective_alpha = self.alpha * 0.5
+        else:
+            effective_alpha = self.alpha
+
+        # Update running average
+        self.running_avg = (effective_alpha * mask_f
+                            + (1.0 - effective_alpha) * self.running_avg)
+
+        # Threshold back to binary
+        return (self.running_avg > 0.45).astype(np.uint8) * 255
+
+    @staticmethod
+    def _iou(a, b):
+        """IoU between two float masks in [0, 1]."""
+        ba = a > 0.5
+        bb = b > 0.5
+        inter = float(np.logical_and(ba, bb).sum())
+        union = float(np.logical_or(ba, bb).sum())
+        return inter / max(union, 1.0)
+
+
+# =============================================================================
 # BEV Calibration Tool
 # =============================================================================
 def run_calibration(camera_id=0, video_path=None):
@@ -765,7 +954,8 @@ def compute_speed(angle_deg, min_obstacle_dist, has_path):
     Returns speed in m/s.
     """
     if not has_path:
-        return SPEED_STOP
+        # Don't fully stop -- slow crawl forward while path is temporarily lost
+        return SPEED_OBSTACLE_NEAR
 
     # Obstacle override
     if min_obstacle_dist is not None:
@@ -819,13 +1009,15 @@ def draw_heading_hud(img, command, angle_deg, speed_mps, color, fps, pipeline_ms
     sy = cy + 30
     cv2.putText(img, serial_cmd, (sx, sy), font, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
 
-    # ---- Direction arrow ----
+    # ---- Direction arrow (with dark outline for visibility) ----
     arrow_cx = w // 2
     arrow_cy = h // 2
-    arrow_len = 120
+    arrow_len = 140
     arrow_angle_rad = math.radians(-angle_deg)
     arrow_ex = int(arrow_cx + arrow_len * math.sin(arrow_angle_rad))
     arrow_ey = int(arrow_cy - arrow_len * math.cos(arrow_angle_rad))
+    cv2.arrowedLine(img, (arrow_cx, arrow_cy + 30), (arrow_ex, arrow_ey - 30),
+                    (0, 0, 0), 10, cv2.LINE_AA, tipLength=0.3)
     cv2.arrowedLine(img, (arrow_cx, arrow_cy + 30), (arrow_ex, arrow_ey - 30),
                     color, 6, cv2.LINE_AA, tipLength=0.3)
 
@@ -864,28 +1056,52 @@ def draw_bev_hud(bev_rgb, paths, best_idx, skel, bev_sidewalk, command, angle_de
                  speed_mps=0.0):
     """Draw BEV visualization with paths, heading, and speed."""
     h_bev, w_bev = bev_sidewalk.shape
-    vis = np.full((h_bev, w_bev, 3), (240, 240, 240), dtype=np.uint8)
-    vis[bev_sidewalk > 0] = (220, 235, 245)
+    # Dark background so sidewalk and paths pop
+    vis = np.full((h_bev, w_bev, 3), (40, 40, 40), dtype=np.uint8)
+    # Sidewalk in visible teal/green
+    vis[bev_sidewalk > 0] = (80, 160, 80)
 
-    skel_thick = cv2.dilate(skel, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
-    vis[skel_thick > 0] = (180, 180, 180)
+    # Skeleton in bright white, thicker for visibility
+    skel_thick = cv2.dilate(skel, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    vis[skel_thick > 0] = (200, 200, 200)
 
+    # Draw all candidate paths
     for idx, (path_pts, plen) in enumerate(paths):
         color = PATH_COLORS[idx % len(PATH_COLORS)]
-        thickness = 6 if idx == best_idx else 2
+        thickness = 6 if idx == best_idx else 3
         path_np = np.int32(path_pts).reshape(-1, 1, 2)
         cv2.polylines(vis, [path_np], False, color, thickness, cv2.LINE_AA)
 
+    # Draw best path thick and bright green
     if paths and best_idx >= 0:
         best_path = paths[best_idx][0]
         path_np = np.int32(best_path).reshape(-1, 1, 2)
-        cv2.polylines(vis, [path_np], False, (0, 200, 0), 8, cv2.LINE_AA)
+        cv2.polylines(vis, [path_np], False, (0, 255, 0), 10, cv2.LINE_AA)
+        # Draw start/end circles
+        cv2.circle(vis, tuple(np.int32(best_path[0])), 10, (0, 255, 255), -1)
+        cv2.circle(vis, tuple(np.int32(best_path[-1])), 10, (0, 0, 255), -1)
+
+    # Ego indicator at bottom center
+    ego_x, ego_y = w_bev // 2, h_bev - 15
+    cv2.circle(vis, (ego_x, ego_y), 12, (0, 200, 255), -1)
+    cv2.circle(vis, (ego_x, ego_y), 12, (255, 255, 255), 2)
+
+    # Direction arrow from ego
+    arrow_len = 60
+    arrow_rad = math.radians(-angle_deg)
+    ax = int(ego_x + arrow_len * math.sin(arrow_rad))
+    ay = int(ego_y - arrow_len * math.cos(arrow_rad))
+    cv2.arrowedLine(vis, (ego_x, ego_y), (ax, ay), (0, 200, 255), 4,
+                    cv2.LINE_AA, tipLength=0.35)
+
+    # Semi-transparent black bar for text
+    cv2.rectangle(vis, (0, 0), (w_bev, 65), (0, 0, 0), -1)
 
     # Command + speed text
-    cv2.putText(vis, f"{command} ({angle_deg:+.1f})", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-    cv2.putText(vis, f"Speed: {speed_mps:.2f} m/s", (10, 55),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 150), 1)
+    cv2.putText(vis, f"{command} ({angle_deg:+.1f} deg)", (10, 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    cv2.putText(vis, f"Speed: {speed_mps:.2f} m/s", (10, 52),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
 
     return vis
 
@@ -909,7 +1125,8 @@ def split_masks(model_output):
 # =============================================================================
 def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
              enable_detection=True, gps_device=None, gps_waypoints=None,
-             serial_port=None, enable_logging=False, log_dir="logs"):
+             serial_port=None, enable_logging=False, log_dir="logs",
+             headless=False):
     print("\n=== LIVE HEADING + OBJECT DETECTION + GPS DEMO ===")
 
     # Initialize data logger
@@ -951,9 +1168,29 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     # Initialize scooter serial commander
     scooter = ScooterCommander(port=serial_port)
 
+    # Initialize frame stabilizer (camera shake compensation)
+    stabilizer = None
+    if STABILIZATION_ENABLED:
+        stabilizer = FrameStabilizer()
+        print("Frame stabilization ENABLED (shake compensation).")
+
+    # Initialize temporal mask smoothers
+    seg_smoother = TemporalMaskSmoother(
+        alpha=MASK_SMOOTH_ALPHA,
+        consistency_thresh=MASK_SMOOTH_CONSISTENCY_THRESH,
+    )
+    bev_smoother = TemporalMaskSmoother(
+        alpha=BEV_SMOOTH_ALPHA,
+        consistency_thresh=0.35,
+    )
+    print("Temporal mask smoothing ENABLED (seg + BEV).")
+
     # Open camera or video
     if video_path:
-        cap = cv2.VideoCapture(video_path)
+        # Try MSMF first (Windows Media Foundation), fall back to default
+        cap = cv2.VideoCapture(video_path, cv2.CAP_MSMF)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(video_path)
         print(f"Playing video: {video_path}")
     else:
         cap = cv2.VideoCapture(camera_id)
@@ -966,10 +1203,14 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         print("ERROR: Cannot open camera/video.")
         return
 
-    # Smoothing buffers
-    heading_buffer = deque(maxlen=5)
-    speed_buffer = deque(maxlen=5)
+    # Smoothing buffers (increased from 5 to 8 for shake resilience)
+    heading_buffer = deque(maxlen=8)
+    speed_buffer = deque(maxlen=8)
     last_mask = None
+    last_heading_raw = 0.0       # fallback heading when path is lost
+    last_best_path = None        # fallback path for camera overlay
+    last_best_idx = -1
+    last_paths = []
     frame_id = 0
     fps_counter = deque(maxlen=30)
     vw = None
@@ -991,6 +1232,11 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 continue
 
             frame_h, frame_w = frame.shape[:2]
+
+            # --- 0) Frame stabilization (camera shake compensation) ---
+            if stabilizer is not None:
+                frame = stabilizer.stabilize(frame)
+
             run_net = (frame_id % stride == 0)
 
             # --- 1) Segmentation ---
@@ -1003,6 +1249,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 last_mask = seg
             seg = last_mask
             sidewalk_mask, road_mask = split_masks(seg)
+            # Temporal smoothing: reject flickering segmentation from shake
+            sidewalk_mask = seg_smoother.smooth(sidewalk_mask)
             t_seg = (time.time() - t_seg_start) * 1000
 
             # --- 2) Object detection ---
@@ -1024,6 +1272,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 bev_sidewalk = bev_sidewalk[:-TRIM_BOTTOM, :]
             bev_sidewalk = clean_sidewalk_mask(bev_sidewalk, DT_CORE_THRESH)
             bev_sidewalk = select_main_component(bev_sidewalk)
+            # Temporal smoothing on BEV mask (second layer of stabilization)
+            bev_sidewalk = bev_smoother.smooth(bev_sidewalk)
             t_bev = (time.time() - t_bev_start) * 1000
 
             # --- 4) Skeleton + graph ---
@@ -1105,6 +1355,18 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                         heading_raw = compute_heading(paths[best_idx][0])
                         best_path_len = paths[best_idx][1]
                         has_path = True
+                        # Save for fallback
+                        last_heading_raw = heading_raw
+                        last_best_path = paths[best_idx][0]
+                        last_best_idx = best_idx
+                        last_paths = paths
+
+            # Fallback: use last-known heading when path is temporarily lost
+            if not has_path and last_heading_raw != 0.0:
+                heading_raw = last_heading_raw * 0.5  # fade toward center
+                paths = last_paths
+                best_idx = last_best_idx
+
             t_path = (time.time() - t_path_start) * 1000
 
             # --- 6) GPS correction ---
@@ -1131,7 +1393,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             # --- 7) Smooth heading + compute speed ---
             t_cmd_start = time.time()
             heading_buffer.append(heading_angle)
-            heading_smoothed = float(np.mean(heading_buffer))
+            # Median is more outlier-resistant than mean during shake
+            heading_smoothed = float(np.median(heading_buffer))
             command, cmd_color = heading_to_command(heading_smoothed)
 
             speed_raw = compute_speed(heading_smoothed, min_obstacle_dist, has_path)
@@ -1199,15 +1462,17 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             # --- 9) Visualization ---
             cam_vis = frame.copy()
             seg_overlay = np.zeros_like(cam_vis)
-            seg_overlay[sidewalk_mask > 0] = (0, 200, 0)
-            seg_overlay[road_mask > 0] = (255, 120, 0)
-            cam_vis = cv2.addWeighted(seg_overlay, 0.35, cam_vis, 1.0, 0)
+            seg_overlay[sidewalk_mask > 0] = (0, 220, 0)
+            seg_overlay[road_mask > 0] = (255, 140, 0)
+            cam_vis = cv2.addWeighted(seg_overlay, 0.50, cam_vis, 0.85, 0)
 
             if paths and best_idx >= 0:
                 best_path = paths[best_idx][0]
                 pts = np.array(best_path, dtype=np.float32).reshape(-1, 1, 2)
                 cam_pts = cv2.perspectiveTransform(pts, Hinv).reshape(-1, 2)
                 cam_pts_int = np.int32(cam_pts).reshape(-1, 1, 2)
+                # Draw path with glow effect (thick dark outline + bright inner)
+                cv2.polylines(cam_vis, [cam_pts_int], False, (0, 0, 0), 14, cv2.LINE_AA)
                 cv2.polylines(cam_vis, [cam_pts_int], False, cmd_color, 8, cv2.LINE_AA)
 
             cam_vis = draw_heading_hud(cam_vis, command, heading_smoothed, speed_smoothed,
@@ -1217,18 +1482,22 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             bev_vis = draw_bev_hud(None, paths, best_idx, skel, bev_sidewalk,
                                    command, heading_smoothed, speed_smoothed)
 
-            display_h = 480
+            display_h = 540
             cam_display = cv2.resize(cam_vis,
                 (int(display_h * cam_vis.shape[1] / cam_vis.shape[0]), display_h))
             bev_display = cv2.resize(bev_vis,
                 (int(display_h * bev_vis.shape[1] / bev_vis.shape[0]), display_h))
 
             combined = np.hstack((cam_display, bev_display))
-            cv2.imshow("Live Heading + Detection + GPS", combined)
+
+            if not headless:
+                cv2.imshow("Live Heading + Detection + GPS", combined)
 
             if save_video and vw is None:
+                # Use actual processing FPS (estimate ~5) so playback matches real speed
+                actual_fps = fps if fps > 1 else 5.0
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                vw = cv2.VideoWriter("heading_demo_output.mp4", fourcc, 15,
+                vw = cv2.VideoWriter("heading_demo_output.mp4", fourcc, actual_fps,
                                      (combined.shape[1], combined.shape[0]))
             if vw:
                 vw.write(combined)
@@ -1237,11 +1506,13 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             if frame_id % 10 == 0:
                 obs_str = f"{min_obstacle_dist:.1f}m" if min_obstacle_dist else "none"
                 print(f"{frame_id:6d} | {command:>12s} | {heading_smoothed:+7.1f}d | "
-                      f"{speed_smoothed:5.2f}ms | {obs_str:>5s} | {t_total:5.0f} | {fps:5.1f}")
+                      f"{speed_smoothed:5.2f}ms | {obs_str:>5s} | {t_total:5.0f} | {fps:5.1f}",
+                      flush=True)
 
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q') or key == 27:
-                break
+            if not headless:
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q') or key == 27:
+                    break
 
             frame_id += 1
 
@@ -1313,6 +1584,10 @@ if __name__ == "__main__":
     parser.add_argument("--log-dir", type=str, default="logs",
                         help="Directory for log files (default: logs/)")
 
+    # Display
+    parser.add_argument("--headless", action="store_true",
+                        help="No GUI window (for background/server runs). Use with --save.")
+
     args = parser.parse_args()
 
     if args.calibrate:
@@ -1329,4 +1604,5 @@ if __name__ == "__main__":
             serial_port=args.serial_port,
             enable_logging=args.log,
             log_dir=args.log_dir,
+            headless=args.headless,
         )

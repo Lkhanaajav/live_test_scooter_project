@@ -1,0 +1,18 @@
+{
+  "csv_file": "logs\\run_20260211_120434.csv",
+  "start_time": "2026-02-11T12:04:38.110591",
+  "total_frames": 0,
+  "camera_id": 0,
+  "video_path": "test_video_june_03_3.mp4",
+  "stride": 1,
+  "detection_enabled": false,
+  "gps_device": null,
+  "gps_waypoints": null,
+  "serial_port": null,
+  "model_dir": "models/my-segformer-road_new",
+  "seg_resolution": [
+    640,
+    360
+  ],
+  "yolo_model": "disabled"
+}
