@@ -35,6 +35,7 @@ ROAD_ID = 1
 SIDEWALK_ID = 2
 MODEL_DIR = "models/my-segformer-road_new"
 SEG_INPUT_RES = (640, 360)
+LOW_POWER_SEG_INPUT_RES = (512, 288)
 
 # Default BEV points (scooter camera) -- override with calibration
 DEFAULT_SRC_POINTS = np.array([
@@ -99,14 +100,25 @@ CALIBRATION_FILE = "bev_calibration.npy"
 
 # Frame stabilization (camera shake compensation)
 STABILIZATION_ENABLED = True
-STAB_SMOOTHING_RADIUS = 15       # frames for trajectory smoothing window
+STAB_SMOOTHING_RADIUS = 20       # frames for trajectory smoothing window
 STAB_MAX_CORRECTION_PX = 50      # max pixel shift correction per frame
 STAB_MAX_CORRECTION_DEG = 3.0    # max rotation correction (degrees)
 
 # Temporal mask smoothing (reduces segmentation flickering)
-MASK_SMOOTH_ALPHA = 0.6          # EMA weight for current frame (0-1)
+MASK_SMOOTH_ALPHA = 0.45         # EMA weight for current frame (0-1)
 MASK_SMOOTH_CONSISTENCY_THRESH = 0.3  # IoU below this = likely shake artifact
-BEV_SMOOTH_ALPHA = 0.65          # BEV mask temporal smoothing weight
+BEV_SMOOTH_ALPHA = 0.55          # BEV mask temporal smoothing weight
+
+# Segmentation stability safety gate
+SEG_IOU_FAIL = 0.22              # severe instability threshold
+SEG_IOU_WARN = 0.35              # mild instability threshold
+SEG_FAIL_HOLD_FRAMES = 6         # consecutive unstable frames to trigger limit
+SPEED_SEG_UNSTABLE = 0.20        # speed cap (m/s) when segmentation unstable
+
+# Low-power profile (for small onboard computers)
+LOW_POWER_STRIDE = 2
+LOW_POWER_DETECTION_STRIDE = 2
+LOW_POWER_PATH_SCALE = 0.65
 
 
 # =============================================================================
@@ -128,6 +140,8 @@ class DataLogger:
         # Heading & control
         "heading_raw_deg", "heading_smoothed_deg", "command",
         "speed_raw_mps", "speed_smoothed_mps", "serial_cmd",
+        "seg_iou", "seg_unstable_frames", "stability_mode",
+        "stab_corr_px", "stab_corr_deg",
         # Path info
         "has_path", "num_paths", "best_path_length_px",
         "num_graph_nodes", "num_graph_edges",
@@ -571,6 +585,8 @@ class FrameStabilizer:
             winSize=(15, 15), maxLevel=2,
             criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03)
         )
+        self.last_correction_px = 0.0
+        self.last_correction_deg = 0.0
 
     def stabilize(self, frame):
         """Return a shake-compensated copy of *frame* (BGR, uint8)."""
@@ -581,12 +597,16 @@ class FrameStabilizer:
             self.traj_x.append(0.0)
             self.traj_y.append(0.0)
             self.traj_a.append(0.0)
+            self.last_correction_px = 0.0
+            self.last_correction_deg = 0.0
             return frame
 
         # --- detect & track features ---
         prev_pts = cv2.goodFeaturesToTrack(self.prev_gray, **self._feat_params)
         if prev_pts is None or len(prev_pts) < 10:
             self.prev_gray = gray
+            self.last_correction_px = 0.0
+            self.last_correction_deg = 0.0
             return frame
 
         curr_pts, status, _ = cv2.calcOpticalFlowPyrLK(
@@ -595,12 +615,16 @@ class FrameStabilizer:
         good = (status.ravel() == 1)
         if good.sum() < 6:
             self.prev_gray = gray
+            self.last_correction_px = 0.0
+            self.last_correction_deg = 0.0
             return frame
 
         # --- estimate rigid motion (translation + rotation) ---
         m, _ = cv2.estimateAffinePartial2D(prev_pts[good], curr_pts[good])
         if m is None:
             self.prev_gray = gray
+            self.last_correction_px = 0.0
+            self.last_correction_deg = 0.0
             return frame
 
         dx = m[0, 2]
@@ -624,6 +648,8 @@ class FrameStabilizer:
         corr_dx = np.clip(smooth_x - self.cum_dx, -self.max_shift, self.max_shift)
         corr_dy = np.clip(smooth_y - self.cum_dy, -self.max_shift, self.max_shift)
         corr_da = np.clip(smooth_a - self.cum_da, -self.max_angle, self.max_angle)
+        self.last_correction_px = float(math.hypot(corr_dx, corr_dy))
+        self.last_correction_deg = float(math.degrees(corr_da))
 
         # --- build corrective affine warp (rotate around frame center) ---
         h, w = frame.shape[:2]
@@ -664,7 +690,7 @@ class TemporalMaskSmoother:
         self.consistency_thresh = consistency_thresh
         self.running_avg = None
 
-    def smooth(self, mask_255):
+    def smooth(self, mask_255, return_iou=False):
         """
         Accept a uint8 binary mask (0 / 255) and return a temporally
         smoothed binary mask (0 / 255).
@@ -673,7 +699,7 @@ class TemporalMaskSmoother:
 
         if self.running_avg is None:
             self.running_avg = mask_f.copy()
-            return mask_255
+            return (mask_255, 1.0) if return_iou else mask_255
 
         # Consistency check: IoU between current mask and running average
         iou = self._iou(mask_f, self.running_avg)
@@ -692,7 +718,8 @@ class TemporalMaskSmoother:
                             + (1.0 - effective_alpha) * self.running_avg)
 
         # Threshold back to binary
-        return (self.running_avg > 0.45).astype(np.uint8) * 255
+        smoothed = (self.running_avg > 0.45).astype(np.uint8) * 255
+        return (smoothed, iou) if return_iou else smoothed
 
     @staticmethod
     def _iou(a, b):
@@ -1126,8 +1153,33 @@ def split_masks(model_output):
 def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
              enable_detection=True, gps_device=None, gps_waypoints=None,
              serial_port=None, enable_logging=False, log_dir="logs",
-             headless=False):
+             headless=False, stab_radius=STAB_SMOOTHING_RADIUS,
+             mask_alpha=MASK_SMOOTH_ALPHA, bev_alpha=BEV_SMOOTH_ALPHA,
+             low_power=False, seg_input_res=SEG_INPUT_RES, path_scale=1.0,
+             detection_stride=1):
     print("\n=== LIVE HEADING + OBJECT DETECTION + GPS DEMO ===")
+    stab_radius = max(1, int(stab_radius))
+    stride = max(1, int(stride))
+    detection_stride = max(1, int(detection_stride))
+    mask_alpha = float(np.clip(mask_alpha, 0.05, 0.95))
+    bev_alpha = float(np.clip(bev_alpha, 0.05, 0.95))
+    path_scale = float(np.clip(path_scale, 0.50, 1.0))
+    seg_input_res = (
+        max(192, int(seg_input_res[0])),
+        max(128, int(seg_input_res[1])),
+    )
+
+    if low_power:
+        stride = max(stride, LOW_POWER_STRIDE)
+        detection_stride = max(detection_stride, LOW_POWER_DETECTION_STRIDE)
+        path_scale = min(path_scale, LOW_POWER_PATH_SCALE)
+        seg_input_res = (
+            min(seg_input_res[0], LOW_POWER_SEG_INPUT_RES[0]),
+            min(seg_input_res[1], LOW_POWER_SEG_INPUT_RES[1]),
+        )
+        print("[Perf] Low-power mode enabled.")
+    print(f"[Perf] stride={stride}, det_stride={detection_stride}, "
+          f"seg={seg_input_res[0]}x{seg_input_res[1]}, path_scale={path_scale:.2f}")
 
     # Initialize data logger
     logger = None
@@ -1143,7 +1195,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         model_dir=MODEL_DIR,
         conf_thresh=0.5,
         road_id=ROAD_ID,
-        inference_resize=SEG_INPUT_RES,
+        inference_resize=seg_input_res,
     )
     seg_model = FastRoadDetector(cfg)
     print("SegFormer ready.")
@@ -1171,19 +1223,19 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     # Initialize frame stabilizer (camera shake compensation)
     stabilizer = None
     if STABILIZATION_ENABLED:
-        stabilizer = FrameStabilizer()
-        print("Frame stabilization ENABLED (shake compensation).")
+        stabilizer = FrameStabilizer(smoothing_radius=stab_radius)
+        print(f"Frame stabilization ENABLED (radius={stab_radius}).")
 
     # Initialize temporal mask smoothers
     seg_smoother = TemporalMaskSmoother(
-        alpha=MASK_SMOOTH_ALPHA,
+        alpha=mask_alpha,
         consistency_thresh=MASK_SMOOTH_CONSISTENCY_THRESH,
     )
     bev_smoother = TemporalMaskSmoother(
-        alpha=BEV_SMOOTH_ALPHA,
+        alpha=bev_alpha,
         consistency_thresh=0.35,
     )
-    print("Temporal mask smoothing ENABLED (seg + BEV).")
+    print(f"Temporal mask smoothing ENABLED (seg={mask_alpha:.2f}, bev={bev_alpha:.2f}).")
 
     # Open camera or video
     if video_path:
@@ -1211,14 +1263,19 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     last_best_path = None        # fallback path for camera overlay
     last_best_idx = -1
     last_paths = []
+    seg_iou = 1.0
+    seg_unstable_frames = 0
+    stability_mode = "NORMAL"
+    last_detections = []
+    last_min_obstacle_dist = None
     frame_id = 0
     fps_counter = deque(maxlen=30)
     vw = None
 
     print("Running... Press 'q' or ESC to quit.\n")
     print(f"{'Frame':>6} | {'Command':>12} | {'Steer':>8} | {'Speed':>7} | "
-          f"{'Obst':>5} | {'ms':>5} | {'FPS':>5}")
-    print("-" * 72)
+          f"{'Obst':>5} | {'ms':>5} | {'FPS':>5} | {'IoU':>5} | {'Mode':>7}")
+    print("-" * 92)
 
     try:
         while True:
@@ -1232,10 +1289,14 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 continue
 
             frame_h, frame_w = frame.shape[:2]
+            stab_corr_px = 0.0
+            stab_corr_deg = 0.0
 
             # --- 0) Frame stabilization (camera shake compensation) ---
             if stabilizer is not None:
                 frame = stabilizer.stabilize(frame)
+                stab_corr_px = stabilizer.last_correction_px
+                stab_corr_deg = stabilizer.last_correction_deg
 
             run_net = (frame_id % stride == 0)
 
@@ -1250,19 +1311,29 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             seg = last_mask
             sidewalk_mask, road_mask = split_masks(seg)
             # Temporal smoothing: reject flickering segmentation from shake
-            sidewalk_mask = seg_smoother.smooth(sidewalk_mask)
+            sidewalk_mask, seg_iou = seg_smoother.smooth(sidewalk_mask, return_iou=True)
+            if seg_iou < SEG_IOU_FAIL:
+                seg_unstable_frames += 1
+            elif seg_iou < SEG_IOU_WARN:
+                # Hold counter during borderline instability.
+                pass
+            else:
+                seg_unstable_frames = max(0, seg_unstable_frames - 1)
             t_seg = (time.time() - t_seg_start) * 1000
 
             # --- 2) Object detection ---
             t_det_start = time.time()
-            detections = []
-            min_obstacle_dist = None
-            if obj_detector and run_net:
+            run_detection = bool(obj_detector and run_net and (frame_id % detection_stride == 0))
+            if run_detection:
                 detections = obj_detector.detect(frame)
                 for det in detections:
                     det["distance_m"] = estimate_obstacle_distance(det, frame_h)
-                if detections:
-                    min_obstacle_dist = min(d["distance_m"] for d in detections)
+                min_obstacle_dist = min((d["distance_m"] for d in detections), default=None)
+                last_detections = detections
+                last_min_obstacle_dist = min_obstacle_dist
+            else:
+                detections = last_detections
+                min_obstacle_dist = last_min_obstacle_dist
             t_det = (time.time() - t_det_start) * 1000
 
             # --- 3) BEV projection + cleaning ---
@@ -1276,25 +1347,47 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             bev_sidewalk = bev_smoother.smooth(bev_sidewalk)
             t_bev = (time.time() - t_bev_start) * 1000
 
-            # --- 4) Skeleton + graph ---
+            # --- 4) Skeleton + graph (optionally downscaled for speed) ---
             t_skel_start = time.time()
-            skel = extract_skeleton(bev_sidewalk, trim_px=5)
-            skel = prune_small_branches(skel, PRUNE_BRANCH_LEN)
+            if path_scale < 0.999:
+                work_w = max(64, int(round(bev_sidewalk.shape[1] * path_scale)))
+                work_h = max(64, int(round(bev_sidewalk.shape[0] * path_scale)))
+                bev_work = cv2.resize(bev_sidewalk, (work_w, work_h),
+                                      interpolation=cv2.INTER_NEAREST)
+            else:
+                bev_work = bev_sidewalk
 
-            Hm, Wm = skel.shape
+            scale_ratio = bev_work.shape[0] / max(1, bev_sidewalk.shape[0])
+            trim_work = max(2, int(round(5 * scale_ratio)))
+            prune_work = max(3, int(round(PRUNE_BRANCH_LEN * scale_ratio)))
+            skel_work = extract_skeleton(bev_work, trim_px=trim_work)
+            skel_work = prune_small_branches(skel_work, prune_work)
+
+            Hm, Wm = skel_work.shape
             G = nx.Graph()
+            diag_weight = 1.41421356237
             for y in range(Hm):
-                xs = np.where(skel[y] > 0)[0]
+                xs = np.where(skel_work[y] > 0)[0]
                 for x in xs:
-                    for dy in (-1, 0, 1):
-                        for dx in (-1, 0, 1):
-                            if dx == 0 and dy == 0:
-                                continue
-                            ny_, nx_ = y + dy, x + dx
-                            if 0 <= ny_ < Hm and 0 <= nx_ < Wm and skel[ny_, nx_] > 0:
-                                G.add_edge((x, y), (nx_, ny_), weight=math.hypot(dx, dy))
+                    # Only add "forward" neighbors to avoid duplicate checks.
+                    if x + 1 < Wm and skel_work[y, x + 1] > 0:
+                        G.add_edge((x, y), (x + 1, y), weight=1.0)
+                    if y + 1 < Hm:
+                        if skel_work[y + 1, x] > 0:
+                            G.add_edge((x, y), (x, y + 1), weight=1.0)
+                        if x + 1 < Wm and skel_work[y + 1, x + 1] > 0:
+                            G.add_edge((x, y), (x + 1, y + 1), weight=diag_weight)
+                        if x - 1 >= 0 and skel_work[y + 1, x - 1] > 0:
+                            G.add_edge((x, y), (x - 1, y + 1), weight=diag_weight)
 
-            G = prune_graph_branches(G, min_branch_length=PRUNE_BRANCH_LEN * 3)
+            prune_graph_len = max(8, int(round((PRUNE_BRANCH_LEN * 3) * scale_ratio)))
+            G = prune_graph_branches(G, min_branch_length=prune_graph_len)
+
+            if (Hm, Wm) != bev_sidewalk.shape:
+                skel = cv2.resize(skel_work, (bev_sidewalk.shape[1], bev_sidewalk.shape[0]),
+                                  interpolation=cv2.INTER_NEAREST)
+            else:
+                skel = skel_work
             t_skel = (time.time() - t_skel_start) * 1000
 
             # --- 5) Path finding ---
@@ -1309,13 +1402,15 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
 
             if G.number_of_nodes() > 1:
                 endpoints = [n for n in G.nodes if G.degree[n] == 1]
-                center_x = Wm // 2
+                center_x_scaled = Wm // 2
+                center_x_full = bev_sidewalk.shape[1] // 2
 
-                band_nodes = [n for n in G.nodes if n[1] >= Hm - BOTTOM_BAND_PX]
-                band_eps = [n for n in endpoints if n[1] >= Hm - BOTTOM_BAND_PX]
+                bottom_band_scaled = max(8, int(round(BOTTOM_BAND_PX * scale_ratio)))
+                band_nodes = [n for n in G.nodes if n[1] >= Hm - bottom_band_scaled]
+                band_eps = [n for n in endpoints if n[1] >= Hm - bottom_band_scaled]
 
                 def start_key(p):
-                    return (p[1], -abs(p[0] - center_x))
+                    return (p[1], -abs(p[0] - center_x_scaled))
 
                 if band_eps:
                     start = max(band_eps, key=start_key)
@@ -1330,8 +1425,22 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     if end == start:
                         continue
                     try:
-                        path = nx.dijkstra_path(G, start, end, weight="weight")
-                        plen = nx.path_weight(G, path, weight="weight")
+                        path_scaled = nx.dijkstra_path(G, start, end, weight="weight")
+                        plen_scaled = nx.path_weight(G, path_scaled, weight="weight")
+                        if (Hm, Wm) != bev_sidewalk.shape:
+                            sx = bev_sidewalk.shape[1] / float(Wm)
+                            sy = bev_sidewalk.shape[0] / float(Hm)
+                            path = [
+                                (
+                                    int(np.clip(round(px * sx), 0, bev_sidewalk.shape[1] - 1)),
+                                    int(np.clip(round(py * sy), 0, bev_sidewalk.shape[0] - 1)),
+                                )
+                                for (px, py) in path_scaled
+                            ]
+                            plen = plen_scaled * ((sx + sy) * 0.5)
+                        else:
+                            path = path_scaled
+                            plen = plen_scaled
                         paths.append((path, plen))
                     except nx.NetworkXNoPath:
                         continue
@@ -1345,7 +1454,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                             continue
                         h_angle = abs(compute_heading(path_pts))
                         end_x = path_pts[-1][0]
-                        lat_shift = abs(end_x - center_x) / (Wm / 2.0)
+                        lat_shift = abs(end_x - center_x_full) / max(1.0, bev_sidewalk.shape[1] / 2.0)
                         score = 0.6 * h_angle + 0.4 * lat_shift * 45.0
                         if score < best_score:
                             best_score = score
@@ -1400,6 +1509,13 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             speed_raw = compute_speed(heading_smoothed, min_obstacle_dist, has_path)
             speed_buffer.append(speed_raw)
             speed_smoothed = float(np.mean(speed_buffer))
+            if seg_unstable_frames >= SEG_FAIL_HOLD_FRAMES:
+                speed_smoothed = min(speed_smoothed, SPEED_SEG_UNSTABLE)
+                stability_mode = "LIMITED"
+            elif seg_iou < SEG_IOU_WARN:
+                stability_mode = "WARN"
+            else:
+                stability_mode = "NORMAL"
 
             serial_str = scooter.send_command(heading_smoothed, speed_smoothed)
             t_cmd = (time.time() - t_cmd_start) * 1000
@@ -1435,6 +1551,11 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     speed_raw_mps=round(speed_raw, 3),
                     speed_smoothed_mps=round(speed_smoothed, 3),
                     serial_cmd=serial_str,
+                    seg_iou=round(seg_iou, 4),
+                    seg_unstable_frames=seg_unstable_frames,
+                    stability_mode=stability_mode,
+                    stab_corr_px=round(stab_corr_px, 3),
+                    stab_corr_deg=round(stab_corr_deg, 3),
                     # Path info
                     has_path=int(has_path),
                     num_paths=len(paths),
@@ -1506,7 +1627,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             if frame_id % 10 == 0:
                 obs_str = f"{min_obstacle_dist:.1f}m" if min_obstacle_dist else "none"
                 print(f"{frame_id:6d} | {command:>12s} | {heading_smoothed:+7.1f}d | "
-                      f"{speed_smoothed:5.2f}ms | {obs_str:>5s} | {t_total:5.0f} | {fps:5.1f}",
+                      f"{speed_smoothed:5.2f}ms | {obs_str:>5s} | {t_total:5.0f} | {fps:5.1f} | "
+                      f"{seg_iou:5.2f} | {stability_mode:>7s}",
                       flush=True)
 
             if not headless:
@@ -1524,9 +1646,11 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             logger.save_metadata(
                 camera_id=camera_id, video_path=video_path,
                 stride=stride, detection_enabled=enable_detection,
+                    detection_stride=detection_stride,
                 gps_device=gps_device, gps_waypoints=gps_waypoints,
                 serial_port=serial_port, total_frames=frame_id,
-                model_dir=MODEL_DIR, seg_resolution=SEG_INPUT_RES,
+                    model_dir=MODEL_DIR, seg_resolution=seg_input_res,
+                    low_power=low_power, path_scale=path_scale,
                 yolo_model=YOLO_MODEL_NAME if enable_detection else "disabled",
             )
             logger.close()
@@ -1559,6 +1683,22 @@ if __name__ == "__main__":
                         help="Process every Nth frame (1=all)")
     parser.add_argument("--save", action="store_true",
                         help="Save output video")
+    parser.add_argument("--low-power", action="store_true",
+                        help="Enable small-computer profile (lower load, higher FPS)")
+    parser.add_argument("--seg-width", type=int, default=SEG_INPUT_RES[0],
+                        help="Segmentation input width")
+    parser.add_argument("--seg-height", type=int, default=SEG_INPUT_RES[1],
+                        help="Segmentation input height")
+    parser.add_argument("--path-scale", type=float, default=1.0,
+                        help="Scale for skeleton/path stage (0.5-1.0, lower=faster)")
+    parser.add_argument("--detection-stride", type=int, default=1,
+                        help="Run object detection every N processed frames")
+    parser.add_argument("--stab-radius", type=int, default=STAB_SMOOTHING_RADIUS,
+                        help="Frame stabilizer smoothing radius (higher = smoother, slower response)")
+    parser.add_argument("--mask-alpha", type=float, default=MASK_SMOOTH_ALPHA,
+                        help="Segmentation temporal EMA alpha (0-1)")
+    parser.add_argument("--bev-alpha", type=float, default=BEV_SMOOTH_ALPHA,
+                        help="BEV temporal EMA alpha (0-1)")
 
     # Object detection
     parser.add_argument("--no-detection", action="store_true",
@@ -1605,4 +1745,11 @@ if __name__ == "__main__":
             enable_logging=args.log,
             log_dir=args.log_dir,
             headless=args.headless,
+            stab_radius=args.stab_radius,
+            mask_alpha=args.mask_alpha,
+            bev_alpha=args.bev_alpha,
+            low_power=args.low_power,
+            seg_input_res=(args.seg_width, args.seg_height),
+            path_scale=args.path_scale,
+            detection_stride=args.detection_stride,
         )
