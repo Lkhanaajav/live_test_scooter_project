@@ -246,10 +246,13 @@ def plot_heading_over_time(df, output_dir, label=""):
     """Line plot: heading angle over frames."""
     if not HAS_MPL:
         return
+    sub = df[["frame_id", "heading_raw_deg", "heading_smoothed_deg"]].dropna()
+    if len(sub) == 0:
+        return
     fig, ax = plt.subplots(figsize=(10, 3.5))
-    ax.plot(df["frame_id"], df["heading_raw_deg"], alpha=0.3, linewidth=0.8,
+    ax.plot(sub["frame_id"], sub["heading_raw_deg"], alpha=0.3, linewidth=0.8,
             label="Raw", color="gray")
-    ax.plot(df["frame_id"], df["heading_smoothed_deg"], linewidth=1.2,
+    ax.plot(sub["frame_id"], sub["heading_smoothed_deg"], linewidth=1.2,
             label="Smoothed (K=5)", color="royalblue")
     ax.axhline(0, color="green", linestyle="--", linewidth=0.8, alpha=0.5)
     ax.axhline(12, color="orange", linestyle=":", linewidth=0.7, alpha=0.5)
@@ -269,18 +272,21 @@ def plot_heading_over_time(df, output_dir, label=""):
 
 
 def plot_speed_over_time(df, output_dir, label=""):
-    """Line plot: speed over frames, colored by command."""
+    """Line plot: speed over frames."""
     if not HAS_MPL:
         return
+    sub = df[["frame_id", "speed_smoothed_mps"]].dropna()
+    if len(sub) == 0:
+        return
     fig, ax = plt.subplots(figsize=(10, 3))
-    ax.fill_between(df["frame_id"], 0, df["speed_smoothed_mps"],
+    ax.fill_between(sub["frame_id"], 0, sub["speed_smoothed_mps"],
                     alpha=0.3, color="steelblue")
-    ax.plot(df["frame_id"], df["speed_smoothed_mps"], linewidth=1,
+    ax.plot(sub["frame_id"], sub["speed_smoothed_mps"], linewidth=1,
             color="steelblue", label="Speed (m/s)")
     ax.set_xlabel("Frame")
     ax.set_ylabel("Speed (m/s)")
     ax.set_title(f"Speed Over Time" + (f" — {label}" if label else ""))
-    ax.set_ylim(0, SPEED_MAX * 1.1 if "SPEED_MAX" in dir() else 2.0)
+    ax.set_ylim(0, 2.0)
     plt.tight_layout()
     path = os.path.join(output_dir, "speed_over_time.png")
     plt.savefig(path, dpi=200)
@@ -292,13 +298,14 @@ def plot_fps_over_time(df, output_dir, label=""):
     """Line plot: FPS stability."""
     if not HAS_MPL:
         return
-    fps = df["fps"].dropna()
-    if len(fps) == 0:
+    sub = df[["frame_id", "fps"]].dropna()
+    if len(sub) == 0:
         return
+    fps_mean = sub["fps"].mean()
     fig, ax = plt.subplots(figsize=(10, 3))
-    ax.plot(df["frame_id"], fps, linewidth=0.8, color="seagreen")
-    ax.axhline(fps.mean(), color="red", linestyle="--", linewidth=1,
-               label=f"Mean: {fps.mean():.1f} FPS")
+    ax.plot(sub["frame_id"], sub["fps"], linewidth=0.8, color="seagreen")
+    ax.axhline(fps_mean, color="red", linestyle="--", linewidth=1,
+               label=f"Mean: {fps_mean:.1f} FPS")
     ax.set_xlabel("Frame")
     ax.set_ylabel("FPS")
     ax.set_title(f"Pipeline FPS Over Time" + (f" — {label}" if label else ""))

@@ -417,11 +417,13 @@ class GPSNavigator:
         """
         Returns a correction angle (degrees) to steer toward the next waypoint.
         Positive = turn right, negative = turn left.
-        Returns 0.0 if no GPS data or no waypoints.
+        Returns (0.0, None, None) if no GPS data.
+        Returns (0.0, None, "ARRIVED") if all waypoints reached.
         """
         bearing, dist, wp_name = self.get_bearing_to_waypoint()
         if bearing is None:
-            return 0.0, None, None
+            # Preserve wp_name so "ARRIVED" state is communicated
+            return 0.0, dist, wp_name
 
         with self.lock:
             current_heading = self.heading_gps
@@ -460,6 +462,12 @@ class GPSNavigator:
         self._running = False
         if self._thread:
             self._thread.join(timeout=2)
+        # Close the serial port if open
+        if hasattr(self, "_ser") and self._ser and self._ser.is_open:
+            try:
+                self._ser.close()
+            except Exception:
+                pass
 
 
 # =============================================================================
@@ -648,7 +656,9 @@ def skeletonize_guohall(mask_255):
         from cv2.ximgproc import thinning, THINNING_GUOHALL
         bin_ = ((mask_255 > 0).astype(np.uint8)) * 255
         skel = thinning(bin_, THINNING_GUOHALL)
-        return (skel * 255).astype(np.uint8)
+        # thinning() may return 0/1 or 0/255 depending on OpenCV version
+        # normalize to 0/255 safely (avoids 255*255 overflow)
+        return ((skel > 0).astype(np.uint8)) * 255
     except ImportError:
         img = (mask_255 > 0).astype(np.uint8)
         skel = np.zeros_like(img)
