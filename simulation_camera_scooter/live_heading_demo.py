@@ -19,7 +19,7 @@ Usage:
     python live_heading_demo.py --serial-port COM4         # send commands to scooter
 """
 
-import os, sys, cv2, math, time, argparse, threading, csv, json
+import os, sys, cv2, math, time, argparse, threading, csv, json, random
 from datetime import datetime
 import numpy as np
 import networkx as nx
@@ -33,7 +33,8 @@ from fast_road_detector import FastRoadDetector, Config
 # =============================================================================
 ROAD_ID = 1
 SIDEWALK_ID = 2
-MODEL_DIR = "models/my-segformer-road_new"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIR = os.path.join(BASE_DIR, "models", "my-segformer-road_new")
 SEG_INPUT_RES = (640, 360)
 LOW_POWER_SEG_INPUT_RES = (512, 288)
 
@@ -119,6 +120,26 @@ SPEED_SEG_UNSTABLE = 0.20        # speed cap (m/s) when segmentation unstable
 LOW_POWER_STRIDE = 2
 LOW_POWER_DETECTION_STRIDE = 2
 LOW_POWER_PATH_SCALE = 0.65
+
+# Intersection-aware navigation state machine
+NAV_FOLLOW_LANE = "FOLLOW_LANE"
+NAV_APPROACH_INTERSECTION = "APPROACH_INTERSECTION"
+NAV_COMMIT_TURN = "COMMIT_TURN"
+NAV_RECOVER = "RECOVER"
+INTERSECTION_CONFIRM_FRAMES = 3
+INTERSECTION_CLEAR_FRAMES = 4
+TURN_COMMIT_FRAMES = 14
+RECOVER_FRAMES = 8
+STEER_RATE_LIMIT_DEG_PER_FRAME = 4.5
+TURN_COMMIT_HEADING_DEG = 48.0
+MANEUVER_STRAIGHT_THRESH = 12.0
+MANEUVER_TURN_THRESH = 25.0
+RANDOM_DECISION_NO_GPS = True
+
+# Ego-front segmentation guard (fills bottom-center hole near scooter)
+EGO_FRONT_FILL_WIDTH_RATIO = 0.40
+EGO_FRONT_FILL_HEIGHT_PX = 80
+EGO_FRONT_SEED_HEIGHT_PX = 150
 
 
 # =============================================================================
@@ -864,6 +885,37 @@ def select_main_component(mask_255, bottom_band_px=45, center_weight=0.35):
     return out
 
 
+def enforce_ego_front_segmentation(mask_255):
+    """
+    Ensure segmentation exists in front of the scooter (bottom-center BEV).
+    This prevents transient holes that break path start selection.
+    """
+    out = mask_255.copy().astype(np.uint8)
+    h, w = out.shape
+    if h < 16 or w < 16:
+        return out
+
+    fill_h = int(max(20, min(h, EGO_FRONT_FILL_HEIGHT_PX)))
+    seed_h = int(max(fill_h + 8, min(h, EGO_FRONT_SEED_HEIGHT_PX)))
+    half_w = int(max(8, min(w // 2, round(w * EGO_FRONT_FILL_WIDTH_RATIO * 0.5))))
+    cx = w // 2
+    x1 = max(0, cx - half_w)
+    x2 = min(w, cx + half_w)
+    y_fill1 = max(0, h - fill_h)
+    y_seed1 = max(0, h - seed_h)
+
+    # Only force-fill when there is supporting segmentation just ahead.
+    seed = out[y_seed1:y_fill1, x1:x2]
+    support_ratio = float(np.count_nonzero(seed)) / float(max(1, seed.size))
+    if support_ratio < 0.08:
+        return out
+
+    out[y_fill1:h, x1:x2] = 255
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, k, iterations=1)
+    return out
+
+
 # =============================================================================
 # Skeletonization (Guo-Hall via OpenCV)
 # =============================================================================
@@ -956,6 +1008,142 @@ def compute_heading(path_pts):
         return 0.0
     angle_rad = math.atan2(dx, dy)
     return math.degrees(angle_rad)
+
+
+def clamp_delta(current, target, max_delta):
+    """Move current toward target with bounded per-frame change."""
+    delta = float(target) - float(current)
+    if delta > max_delta:
+        return float(current) + float(max_delta)
+    if delta < -max_delta:
+        return float(current) - float(max_delta)
+    return float(target)
+
+
+def infer_maneuver_from_waypoint_name(wp_name):
+    """
+    Infer maneuver class from waypoint label.
+    Supports labels like: "turn_right", "left", "straight", "uturn".
+    """
+    if not wp_name:
+        return None
+    label = str(wp_name).strip().lower()
+    if "u-turn" in label or "uturn" in label:
+        return "UTURN"
+    if "right" in label:
+        return "RIGHT"
+    if "left" in label:
+        return "LEFT"
+    if "straight" in label or "forward" in label:
+        return "STRAIGHT"
+    return None
+
+
+def infer_maneuver_from_gps_correction(gps_correction_deg):
+    """Fallback maneuver class from GPS heading correction angle."""
+    ang = float(gps_correction_deg)
+    abs_ang = abs(ang)
+    if abs_ang < MANEUVER_STRAIGHT_THRESH:
+        return "STRAIGHT"
+    if abs_ang >= MANEUVER_TURN_THRESH:
+        return "RIGHT" if ang > 0 else "LEFT"
+    return None
+
+
+def detect_intersection(paths, graph, graph_h):
+    """
+    Intersection detector combining graph branching + path diversity.
+    Returns (is_intersection, branch_count).
+    """
+    if not paths or graph.number_of_nodes() < 3:
+        return False, 0
+
+    # Branching must occur in a forward region, not directly under the ego.
+    y_min = int(graph_h * 0.18)
+    y_max = int(graph_h * 0.75)
+    branch_nodes = [
+        n for n in graph.nodes
+        if graph.degree[n] >= 3 and y_min <= n[1] <= y_max
+    ]
+
+    # Count directional diversity among candidate paths.
+    categories = set()
+    for path_pts, _ in paths:
+        h = compute_heading(path_pts)
+        if h <= -MANEUVER_TURN_THRESH:
+            categories.add("LEFT")
+        elif h >= MANEUVER_TURN_THRESH:
+            categories.add("RIGHT")
+        elif abs(h) < MANEUVER_STRAIGHT_THRESH:
+            categories.add("STRAIGHT")
+        else:
+            categories.add("BEND")
+
+    branch_count = len(categories)
+    is_intersection = bool(branch_nodes) and branch_count >= 2
+    return is_intersection, branch_count
+
+
+def choose_path_for_maneuver(paths, maneuver, center_x):
+    """
+    Select a path that best matches route maneuver intent.
+    Returns (idx, heading_deg) or (-1, 0.0) if no suitable match.
+    """
+    if not paths:
+        return -1, 0.0
+
+    best_idx = -1
+    best_score = float("inf")
+    best_heading = 0.0
+
+    for idx, (path_pts, _) in enumerate(paths):
+        if len(path_pts) < 2:
+            continue
+        heading = compute_heading(path_pts)
+        end_x = path_pts[-1][0]
+        center_penalty = abs(end_x - center_x) / max(1.0, center_x)
+
+        if maneuver == "RIGHT":
+            target = TURN_COMMIT_HEADING_DEG
+            sign_penalty = 0.0 if heading > 6.0 else 35.0
+        elif maneuver == "LEFT":
+            target = -TURN_COMMIT_HEADING_DEG
+            sign_penalty = 0.0 if heading < -6.0 else 35.0
+        elif maneuver == "STRAIGHT":
+            target = 0.0
+            sign_penalty = 0.0
+        else:
+            target = 0.0
+            sign_penalty = 0.0
+
+        score = abs(heading - target) + 18.0 * center_penalty + sign_penalty
+        if score < best_score:
+            best_score = score
+            best_idx = idx
+            best_heading = heading
+
+    return best_idx, float(best_heading)
+
+
+def choose_random_maneuver_from_paths(paths):
+    """
+    Pick a random maneuver from what the current path candidates can support.
+    Preference order keeps realistic behavior: straight if available, otherwise turns.
+    """
+    options = []
+    for path_pts, _ in paths:
+        h = compute_heading(path_pts)
+        if h <= -MANEUVER_TURN_THRESH:
+            options.append("LEFT")
+        elif h >= MANEUVER_TURN_THRESH:
+            options.append("RIGHT")
+        elif abs(h) < MANEUVER_STRAIGHT_THRESH:
+            options.append("STRAIGHT")
+
+    unique = sorted(set(options))
+    if not unique:
+        return None
+    return random.choice(unique)
 
 
 def heading_to_command(angle_deg):
@@ -1268,6 +1456,14 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     stability_mode = "NORMAL"
     last_detections = []
     last_min_obstacle_dist = None
+    nav_state = NAV_FOLLOW_LANE
+    desired_maneuver = None
+    committed_turn_heading = 0.0
+    commit_frames_left = 0
+    recover_frames_left = 0
+    intersection_seen_frames = 0
+    intersection_clear_frames = 0
+    nav_heading_prev = 0.0
     frame_id = 0
     fps_counter = deque(maxlen=30)
     vw = None
@@ -1343,8 +1539,10 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 bev_sidewalk = bev_sidewalk[:-TRIM_BOTTOM, :]
             bev_sidewalk = clean_sidewalk_mask(bev_sidewalk, DT_CORE_THRESH)
             bev_sidewalk = select_main_component(bev_sidewalk)
+            bev_sidewalk = enforce_ego_front_segmentation(bev_sidewalk)
             # Temporal smoothing on BEV mask (second layer of stabilization)
             bev_sidewalk = bev_smoother.smooth(bev_sidewalk)
+            bev_sidewalk = enforce_ego_front_segmentation(bev_sidewalk)
             t_bev = (time.time() - t_bev_start) * 1000
 
             # --- 4) Skeleton + graph (optionally downscaled for speed) ---
@@ -1394,16 +1592,20 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             t_path_start = time.time()
             paths = []
             best_idx = -1
+            lane_best_idx = -1
+            lane_heading = 0.0
             heading_raw = 0.0
             command = "STOP"
             cmd_color = COLOR_STOP
             has_path = False
             best_path_len = 0.0
+            intersection_detected = False
+            intersection_branch_count = 0
+            center_x_full = bev_sidewalk.shape[1] // 2
 
             if G.number_of_nodes() > 1:
                 endpoints = [n for n in G.nodes if G.degree[n] == 1]
                 center_x_scaled = Wm // 2
-                center_x_full = bev_sidewalk.shape[1] // 2
 
                 bottom_band_scaled = max(8, int(round(BOTTOM_BAND_PX * scale_ratio)))
                 band_nodes = [n for n in G.nodes if n[1] >= Hm - bottom_band_scaled]
@@ -1458,23 +1660,28 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                         score = 0.6 * h_angle + 0.4 * lat_shift * 45.0
                         if score < best_score:
                             best_score = score
-                            best_idx = idx
+                            lane_best_idx = idx
 
-                    if best_idx >= 0:
-                        heading_raw = compute_heading(paths[best_idx][0])
-                        best_path_len = paths[best_idx][1]
+                    if lane_best_idx >= 0:
+                        lane_heading = compute_heading(paths[lane_best_idx][0])
+                        heading_raw = lane_heading
+                        best_idx = lane_best_idx
+                        best_path_len = paths[lane_best_idx][1]
                         has_path = True
                         # Save for fallback
-                        last_heading_raw = heading_raw
-                        last_best_path = paths[best_idx][0]
-                        last_best_idx = best_idx
+                        last_heading_raw = lane_heading
+                        last_best_path = paths[lane_best_idx][0]
+                        last_best_idx = lane_best_idx
                         last_paths = paths
+
+                    intersection_detected, intersection_branch_count = detect_intersection(paths, G, Hm)
 
             # Fallback: use last-known heading when path is temporarily lost
             if not has_path and last_heading_raw != 0.0:
                 heading_raw = last_heading_raw * 0.5  # fade toward center
                 paths = last_paths
                 best_idx = last_best_idx
+                lane_heading = heading_raw
 
             t_path = (time.time() - t_path_start) * 1000
 
@@ -1483,6 +1690,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             gps_info = None
             gps_lat, gps_lon, gps_fix = None, None, 0
             gps_wp_name, gps_wp_dist, gps_correction = None, None, 0.0
+            maneuver_intent = None
             heading_angle = heading_raw
 
             if gps_nav:
@@ -1496,7 +1704,90 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 if gps_wp_name:
                     gps_info.append(f"WP: {gps_wp_name} ({gps_wp_dist:.0f}m)" if gps_wp_dist else f"WP: {gps_wp_name}")
                     gps_info.append(f"GPS correction: {gps_correction:+.1f} deg")
-                    heading_angle = 0.7 * heading_angle + 0.3 * gps_correction
+                maneuver_intent = infer_maneuver_from_waypoint_name(gps_wp_name)
+                if maneuver_intent is None:
+                    maneuver_intent = infer_maneuver_from_gps_correction(gps_correction)
+
+            # State machine: lane-follow by default, GPS selects turn only at intersections.
+            if intersection_detected:
+                intersection_seen_frames += 1
+                intersection_clear_frames = 0
+            else:
+                intersection_seen_frames = max(0, intersection_seen_frames - 1)
+                intersection_clear_frames += 1
+
+            nav_current = nav_heading_prev if frame_id > 0 else heading_raw
+
+            if nav_state == NAV_FOLLOW_LANE:
+                heading_angle = lane_heading
+                best_idx = lane_best_idx if lane_best_idx >= 0 else best_idx
+                desired_maneuver = None
+                intent_candidate = maneuver_intent
+                if (
+                    intent_candidate is None
+                    and gps_nav is None
+                    and RANDOM_DECISION_NO_GPS
+                    and intersection_seen_frames >= INTERSECTION_CONFIRM_FRAMES
+                ):
+                    intent_candidate = choose_random_maneuver_from_paths(paths)
+                if (
+                    intersection_seen_frames >= INTERSECTION_CONFIRM_FRAMES
+                    and intent_candidate in ("LEFT", "RIGHT", "STRAIGHT")
+                    and has_path
+                ):
+                    nav_state = NAV_APPROACH_INTERSECTION
+                    desired_maneuver = intent_candidate
+
+            elif nav_state == NAV_APPROACH_INTERSECTION:
+                if desired_maneuver is None:
+                    desired_maneuver = maneuver_intent
+                turn_idx, turn_heading = choose_path_for_maneuver(paths, desired_maneuver, center_x_full)
+                if turn_idx >= 0:
+                    best_idx = turn_idx
+                    heading_angle = turn_heading
+                    best_path_len = paths[turn_idx][1]
+                    if abs(turn_heading) >= MANEUVER_TURN_THRESH:
+                        commit_sign = 1.0 if turn_heading >= 0 else -1.0
+                        committed_turn_heading = commit_sign * TURN_COMMIT_HEADING_DEG
+                        commit_frames_left = TURN_COMMIT_FRAMES
+                        nav_state = NAV_COMMIT_TURN
+                else:
+                    heading_angle = lane_heading
+
+                if intersection_clear_frames >= INTERSECTION_CLEAR_FRAMES:
+                    nav_state = NAV_FOLLOW_LANE
+                    desired_maneuver = None
+
+            elif nav_state == NAV_COMMIT_TURN:
+                heading_angle = clamp_delta(
+                    nav_current,
+                    committed_turn_heading,
+                    STEER_RATE_LIMIT_DEG_PER_FRAME,
+                )
+                commit_frames_left -= 1
+                if commit_frames_left <= 0:
+                    nav_state = NAV_RECOVER
+                    recover_frames_left = RECOVER_FRAMES
+
+            elif nav_state == NAV_RECOVER:
+                heading_angle = clamp_delta(
+                    nav_current,
+                    lane_heading,
+                    STEER_RATE_LIMIT_DEG_PER_FRAME,
+                )
+                recover_frames_left -= 1
+                if recover_frames_left <= 0 or intersection_clear_frames >= INTERSECTION_CLEAR_FRAMES:
+                    nav_state = NAV_FOLLOW_LANE
+                    desired_maneuver = None
+
+            nav_heading_prev = heading_angle
+
+            if gps_info is None:
+                gps_info = []
+            gps_info.append(f"NavState: {nav_state}")
+            if desired_maneuver:
+                gps_info.append(f"Intent: {desired_maneuver}")
+            gps_info.append(f"Intersection: {'Y' if intersection_detected else 'N'} ({intersection_branch_count})")
             t_gps = (time.time() - t_gps_start) * 1000
 
             # --- 7) Smooth heading + compute speed ---
