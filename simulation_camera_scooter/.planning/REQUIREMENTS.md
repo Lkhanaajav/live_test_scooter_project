@@ -7,8 +7,8 @@
 
 ### Segmentation Quality
 
-- [ ] **SEG-01**: Segmentation output is temporally stable — no visible per-frame flickering on real sidewalk video (IoU between consecutive frames >= 0.85 on >= 90% of frames)
-- [ ] **SEG-02**: SegFormer model is fine-tuned or validated on representative outdoor sidewalk footage (current demo environment)
+- [x] **SEG-01**: Segmentation output is temporally stable — no visible per-frame flickering on real sidewalk video (IoU between consecutive frames >= 0.85 on >= 90% of frames)
+- [x] **SEG-02**: SegFormer model is fine-tuned or validated on representative outdoor sidewalk footage (current demo environment)
 - [ ] **SEG-03**: Temporal smoothing strategy is tuned to eliminate flickering without over-smoothing dynamic obstacles
 
 ### BEV Calibration
@@ -63,8 +63,8 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SEG-01 | Phase 1 | Pending |
-| SEG-02 | Phase 1 | Pending |
+| SEG-01 | Phase 1 | Complete |
+| SEG-02 | Phase 1 | Complete |
 | SEG-03 | Phase 1 | Pending |
 | BEV-01 | Phase 2 | Pending |
 | BEV-02 | Phase 2 | Pending |

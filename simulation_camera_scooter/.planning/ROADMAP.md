@@ -88,7 +88,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 (4 is stretch only)
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Segmentation Stability | 0/2 | Not started | - |
+| 1. Segmentation Stability | 1/2 | In Progress|  |
 | 2. BEV Calibration and Path Reliability | 0/2 | Not started | - |
 | 3. Demo Integration | 0/2 | Not started | - |
 | 4. Radxa Deployment (STRETCH) | 0/2 | Not started | - |
