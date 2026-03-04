@@ -111,8 +111,8 @@ STAB_MAX_CORRECTION_DEG = 3.0    # max rotation correction (degrees)
 # =============================================================================
 # Temporal mask smoothing (reduces segmentation flickering)
 # =============================================================================
-MASK_SMOOTH_ALPHA = 0.45         # EMA weight for current frame (0-1)
-MASK_SMOOTH_CONSISTENCY_THRESH = 0.3  # IoU below this = likely shake artifact
+MASK_SMOOTH_ALPHA = 0.65         # EMA weight for current frame (0-1) — tuned Plan 01-02 sweep — was: 0.45
+MASK_SMOOTH_CONSISTENCY_THRESH = 0.20  # IoU below this = likely shake artifact — tuned Plan 01-02 sweep — was: 0.30
 BEV_SMOOTH_ALPHA = 0.55          # BEV mask temporal smoothing weight
 
 # =============================================================================
