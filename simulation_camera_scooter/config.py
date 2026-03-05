@@ -136,3 +136,20 @@ LOW_POWER_PATH_SCALE = 0.65
 NAV_BEV_FORWARD_M = 10.0
 NAV_BEV_LATERAL_M = 10.0
 NAV_WORK_GRID_BASE = 220
+
+# BEV motion compensation: forward pixel displacement per meter of travel
+# BEV_SIZE[1]=500 px covers NAV_BEV_FORWARD_M=10 m → 50 px/m
+BEV_PIXELS_PER_METER_FORWARD = BEV_SIZE[1] / NAV_BEV_FORWARD_M
+# BEV_SIZE[0]=600 px covers NAV_BEV_LATERAL_M=10 m → 60 px/m
+BEV_PIXELS_PER_METER_LATERAL = BEV_SIZE[0] / NAV_BEV_LATERAL_M
+
+# =============================================================================
+# BEV Predictive Frame Reuse
+# =============================================================================
+PREDICT_ENABLED = True
+PREDICT_MAX_SKIP_STRAIGHT = 3    # max consecutive skips on straight road
+PREDICT_MAX_SKIP_TURN = 1        # max consecutive skips on gentle turn
+PREDICT_CURVATURE_STRAIGHT = 0.10  # kappa threshold for "straight" (m^-1)
+PREDICT_CURVATURE_SHARP = 0.30     # kappa threshold for "sharp turn" (m^-1)
+PREDICT_BLEND_ALPHA = 0.75        # real vs predicted blend weight on compute frames
+PREDICT_CONFIDENCE_FLOOR = 0.50   # below this IoU confidence, stop skipping
