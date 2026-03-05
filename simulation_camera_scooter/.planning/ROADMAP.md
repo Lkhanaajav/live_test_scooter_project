@@ -39,16 +39,16 @@ Plans:
 **Depends on**: Phase 1
 **Requirements**: BEV-01, BEV-02, BEV-03, PATH-01, PATH-02, PATH-03
 **Success Criteria** (what must be TRUE):
-  1. Running load_bev_params() reports condition number < 1000 (down from 1.1e+06 current)
+  1. Running load_bev_params() does NOT print the ill-conditioned WARNING (condition number < 1e6, down from 1.1e+06 current) � note: cond < 1000 is not achievable with a real perspective warp; pixel survival (criterion 2) is the primary metric
   2. Inspecting BEV output frames, >= 50% of sidewalk pixels survive the warpPerspective transform (visible as a filled region in BEV view)
   3. has_path rate is >= 60% of frames when running the pipeline on a representative sidewalk video clip
   4. The extracted skeleton path follows the sidewalk centerline in BEV — it does not jump to edges, grass artifacts, or reverse direction on a straight sidewalk
   5. Calibration steps are written up so the procedure can be repeated when the camera mount changes
-**Plans**: TBD
+**Plans**: 2 plans
 
 Plans:
-- [ ] 02-01: Recalibrate BEV homography with well-framed level video and validate condition number
-- [ ] 02-02: Tune path extractor parameters (min_sidewalk_width_m, branch_min_len_m, min_path_len_m) to hit has_path >= 60% target
+- [ ] 02-01-PLAN.md � Recalibrate BEV homography with mounted camera video, verify condition number and pixel survival, write calibration SOP (HARDWARE GATE)
+- [ ] 02-02-PLAN.md � Validate path extraction reliability (has_path >= 60%), tune params if needed, visual centerline verification
 
 ### Phase 3: Demo Integration
 **Goal**: The full pipeline runs end-to-end during a live sidewalk demo — scooter receives steering and speed commands, the video feed shows a path overlay, and the system never abruptly stops
@@ -81,10 +81,28 @@ Plans:
 - [ ] 04-01: Export SegFormer to ONNX/TensorRT and benchmark on Rock 5B
 - [ ] 04-02: Full pipeline end-to-end test on Rock 5B with scooter connected
 
+### Phase 5: Cloud-Offloaded Navigation (STRETCH RESEARCH)
+**Goal**: Evaluate cloud-offloaded inference vs. local CPU — quantify the latency/model-quality tradeoff and assess feasibility for real-time scooter control
+**Depends on**: Phase 3 (need a working closed-loop baseline to compare against)
+**Requirements**: CLOUD-01, CLOUD-02
+**Success Criteria** (what must be TRUE):
+  1. Cloud variant uses a larger, higher-accuracy segmentation model (e.g., SegFormer-B4/B5 or Mask2Former) running on a GPU instance — segmentation quality is measurably better than B0 local (mIoU or mask stability improvement reported)
+  2. Round-trip latency (frame capture → cloud inference → command received) is measured and compared against local CPU latency — with analysis of whether the latency budget allows safe pedestrian-speed control
+  3. A tradeoff table is produced: local (low latency, smaller model) vs. cloud (higher latency, better model, network-dependent) with concrete numbers
+  4. Results are written up as a thesis section — either demonstrating feasibility or providing a clear quantitative argument for why local compute is preferred
+
+**Note: This is a stretch research phase. Only pursue if Phases 1-3 are complete AND hardware/cloud resources are available. Decision point: after Phase 3 completion. Even if not executed, the tradeoff analysis can be written as a Future Work section in the thesis.**
+
+**Plans**: TBD
+
+Plans:
+- [ ] 05-01: Measure local baseline latency end-to-end and set up cloud inference endpoint (GPU instance + streaming protocol)
+- [ ] 05-02: Run comparative experiment — local B0 vs cloud B4/B5 — latency, stability, has_path rate, segmentation quality
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 (4 is stretch only)
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 (4 and 5 are stretch only)
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -92,6 +110,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 (4 is stretch only)
 | 2. BEV Calibration and Path Reliability | 0/2 | Not started | - |
 | 3. Demo Integration | 0/2 | Not started | - |
 | 4. Radxa Deployment (STRETCH) | 0/2 | Not started | - |
+| 5. Cloud-Offloaded Navigation (STRETCH RESEARCH) | 0/2 | Not started | - |
 
 ---
 *Roadmap created: 2026-03-04*
