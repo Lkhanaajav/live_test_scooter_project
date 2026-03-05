@@ -12,11 +12,12 @@ from dataclasses import dataclass, asdict
 from typing import Optional, Tuple, Dict, List, Union
 from transformers import AutoImageProcessor, SegformerForSemanticSegmentation
 import argparse
+from stabilization import TemporalMaskSmoother
 
 @dataclass
 class Config:
     # Basic settings
-    video_path: str = "test_video_june_03_1.MOV"
+    video_path: str = "test_video_june_03_3.MOV"
     model_dir: str = "models/my-segformer-road"
     output_mp4: str = "result/fast_overlay.mp4"
     road_id: int = 1
@@ -154,10 +155,36 @@ class FastRoadDetector:
     def _load_model(self):
         try:
             self._log_memory_usage("Before model load")
-            self.processor = AutoImageProcessor.from_pretrained(self.config.model_dir)
-            self.model = SegformerForSemanticSegmentation.from_pretrained(
-                self.config.model_dir
-            ).to(self.device)
+            model_dir = self.config.model_dir
+            # Resolve relative paths from this file's directory so the model can
+            # be loaded correctly no matter where the script is launched from.
+            if not os.path.isabs(model_dir):
+                local_candidate = os.path.join(
+                    os.path.dirname(os.path.abspath(__file__)),
+                    model_dir
+                )
+                if os.path.isdir(local_candidate):
+                    model_dir = local_candidate
+
+            if os.path.isdir(model_dir):
+                self.logger.info(f"Loading model from local directory: {model_dir}")
+                self.processor = AutoImageProcessor.from_pretrained(
+                    model_dir,
+                    local_files_only=True
+                )
+                self.model = SegformerForSemanticSegmentation.from_pretrained(
+                    model_dir,
+                    local_files_only=True
+                ).to(self.device)
+            else:
+                self.logger.warning(
+                    f"Model path not found locally: {model_dir}. "
+                    "Trying HuggingFace identifier resolution."
+                )
+                self.processor = AutoImageProcessor.from_pretrained(model_dir)
+                self.model = SegformerForSemanticSegmentation.from_pretrained(
+                    model_dir
+                ).to(self.device)
             self.model.eval()
             self._log_memory_usage("After model load")
             self.logger.info("Model loaded successfully")
@@ -256,9 +283,10 @@ class FastRoadDetector:
     def process_frame(
         self,
         frame: np.ndarray,
-        processor_size: Optional[Union[int, Tuple[int, int], List[int], Dict[str, int]]] = None
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Process a single frame and return the segmentation mask and overlay."""
+        processor_size: Optional[Union[int, Tuple[int, int], List[int], Dict[str, int]]] = None,
+        return_overlay: bool = True,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Process a single frame and return the segmentation mask and optional overlay."""
         # Start timing
         start_time = time.time()
         
@@ -291,17 +319,18 @@ class FastRoadDetector:
         mask = self._apply_simple_smoothing(mask)
         self.previous_mask = mask.copy()
         
-        # Create overlay
-        overlay = frame.copy()
-        overlay[mask == 255] = (0, 255, 0)
-        
+        overlay = None
+        if return_overlay:
+            overlay = frame.copy()
+            overlay[mask == 255] = (0, 255, 0)
+
         # Update metrics
         inference_time = (time.time() - start_time) * 1000  # Convert to ms
         self.performance_metrics.inference_time = (
             self.performance_metrics.inference_time * self.performance_metrics.processed_count + inference_time
         ) / (self.performance_metrics.processed_count + 1)
         self.performance_metrics.processed_count += 1
-        
+
         return mask, overlay
 
     def process_video(self):
@@ -325,7 +354,13 @@ class FastRoadDetector:
         frame_idx = 0
         processed_idx = 0
         inference_times = []
-        
+        _smoother = TemporalMaskSmoother()
+        _last_smoothed_mask = None
+        _prev_gray = None
+        _flow_feat = dict(maxCorners=100, qualityLevel=0.01, minDistance=30, blockSize=3)
+        _flow_lk = dict(winSize=(15, 15), maxLevel=2,
+                        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+
         # Start timing when we begin processing
         self.performance_metrics.processing_start_time = time.time()
 
@@ -338,18 +373,40 @@ class FastRoadDetector:
                 if frame_idx % self.config.frame_step == 0:
                     # Start timing for this frame
                     frame_start = time.time()
-                    
-                    mask, overlay = self.process_frame(frame)
-                    self.previous_mask = mask
+
+                    # Minimal optical flow between processed frames only
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    flow_dy = 0.0
+                    if _prev_gray is not None:
+                        pts = cv2.goodFeaturesToTrack(_prev_gray, **_flow_feat)
+                        if pts is not None and len(pts) >= 6:
+                            curr_pts, status, _ = cv2.calcOpticalFlowPyrLK(
+                                _prev_gray, gray, pts, None, **_flow_lk)
+                            good = (status.ravel() == 1)
+                            if good.sum() >= 6:
+                                m, _ = cv2.estimateAffinePartial2D(
+                                    pts[good], curr_pts[good])
+                                if m is not None:
+                                    flow_dy = float(m[1, 2])
+                    _prev_gray = gray
+
+                    mask, _ = self.process_frame(frame)
+                    smoothed_mask = _smoother.smooth(mask, flow_dy=flow_dy)
+                    _last_smoothed_mask = smoothed_mask
+                    self.previous_mask = smoothed_mask
                     processed_idx += 1
-                    
+
+                    # Rebuild overlay from smoothed mask
+                    overlay = frame.copy()
+                    overlay[smoothed_mask == 255] = (0, 255, 0)
+
                     # Record inference time
                     inference_time = (time.time() - frame_start) * 1000  # Convert to ms
                     inference_times.append(inference_time)
                 else:
                     overlay = frame.copy()
-                    if self.previous_mask is not None:
-                        overlay[self.previous_mask == 255] = (0, 255, 0)
+                    if _last_smoothed_mask is not None:
+                        overlay[_last_smoothed_mask == 255] = (0, 255, 0)
 
                 # Preview
                 preview = cv2.resize(overlay, (W//2, H//2))
