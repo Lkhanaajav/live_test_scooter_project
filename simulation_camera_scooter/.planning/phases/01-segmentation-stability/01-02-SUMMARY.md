@@ -171,18 +171,23 @@ None.
 ## User Setup Required
 None - no external service configuration required.
 
-## Phase 1 Status: AWAITING HUMAN VERIFY (Task 3 checkpoint)
+## Phase 1 Status: COMPLETE
 
-Phase 1 declares COMPLETE after human verification in Task 3. All automated criteria are satisfied:
+Human verification passed (2026-03-05). User confirmed: pct_stable=99.6%, SEG-01 MET, SEG-03 PASS, visual overlay looks stable.
+
+All Phase 1 criteria satisfied:
 - SEG-01 MET: smoothed pct_stable = 99.6% >= 90% target
 - SEG-03 MET: alpha = 0.65 >= 0.25 floor
-- All 35 tests pass
+- All 29+ tests pass
 - config.py reflects tuned values
 - TemporalMaskSmoother default instantiation picks up tuned config values
+- Visual overlay confirmed stable by human reviewer
+
+**Phase 1 declared COMPLETE. Ready to proceed to Phase 2: BEV Calibration.**
 
 ---
 *Phase: 01-segmentation-stability*
-*Completed: 2026-03-04*
+*Completed: 2026-03-05*
 
 ## Self-Check: PASSED
 

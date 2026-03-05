@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-02-PLAN.md (smoother sweep + config update) — awaiting Task 3 human verify
-last_updated: "2026-03-04T23:58:09.045Z"
-last_activity: "2026-03-04 — Plan 01-01 completed: benchmark identifies my-segformer-road as best checkpoint (99.3% stable)"
+stopped_at: Completed 01-02-PLAN.md — Phase 1 COMPLETE (human verification approved)
+last_updated: "2026-03-05T00:00:00.000Z"
+last_activity: "2026-03-05 — Plan 01-02 completed: smoother sweep finds alpha=0.65, c_thresh=0.20 at 99.6% stable — Phase 1 COMPLETE"
 progress:
   total_phases: 4
   completed_phases: 1
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 
 ## Current Position
 
-Phase: 1 of 4 (Segmentation Stability)
-Plan: 1 of 2 in current phase
-Status: In progress
-Last activity: 2026-03-04 — Plan 01-01 completed: benchmark identifies my-segformer-road as best checkpoint (99.3% stable)
+Phase: 1 of 4 (Segmentation Stability) — COMPLETE
+Plan: 2 of 2 in phase 1 (all complete)
+Status: Phase 1 done — ready to begin Phase 2 (BEV Calibration)
+Last activity: 2026-03-05 — Plan 01-02 completed: smoother sweep finds alpha=0.65, c_thresh=0.20 at 99.6% stable — Phase 1 COMPLETE
 
 Progress: [██████████] 100%
 
@@ -65,8 +65,9 @@ Recent decisions affecting current work:
 - [01-01]: my-segformer-road wins benchmark at 99.3% stable frames — 11 points above 90% target, switch from my-segformer-road_new
 - [01-01]: Checkpoint-5000 directory is corrupted/incomplete — missing model weights, cannot be used
 - [01-01]: TemporalMaskSmoother conservative-blend triggers when IoU<0.5 (not just <consistency_thresh), limiting alpha response speed in blank→obstacle transitions
-- [Phase 01-02]: alpha=0.65, consistency_thresh=0.20 wins sweep at 99.6% stable — higher alpha preferred on ties for better SEG-03 responsiveness
-- [Phase 01-02]: consistency_thresh has zero sensitivity at my-segformer-road baseline — all 5 threshold values produce identical pct_stable for same alpha
+- [01-02]: alpha=0.65, consistency_thresh=0.20 wins sweep at 99.6% stable — higher alpha preferred on ties for better SEG-03 responsiveness
+- [01-02]: consistency_thresh has zero sensitivity at my-segformer-road baseline — all 5 threshold values produce identical pct_stable for same alpha
+- [01-02]: Phase 1 COMPLETE — SEG-01 MET (99.6% >= 90%), SEG-03 PASS (alpha=0.65 >= 0.25), human verified 2026-03-05
 
 ### Pending Todos
 

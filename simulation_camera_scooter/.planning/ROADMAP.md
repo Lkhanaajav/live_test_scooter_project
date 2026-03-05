@@ -12,7 +12,7 @@ The pipeline is substantially built. Two root problems block the thesis demo: se
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [x] **Phase 1: Segmentation Stability** - Eliminate visible per-frame flickering in SegFormer output on real sidewalk video (completed 2026-03-04)
+- [x] **Phase 1: Segmentation Stability** - Eliminate visible per-frame flickering in SegFormer output on real sidewalk video (completed 2026-03-05)
 - [ ] **Phase 2: BEV Calibration and Path Reliability** - Recalibrate homography and achieve has_path >= 60% on typical sidewalk footage
 - [ ] **Phase 3: Demo Integration** - End-to-end demo run with scooter receiving commands, visualization overlay, and graceful degradation
 - [ ] **Phase 4: Radxa Deployment (STRETCH)** - Export pipeline to ONNX/TensorRT and run on Rock 5B at >= 5 Hz
@@ -31,8 +31,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: TBD
 
 Plans:
-- [ ] 01-01: Evaluate SegFormer checkpoints and benchmark temporal stability on demo video
-- [ ] 01-02: Tune temporal smoothing (EMA alpha, IoU thresholds) to hit stability targets
+- [x] 01-01: Evaluate SegFormer checkpoints and benchmark temporal stability on demo video
+- [x] 01-02: Tune temporal smoothing (EMA alpha, IoU thresholds) to hit stability targets
 
 ### Phase 2: BEV Calibration and Path Reliability
 **Goal**: BEV homography is accurate for the actual recording setup and the path extractor reliably finds a drivable path
@@ -88,7 +88,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 (4 is stretch only)
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Segmentation Stability | 2/2 | Complete   | 2026-03-04 |
+| 1. Segmentation Stability | 2/2 | Complete   | 2026-03-05 |
 | 2. BEV Calibration and Path Reliability | 0/2 | Not started | - |
 | 3. Demo Integration | 0/2 | Not started | - |
 | 4. Radxa Deployment (STRETCH) | 0/2 | Not started | - |
