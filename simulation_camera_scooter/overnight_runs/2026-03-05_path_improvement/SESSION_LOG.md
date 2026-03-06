@@ -1,0 +1,42 @@
+# Session Log
+
+- [2026-03-05 17:31] Created overnight workspace and required logs in `overnight_runs/2026-03-05_path_improvement/`.
+- [2026-03-05 17:32] Mapped repository structure and key runtime files with `rg --files` and code scan.
+- [2026-03-05 17:33] Read planning docs before major decisions:
+  - `.planning/PROJECT.md`
+  - `.planning/REQUIREMENTS.md`
+  - `.planning/ROADMAP.md`
+  - `.planning/codebase/ARCHITECTURE.md`
+  - `.planning/phases/02-bev-calibration-and-path-reliability/*`
+- [2026-03-05 17:35] Traced main runtime path:
+  - `live_heading_demo.py` -> `masks.py` cleanup -> `realtime_nav_core.py` (`BEVPathExtractor`) -> path model -> control + overlay.
+- [2026-03-05 17:37] Ran baseline (`E0`) on `test_video_mar3_1_h264.mp4` with logging and saved video.
+- [2026-03-05 17:41] Baseline metrics computed from CSV:
+  - `has_path=0.0%`
+  - `has_model_path=0.0%`
+  - `num_paths_mean=0.0`
+- [2026-03-05 17:43] Extracted and visually inspected baseline frames using MCP image view tool; logged BEV starvation failure mode.
+- [2026-03-05 17:48] Implemented `E1` in `realtime_nav_core.py`:
+  - fallback centerline path extraction from sparse BEV mask
+  - previous-path hold fallback
+  - sparse-mask preprocessing tolerance
+- [2026-03-05 17:48] Ran targeted tests (`tests/test_realtime_nav_core.py`, `tests/test_bev_predictor.py`) -> pass.
+- [2026-03-05 17:53] Ran `E1` full video validation; computed metrics and extracted visual frames.
+- [2026-03-05 17:54] `E1` result: major recovery (`has_path~99.74%`) but persistent right-bias in steering.
+- [2026-03-05 17:55] Implemented `E2` (aggressive confidence recentering).
+- [2026-03-05 18:02] `E2` validation: rejected due left-lock near -30 deg.
+- [2026-03-05 18:03] Implemented `E3` rollback + ego anchoring.
+- [2026-03-05 18:08] `E3` validation: no E2 collapse, but still high one-sided bias (~22 deg).
+- [2026-03-05 18:09] Implemented `E4` fallback lateral clamp guardrail.
+- [2026-03-05 18:14] Ran `E4` full validation and visual inspection.
+- [2026-03-05 18:16] Computed comparative metrics (baseline/E1/E2/E3/E4); selected `E4` as best tradeoff.
+- [2026-03-05 18:17] Ran full test suite: `python -m pytest tests -q` -> 58 passed.
+- [2026-03-05 18:18] Finalized overnight logs and morning-ready summary.
+- [2026-03-05 18:23:37] Started Experiment E5: use linear fallback path model (instead of regularized cubic) for fallback/hold to reduce curvature-induced steering artifacts.
+- [2026-03-05 18:23:37] Added _fit_fallback_path_model and switched fallback/hold fitting path in process().
+- [2026-03-05 18:23:37] Re-ran tests/test_realtime_nav_core.py -> pass.
+- [2026-03-05 18:29:27] Completed E5 trial (linear fallback model) on March clip; metrics worsened vs E4 (higher mean |heading|).
+- [2026-03-05 18:29:27] Reverted E5 fitting change (restored regularized cubic for fallback/hold) to keep E4 as final selected behavior.
+- [2026-03-05 18:29:27] Re-ran full test suite after rollback: 58 passed.
+- [2026-03-06 00:00] Final checkpoint: re-ran full test suite (58 passed), added explicit E5 rollback documentation to OVERNIGHT_SUMMARY.md and EXPERIMENT_LOG.md, verified E4 remains final selected configuration.
+- [2026-03-05 22:56] E6: replaced bottom rectangle anchor with thin ego-bridge anchor and moved anchor stage after clean_sidewalk_mask; reran June clip non-headless (438 rows logged) and confirmed lower heading spikes on same-length comparison.

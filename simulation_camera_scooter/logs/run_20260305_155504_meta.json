@@ -1,0 +1,24 @@
+{
+  "csv_file": "logs\\run_20260305_155504.csv",
+  "start_time": "2026-03-05T16:02:12.256653",
+  "total_frames": 2686,
+  "camera_id": 0,
+  "video_path": "test_video_mar3_1_h264.mp4",
+  "stride": 1,
+  "detection_enabled": true,
+  "detection_stride": 1,
+  "gps_device": null,
+  "gps_waypoints": null,
+  "serial_port": null,
+  "model_dir": "C:\\Users\\miji0000\\Desktop\\thesis_prep\\simulation_camera_scooter\\models\\my-segformer-road",
+  "seg_resolution": [
+    640,
+    360
+  ],
+  "low_power": false,
+  "path_scale": 1.0,
+  "nav_work_grid": 220,
+  "nav_bev_forward_m": 10.0,
+  "nav_bev_lateral_m": 10.0,
+  "yolo_model": "yolov8n.pt"
+}

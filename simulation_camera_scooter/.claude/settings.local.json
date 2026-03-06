@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(ls:*)",
+      "Bash(ffmpeg:*)",
+      "Bash(pip install:*)",
+      "Bash(python3:*)",
+      "Bash(node:*)",
+      "Bash(unzip:*)",
+      "Skill(gsd:plan-phase)"
+    ]
+  }
+}

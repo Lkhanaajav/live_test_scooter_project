@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 live_heading_demo.py
 ====================
@@ -329,16 +329,16 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 bev_sidewalk = bev_smoother.smooth(predicted_mask_255, flow_dy=bev_shift)
                 t_bev = (time.time() - t_bev_start) * 1000
 
-                # Use predicted path directly — skip path extraction entirely
+                # Use predicted path directly â€” skip path extraction entirely
                 t_skel = 0.0
                 t_path = 0.0
                 skel = np.zeros(BEV_SIZE[::-1], dtype=np.uint8)
-                has_path = predicted_path_m is not None and len(predicted_path_m) >= 2
-                if has_path:
+                has_pred_candidate = predicted_path_m is not None and len(predicted_path_m) >= 2
+                if has_pred_candidate:
                     # Build a lightweight PathPlanResult-like nav_out
                     from realtime_nav_core import PathPlanResult
                     nav_out = PathPlanResult(
-                        has_path=True,
+                        has_path=bool(predictor.last_path_model is not None),
                         path_model=predictor.last_path_model,
                         best_path_m=predicted_path_m,
                         best_path_px=path_extractor._pixel_from_metric(
@@ -434,8 +434,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 bev_sidewalk = cv2.warpPerspective(sidewalk_mask, H_mat, BEV_SIZE)
                 if TRIM_BOTTOM > 0:
                     bev_sidewalk = bev_sidewalk[:-TRIM_BOTTOM, :]
-                bev_sidewalk = anchor_ego_to_mask(bev_sidewalk, bev_size=BEV_SIZE)
                 bev_sidewalk = clean_sidewalk_mask(bev_sidewalk, DT_CORE_THRESH)
+                bev_sidewalk = anchor_ego_to_mask(bev_sidewalk, bev_size=BEV_SIZE)
                 bev_sidewalk = ego_connected_mask(bev_sidewalk, bev_size=BEV_SIZE)
 
                 # Predictor: blend predicted + real on compute frames
@@ -471,7 +471,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     else 0.0
                 )
                 best_path_len = best_path_len_m * (bev_sidewalk.shape[0] / max(1e-6, NAV_BEV_FORWARD_M))
-                has_path = bool(nav_out.has_path)
+                has_model_path = bool(nav_out.has_path)
                 graph_nodes = nav_out.graph_nodes
                 graph_edges = nav_out.graph_edges
 
@@ -515,7 +515,10 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             heading_smoothed = float(np.median(heading_buffer))
             command, cmd_color = heading_to_command(heading_smoothed)
 
-            path_valid_for_speed = bool(has_path or ctrl_out.valid_path)
+            has_candidate_path = bool(len(paths) > 0)
+            has_model_path = bool(nav_out.has_path)
+            has_control_path = bool(ctrl_out.valid_path)
+            path_valid_for_speed = bool(has_model_path or has_control_path)
             speed_raw = compute_speed(heading_smoothed, min_obstacle_dist, path_valid_for_speed)
             speed_buffer.append(speed_raw)
             speed_smoothed = float(np.mean(speed_buffer))
@@ -573,6 +576,9 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     stab_corr_px=round(stab_corr_px, 3),
                     stab_corr_deg=round(stab_corr_deg, 3),
                     # Path info
+                    has_candidate_path=int(has_candidate_path),
+                    has_model_path=int(has_model_path),
+                    has_control_path=int(has_control_path),
                     has_path=int(path_valid_for_speed),
                     num_paths=len(paths),
                     best_path_length_px=round(best_path_len, 1),
@@ -780,3 +786,5 @@ if __name__ == "__main__":
             detection_stride=args.detection_stride,
             enable_predict=not args.no_predict,
         )
+
+

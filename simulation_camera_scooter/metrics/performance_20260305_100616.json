@@ -1,0 +1,36 @@
+{
+    "system_info": {
+        "cpu": "Intel64 Family 6 Model 167 Stepping 1, GenuineIntel",
+        "gpu": "Quadro P620",
+        "ram": 31.727588653564453,
+        "os": "Windows-10-10.0.19045-SP0",
+        "python_version": "3.11.9",
+        "torch_version": "2.6.0+cu118",
+        "cuda_version": "11.8"
+    },
+    "performance_metrics": {
+        "fps": 7.008825368592347,
+        "inference_time": 87.99369106164906,
+        "memory_usage": null,
+        "frame_count": 2686,
+        "processed_count": 1343,
+        "total_time": 0.0,
+        "processing_start_time": 1772726585.096963,
+        "processing_end_time": 1772726776.7125232,
+        "pure_processing_time": 191.61556029319763
+    },
+    "config": {
+        "video_path": "test_video_mar3_1_h264.mp4",
+        "model_dir": "models/my-segformer-road",
+        "output_mp4": "result/fast_overlay.mp4",
+        "road_id": 1,
+        "conf_thresh": 0.6,
+        "frame_step": 2,
+        "use_gpu": true,
+        "enable_logging": true,
+        "enable_edge_cleaning": false,
+        "enable_simple_smoothing": false,
+        "smoothing_weight": 0.2,
+        "inference_resize": null
+    }
+}

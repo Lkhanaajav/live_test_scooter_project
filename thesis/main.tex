@@ -221,6 +221,8 @@ This thesis makes the following contributions:
 
   \item An interpretable branch-selection and centering strategy that produces smooth, well-aligned path candidates from noisy real-world segmentation masks.
 
+  \item A two-layer temporal mask stabilization scheme: a camera-space EMA smoother with a conservative-blend policy that suppresses stochastic segmentation variance, and a BEV-space forward motion compensator that applies a geometrically exact uniform pixel shift to successive BEV masks before temporal averaging, exploiting the uniform-translation property of planar homographic projection under forward ego-motion.
+
   \item Integration of a lightweight YOLOv8-nano object detector (3.2M parameters) for real-time detection of pedestrians, cyclists, and vehicles, with monocular distance estimation for speed modulation and emergency stop.
 
   \item GPS waypoint navigation using NMEA-parsed coordinates fused with the vision heading to provide global route guidance while maintaining local obstacle avoidance.
@@ -410,7 +412,7 @@ We define three metrics to quantify pipeline quality:
 \label{ch:closed_loop}
 % =====================================================================
 
-This chapter extends the offline perception pipeline described in Chapter~\ref{ch:methodology} to a real-time closed-loop system capable of autonomous sidewalk navigation. We describe six additions: (1)~a lightweight object-detection module for dynamic obstacle awareness, (2)~GPS-based waypoint navigation for global route following, (3)~precise steering-angle and speed computation, (4)~a serial command protocol for the scooter platform, (5)~temporal smoothing for heading and speed stability, and (6)~a live demonstration system that integrates all components.
+This chapter extends the offline perception pipeline described in Chapter~\ref{ch:methodology} to a real-time closed-loop system capable of autonomous sidewalk navigation. We describe seven additions: (1)~a two-layer temporal mask stabilization scheme, (2)~a lightweight object-detection module for dynamic obstacle awareness, (3)~GPS-based waypoint navigation for global route following, (4)~precise steering-angle and speed computation, (5)~a serial command protocol for the scooter platform, (6)~temporal smoothing for heading and speed stability, and (7)~a live demonstration system that integrates all components.
 
 \section{Extended System Architecture}
 \label{sec:system_arch}
@@ -430,6 +432,61 @@ Figure~\ref{fig:extended_pipeline} summarizes the extended pipeline. At each cam
   \caption{Extended system architecture. The sidewalk perception pipeline, object detector, and GPS navigator feed into a command-fusion module that outputs steering angle and speed over serial.}
   \label{fig:extended_pipeline}
 \end{figure}
+
+% -----------------------------------------------------------------
+\section{Temporal Mask Stabilization}
+\label{sec:temporal_stabilization}
+
+Raw per-frame segmentation masks contain two distinct sources of instability that must be addressed before BEV projection and path extraction can be reliable. The first is \emph{model variance}: stochastic fluctuation in the predicted boundary between frames even when the scene is static, caused by minor changes in illumination, motion blur, and the approximate nature of learned segmentation. The second is \emph{ego-motion shift}: the apparent position of the sidewalk region changes deterministically as the scooter advances, causing the BEV mask to translate forward with each frame. We address both with a two-layer stabilization strategy applied at different stages of the perception pipeline.
+
+% -----------------------------------------------------------------
+\subsection{Camera-Space Exponential Moving Average}
+\label{sec:cam_ema}
+
+The first layer suppresses model variance by applying an exponential moving average (EMA) to consecutive binary segmentation masks in the image frame. The running estimate is updated each frame as:
+\begin{equation}
+\hat{M}_t^{\text{cam}} = \alpha_{\text{eff}} \cdot M_t + (1 - \alpha_{\text{eff}}) \cdot \hat{M}_{t-1}^{\text{cam}}
+\label{eq:cam_ema}
+\end{equation}
+where $M_t \in \{0,1\}^{H \times W}$ is the raw binary sidewalk mask at frame $t$ and $\alpha_{\text{eff}} \in (0,1)$ is the effective current-frame weight. Rather than using a fixed $\alpha$, we employ a conservative-blend policy that reduces $\alpha_{\text{eff}}$ when the consecutive-frame intersection over union (IoU) falls below a consistency threshold $c_{\text{thresh}}$, since a large IoU drop signals a probable camera shake or sudden scene change that should not be incorporated at full weight:
+\begin{equation}
+\alpha_{\text{eff}} =
+\begin{cases}
+\alpha / 4, & \text{IoU}(\hat{M}_{t-1}^{\text{cam}},\, M_t) < c_{\text{thresh}} \\
+\alpha / 2, & \text{IoU}(\hat{M}_{t-1}^{\text{cam}},\, M_t) < 0.5 \\
+\alpha,     & \text{otherwise}
+\end{cases}
+\label{eq:cam_conservative_blend}
+\end{equation}
+
+On the first call in a session, the smoother bypasses Equation~\ref{eq:cam_ema} and sets $\hat{M}_0^{\text{cam}} = M_0$ directly. This fast-path initialization ensures that an obstacle appearing for the first time is immediately visible at full strength, rather than being attenuated by the EMA history from a previous (obstacle-free) estimate. Parameters $\alpha = 0.65$ and $c_{\text{thresh}} = 0.20$ were selected via the 35-combination grid sweep described in Section~\ref{sec:smoother_sweep}; the resulting smoothed stability is 99.6\% of consecutive frame pairs with IoU $\geq 0.85$.
+
+% -----------------------------------------------------------------
+\subsection{BEV-Space Forward Motion Compensation}
+\label{sec:bev_motion_comp}
+
+The camera-space EMA described above does not account for the deterministic shift in the BEV mask caused by forward ego-motion. Applying temporal averaging in the image frame before warping to BEV is geometrically incorrect for a moving platform: under forward translation, the apparent position of a sidewalk pixel moves upward in the image at a rate that depends on its depth, making per-pixel motion non-uniform and scene-dependent. Correcting for this in image space would require per-pixel depth estimates---unavailable on a monocular system.
+
+BEV space eliminates this difficulty. A key geometric consequence of a fixed planar homography under the flat-ground assumption is that forward ego-motion corresponds to a \emph{uniform downward translation} of the entire BEV mask~\cite{hartley_zisserman}. Specifically, if the scooter advances by $\delta$ meters in $\Delta t$ seconds, every point in the BEV mask shifts by the same amount:
+\begin{equation}
+\Delta y_{\text{bev}} = v \cdot \Delta t \cdot \frac{h_{\text{bev}}}{d_{\text{fwd}}}
+\label{eq:bev_shift}
+\end{equation}
+where $v$ is the forward speed in m/s, $h_{\text{bev}} = 500$~px is the BEV image height (the forward-range axis), and $d_{\text{fwd}} = 10$~m is the maximum forward look-ahead distance, yielding a scale of $50$~px/m. At a representative speed of $v = 1.0$~m/s and frame rate $f = 9$~Hz, the per-frame shift is $\Delta y_{\text{bev}} \approx 5.6$~px---modest but sufficient to misalign successive masks if uncompensated.
+
+This uniformity is what makes BEV the correct domain for ego-motion compensation: it decouples forward translation from depth, so the shift can be computed analytically without any learned module. State-of-the-art multi-camera perception systems such as BEVFormer~\cite{bevformer} address the same problem using deformable spatial attention that aligns BEV feature volumes across frames using full 6-DoF pose transforms. Our approach specializes this to the 1-DoF forward-motion case afforded by a single fixed camera on a nominally planar scooter, yielding a deterministic closed-form solution at negligible computational cost. The geometric validity of the approximation rests on the Lift, Splat, Shoot framework~\cite{lift_splat_shoot}, which establishes that a calibrated planar homography produces a metrically consistent BEV grid in which rigid body motion of the camera corresponds to a shift of the grid coordinates.
+
+In practice, the shift at frame $t$ is estimated from the speed available at the end of the previous control cycle:
+\begin{equation}
+\Delta y_t = \hat{v}_{t-1} \cdot \frac{1}{f_{\text{fps}}} \cdot \frac{h_{\text{bev}}}{d_{\text{fwd}}}
+\label{eq:bev_shift_impl}
+\end{equation}
+where $\hat{v}_{t-1}$ is the speed command issued at frame $t-1$, available without causal violation. The previous BEV mask estimate is translated upward by $\Delta y_t$ pixels before the EMA update, aligning it to the expected viewpoint of frame $t$:
+\begin{equation}
+\hat{M}_t^{\text{bev}} = \beta \cdot M_t^{\text{bev}} + (1-\beta) \cdot T_{-\Delta y_t}\!\left(\hat{M}_{t-1}^{\text{bev}}\right)
+\label{eq:bev_ema}
+\end{equation}
+where $M_t^{\text{bev}} = \mathcal{H}(M_t^{\text{cam}})$ is the freshly warped BEV mask, $T_{-\Delta y}$ denotes an upward affine translation by $\Delta y$ pixels, and $\beta = 0.55$ is the BEV-layer EMA weight (tuned separately from $\alpha$ in the camera layer). The translated prior $T_{-\Delta y_t}(\hat{M}_{t-1}^{\text{bev}})$ represents where the previous sidewalk estimate is expected to appear in the current BEV frame after the scooter has advanced; blending it with $M_t^{\text{bev}}$ suppresses temporal noise while keeping the mask geometrically aligned with the current position.
 
 % -----------------------------------------------------------------
 \section{Lightweight Object Detection}
@@ -630,6 +687,79 @@ This chapter presents experimental results for both the offline perception pipel
 
 SegFormer-B0 segments the traversable sidewalk region at $640\times360$ resolution. The raw mask is refined with morphological operations and connected-component filtering to stabilize boundaries and remove spurious fragments. The resulting mask is compact and robust across diverse conditions including shadows, texture seams, and uneven surfaces.
 
+% -----------------------------------------------------------------
+\subsection{Segmentation Checkpoint Benchmark}
+\label{sec:seg_checkpoint_benchmark}
+
+To select the best-performing SegFormer checkpoint for deployment, we evaluated 11 candidate model checkpoints on a representative sidewalk video using a temporal stability metric. Stability is defined as the fraction of consecutive frame pairs whose raw (unsmoothed) segmentation IoU exceeds 0.85---the minimum threshold for visually flicker-free output visible to a demo observer. Each checkpoint was evaluated on 300 frames sampled from \texttt{test\_video\_mar3\_1\_h264.mp4} on a workstation equipped with an NVIDIA Quadro P620 GPU, Intel Core i7 CPU, and 32~GB RAM.
+
+Frame classification follows three categories: \emph{stable} (IoU $\geq 0.85$), \emph{failure} (IoU = 0.0 with a non-empty previous mask, indicating a total segmentation miss), and \emph{unstable} (all other cases). Table~\ref{tab:checkpoint_benchmark} reports the results sorted by percent stable frames.
+
+\begin{table}[h]
+\centering
+\caption{Temporal stability benchmark across 11 SegFormer checkpoints on 300 consecutive frames. Stable = consecutive-frame IoU $\geq$ 0.85. Failure = IoU = 0.0 with non-empty previous mask. \texttt{checkpoint-5000} was excluded due to missing model weight files.}
+\label{tab:checkpoint_benchmark}
+\begin{tabular}{lrrrr}
+\toprule
+Checkpoint & Stable (\%) & Failure (\%) & Mean IoU & Median IoU \\
+\midrule
+\texttt{my-segformer-road}      & \textbf{99.3} & 0.0 & 0.968 & 0.982 \\
+\texttt{checkpoint-4000}        & 94.3          & 0.0 & 0.945 & 0.963 \\
+\texttt{checkpoint-2000}        & 88.6          & 0.0 & 0.941 & 0.971 \\
+\texttt{my-segformer-road\_new} & 88.0          & 0.0 & 0.932 & 0.955 \\
+\texttt{checkpoint-1000}        & 86.0          & 0.0 & 0.910 & 0.963 \\
+\texttt{checkpoint-1500}        & 84.3          & 0.0 & 0.919 & 0.942 \\
+\texttt{checkpoint-3000}        & 75.6          & 0.0 & 0.888 & 0.933 \\
+\texttt{checkpoint-4500}        & 73.6          & 0.0 & 0.881 & 0.936 \\
+\texttt{checkpoint-2500}        & 70.9          & 0.0 & 0.887 & 0.930 \\
+\texttt{checkpoint-3500}        & 69.6          & 0.0 & 0.871 & 0.936 \\
+\texttt{checkpoint-500}         & 67.6          & 1.7 & 0.818 & 0.901 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The \texttt{my-segformer-road} checkpoint achieves 99.3\% stable frames and a mean consecutive-frame IoU of 0.968, outperforming all other checkpoints by at least 5.0 percentage points. The second-best checkpoint (\texttt{checkpoint-4000} at 94.3\%) uses the same architecture but corresponds to an earlier training epoch with less data exposure. Notably, the \texttt{my-segformer-road\_new} checkpoint---the previous deployment model before this benchmark---ranks only fourth at 88.0\%, below the 90\% stability target. The \texttt{checkpoint-500} checkpoint is the only model that produces genuine segmentation failures (1.7\% of frames), consistent with an undertrained model with an unstable road/non-road decision boundary.
+
+Based on these results, \texttt{my-segformer-road} was selected as the deployment model. Its 99.3\% raw stability already exceeds the 90\% target by 9.3 percentage points without any temporal smoothing, providing a strong baseline for the subsequent EMA tuning stage.
+
+% -----------------------------------------------------------------
+\subsection{Temporal Smoothing Parameter Sweep}
+\label{sec:smoother_sweep}
+
+With the best checkpoint established, we tuned the EMA temporal smoother to push stability from the 99.3\% raw baseline toward the theoretical ceiling. The smoother maintains a running weighted average of consecutive binary sidewalk masks:
+\begin{equation}
+\hat{M}_t = \alpha \cdot M_t + (1 - \alpha) \cdot \hat{M}_{t-1}
+\label{eq:ema_mask}
+\end{equation}
+where $\alpha \in (0,1)$ is the current-frame EMA weight and a conservative-blend branch reduces the effective $\alpha$ when the consecutive-frame IoU falls below a consistency threshold $c_{\text{thresh}}$ (indicating a probable shake artifact or severe appearance change).
+
+We performed a grid search over 7 values of $\alpha \in \{0.25, 0.30, 0.35, 0.40, 0.45, 0.55, 0.65\}$ and 5 values of $c_{\text{thresh}} \in \{0.20, 0.25, 0.30, 0.40, 0.50\}$, yielding 35 combinations in total. To avoid redundant GPU inference, raw segmentation masks were collected in a single forward pass; all 35 parameter combinations were then replayed on CPU. The sweep was evaluated on 500 frames---a larger window than the checkpoint benchmark to improve statistical confidence.
+
+Table~\ref{tab:smoother_sweep} reports results collapsed over $c_{\text{thresh}}$, which exhibited zero sensitivity to threshold variation across all 35 combinations. This insensitivity is expected: with 99.3\% of frames already stable, the conservative-blend branch is triggered in fewer than 0.7\% of frame transitions, making $\alpha$ magnitude the sole determinant of smoothing gain.
+
+\begin{table}[h]
+\centering
+\caption{EMA temporal smoother stability as a function of $\alpha$, evaluated on 500 frames of \texttt{test\_video\_mar3\_1\_h264.mp4}. Results are identical across all five $c_{\text{thresh}}$ values tested; entries represent averages over those values. Raw baseline (unsmoothed): 99.3\%.}
+\label{tab:smoother_sweep}
+\begin{tabular}{rcc}
+\toprule
+$\alpha$ & Stable (\%) & Failure (\%) \\
+\midrule
+0.65 & \textbf{99.6} & 0.0 \\
+0.55 & 99.6          & 0.0 \\
+0.45 & 97.6          & 0.0 \\
+0.40 & 97.6          & 0.0 \\
+0.35 & 97.6          & 0.0 \\
+0.30 & 97.4          & 0.0 \\
+0.25 & 92.4          & 0.0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both $\alpha = 0.55$ and $\alpha = 0.65$ achieve 99.6\% stability. We select $\alpha = 0.65$ because a higher current-frame weight preserves responsiveness to newly appearing obstacles---satisfying the requirement that dynamic agents become visible in the segmentation output within 2--3 frames of first appearance. The floor at $\alpha = 0.25$ (92.4\% stable) demonstrates that the smoother degrades gracefully: even under aggressive temporal averaging, stability remains above the 90\% target.
+
+The final configuration---\texttt{my-segformer-road} with $\alpha = 0.65$ and $c_{\text{thresh}} = 0.20$---achieves \textbf{99.6\% temporally stable frames} on the 500-frame evaluation window. This represents a 0.3~percentage-point improvement over the raw unsmoothed baseline and a 9.6~point margin above the 90\% stability target. Zero segmentation failures (total misses) were observed at any tested alpha value.
+
 \subsection{Quantitative Path Quality}
 
 Table~\ref{tab:summary_metrics} summarizes the key metrics on held-out campus sequences.
@@ -748,7 +878,7 @@ This thesis presented a modular vision-based sidewalk navigation system designed
 
 By combining hand-labeled and pseudo-labeled data in a teacher--student setup, we trained a compact SegFormer-B0 model that achieves robust sidewalk segmentation under diverse campus lighting and geometry while remaining suitable for CPU-only inference. The full pipeline runs at approximately \SI{9}{FPS} at $640\times360$ resolution, selects the correct branch at T- and 4-way junctions in 95\% of evaluated cases, and maintains an average mask--path alignment of 98\%.
 
-The closed-loop extension demonstrates that the perception-to-control stack can operate within the latency budget for pedestrian-speed navigation. Temporal smoothing of heading estimates reduces frame-to-frame jitter, and the live demonstration system validates the approach on real sidewalks with a consumer camera.
+The closed-loop extension demonstrates that the perception-to-control stack can operate within the latency budget for pedestrian-speed navigation. A systematic benchmark across 11 SegFormer checkpoints identified \texttt{my-segformer-road} as the most stable model variant, achieving 99.3\% of consecutive frame pairs with IoU $\geq 0.85$ on raw unsmoothed output. A subsequent 35-combination EMA parameter sweep ($\alpha \times c_{\text{thresh}}$) raised smoothed stability to 99.6\%---a 9.6~percentage-point margin above the 90\% target---with $\alpha = 0.65$ selected to preserve obstacle responsiveness. Temporal smoothing of heading estimates further reduces frame-to-frame jitter, and the live demonstration system validates the approach on real sidewalks with a consumer camera.
 
 \section{Limitations}
 
@@ -756,7 +886,6 @@ Several limitations remain:
 \begin{itemize}
   \item The current formulation assumes a largely planar ground and fixed camera pose.
   \item Dynamic agents such as pedestrians and cyclists are not modeled explicitly.
-  \item The pipeline processes each frame independently without exploiting temporal consistency in segmentation.
   \item The homography is fixed for a single camera pose, limiting transfer to different mounting configurations without recalibration.
   \item Full closed-loop experiments on the physical scooter remain to be completed at the time of writing.
 \end{itemize}
@@ -768,7 +897,11 @@ Future work will extend the system along three directions:
 \begin{enumerate}
   \item \textbf{Dynamic obstacle detection and avoidance.} Integrate a lightweight person/bicycle detector (e.g., YOLOv8-nano) into the BEV layer, projecting detections as exclusion zones that the skeleton path routes around. Add explicit stop/slow behavior when the path is fully blocked.
 
-  \item \textbf{Temporal consistency in segmentation.} Incorporate video-based mask smoothing (rolling-window averaging of BEV masks) and branch-level voting to prevent rapid flip-flopping at junctions. Explore lightweight optical flow for mask alignment between frames.
+  \item \textbf{Additional fine-tuning data.} The segmentation model was trained on 300 hand-labeled frames supplemented by 2{,}300 pseudo-labeled frames. Collecting and annotating additional frames from diverse conditions---wet pavement, nighttime, steep ramps, and dense pedestrian environments---using a labeling tool such as LabelStudio and retraining with the teacher--student pipeline is expected to further improve boundary accuracy and reduce false positives at sidewalk edges.
+
+  \item \textbf{BEV recalibration for the final camera mount.} The current homography was calibrated for a hand-held camera in testing conditions. Once the scooter camera mount is finalized, recalibrating the four-point ground-plane correspondence for the fixed pose is a critical step; a well-conditioned homography (condition number $\ll 10^3$, compared to the current $\sim 10^6$) is expected to raise the path-detection rate from the current 2\% to 60--80\% on typical sidewalk footage.
+
+  \item \textbf{Cloud-offloaded inference.} An open question is whether offloading segmentation to a cloud GPU running a larger model (e.g., SegFormer-B4 or Mask2Former) improves navigation quality enough to justify the round-trip network latency. Compressing and streaming frames to a remote endpoint, receiving mask predictions, and feeding them into the local BEV and control stack would enable higher-capacity perception without on-board GPU hardware. Quantifying the latency--quality tradeoff relative to the local CPU-B0 baseline is a natural direction for future study.
 
   \item \textbf{Full closed-loop deployment.} Deploy the complete stack in on-scooter experiments, measure tracking error with ground-truth trajectories, study failure modes at scale, and couple the local skeleton-based planner with higher-level global navigation modules.
 \end{enumerate}

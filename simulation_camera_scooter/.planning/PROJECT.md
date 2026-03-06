@@ -42,6 +42,8 @@ The scooter must visibly and convincingly follow the sidewalk path in a live dem
 
 ## Context
 
+- **Thesis document**: University of Oklahoma Master's Thesis — `C:/Users/miji0000/Desktop/thesis_prep/thesis/main.tex` (LaTeX, figures in `thesis/figures/`). PDF manuscript: `thesis_prep/2025_Lkhaana_Manuscript__mono_camera_auto_drive_scooter (1).pdf`
+- **Data logs**: `simulation_camera_scooter/logs/` (current runs) + `thesis_prep/logs/` (older runs). CSV per run + JSON metadata. `analyze_log.py` generates thesis figures from these logs.
 - **Segmentation model**: Custom-trained SegFormer (`models/my-segformer-road_new`), runs on CUDA GPU (Quadro P620 on dev machine). Multiple checkpoints available (500–5000 steps).
 - **BEV calibration**: Homography stored in `bev_calibration.npy`. Current calibration is ill-conditioned (cond=1.1e+06) causing 93% pixel loss after warpPerspective — dominant root cause of low has_path rate.
 - **Path planning baseline**: After Tier 1 + Tier 2 tuning, has_path improved from 0% → ~2% on tilted phone video. Root cause remains calibration mismatch, not algorithm.
