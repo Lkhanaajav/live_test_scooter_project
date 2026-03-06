@@ -11,6 +11,7 @@ Design goals:
 """
 
 from dataclasses import dataclass
+import heapq
 import math
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -109,9 +110,15 @@ class PathExtractorConfig:
     path_horizon_m: float = 4.5
     min_path_len_m: float = 0.80  # was 1.50 â€” tier1 tuning: shorter minimum path accepted
     min_forward_span_m: float = 0.80
-    search_max_depth: int = 6
+    search_max_depth: int = 24
     search_top_k: int = 6
+    search_max_end_nodes: int = 0  # 0 => keep all reachable terminal endpoints
+    return_all_candidates: bool = True
+    planner_mode: str = "dijkstra"  # "dijkstra" | "dfs"
+    start_lateral_gate_m: float = 0.80
+    start_nodes_top_k: int = 4
     path_sample_ds_m: float = 0.10
+    candidate_resample_max_len_m: float = 0.0  # 0 => do not clip to horizon while searching
     switch_margin: float = 0.15
     branch_hold_frames: int = 4
 
@@ -133,6 +140,23 @@ class PathExtractorConfig:
     fallback_recenter_gain: float = 0.0
     fallback_low_conf_max_abs_lateral_m: float = 5.0
     fallback_output_lateral_clip_m: float = 0.25
+    low_evidence_occ_ratio: float = 0.02
+    low_evidence_min_pixels: int = 600
+    low_evidence_min_forward_m: float = 0.35
+
+    score_center_weight: float = 0.90
+    score_continuity_weight: float = 1.05
+    score_center_norm_m: float = 0.55
+    score_continuity_norm_m: float = 0.45
+    ego_anchor_blend_dist_m: float = 0.90
+    graph_min_reliable_len_m: float = 2.80
+    graph_short_max_end_abs_lat_m: float = 0.70
+    skeleton_fallback_enabled: bool = True
+    skeleton_fallback_min_forward_m: float = 1.00
+    skeleton_fallback_center_penalty: float = 0.18
+    skeleton_override_graph_short_progress_m: float = 3.0
+    skeleton_override_graph_near_abs_lat_m: float = 0.45
+    skeleton_override_skel_near_abs_lat_m: float = 0.30
 
 
 @dataclass
@@ -153,6 +177,7 @@ class PurePursuitConfig:
     kappa_step_max_m_inv: float = 0.35
     path_discont_lat_m: float = 0.45
     path_discont_head_deg: float = 25.0
+    discont_max_hold_frames: int = 8
 
     fallback_decay: float = 0.85
     fallback_hold_frames: int = 5
@@ -197,6 +222,8 @@ class PathPlanResult:
     graph_edges: int
     t_skeleton_ms: float
     t_path_ms: float
+    path_source: str = "none"
+    mask_occ_ratio: float = 0.0
 
 
 @dataclass
@@ -272,11 +299,14 @@ class BEVPathExtractor:
 
     def __init__(self, cfg: Optional[PathExtractorConfig] = None):
         self.cfg = cfg or PathExtractorConfig()
+        self._fallback_sig = (-999, -999, -999, -999)
+        self._skeleton_fallback_sig = (-998, -998, -998, -998)
         self.prev_first_edge_sig: Optional[Tuple[int, int, int, int]] = None
         self.prev_end_heading: float = 0.0
         self.branch_hold_counter: int = 0
         self.prev_best_path_m: Optional[np.ndarray] = None
         self.no_path_counter: int = 0
+        self.prev_mask_occ_ratio: float = 0.0
 
     # -------------------------------------------------------------------------
     # Coordinate conversion
@@ -593,11 +623,20 @@ class BEVPathExtractor:
         edges: List[AxisEdge],
         adj: List[List[int]],
     ) -> List[PathCandidate]:
+        mode = str(getattr(self.cfg, "planner_mode", "dijkstra")).strip().lower()
+        if mode == "dfs":
+            return self._search_candidates_dfs(node_xy_m, edges, adj)
+        return self._search_candidates_dijkstra(node_xy_m, edges, adj)
+
+    def _pick_start_nodes(
+        self,
+        node_xy_m: np.ndarray,
+        edges: List[AxisEdge],
+        adj: List[List[int]],
+    ) -> List[int]:
         if len(node_xy_m) == 0 or not edges:
             return []
 
-        # Choose start near ego origin (bottom-center in BEV metric).
-        # This avoids selecting upper/side branches as the seed when topology is noisy.
         active_nodes = [i for i in range(len(node_xy_m)) if adj[i]]
         if not active_nodes:
             return []
@@ -607,42 +646,238 @@ class BEVPathExtractor:
             i for i in active_nodes
             if float(node_xy_m[i][0]) <= ego_band_max_forward_m
         ]
-        start_pool = near_ego_nodes if near_ego_nodes else active_nodes
+        if near_ego_nodes:
+            centered = [
+                i for i in near_ego_nodes
+                if abs(float(node_xy_m[i][1])) <= float(self.cfg.start_lateral_gate_m)
+            ]
+            start_pool = centered if centered else near_ego_nodes
+        else:
+            centered = [
+                i for i in active_nodes
+                if abs(float(node_xy_m[i][1])) <= float(self.cfg.start_lateral_gate_m)
+            ]
+            start_pool = centered if centered else active_nodes
+
+        # Prefer non-leaf nodes near ego to avoid starting on tiny spur triangles.
+        non_leaf_pool = [i for i in start_pool if len(adj[i]) >= 2]
+        effective_pool = non_leaf_pool if non_leaf_pool else start_pool
 
         ranked_starts = sorted(
-            start_pool,
+            effective_pool,
             key=lambda i: (
-                math.hypot(float(node_xy_m[i][0]), float(node_xy_m[i][1])),
                 abs(float(node_xy_m[i][1])),
+                math.hypot(float(node_xy_m[i][0]), float(node_xy_m[i][1])),
                 float(node_xy_m[i][0]),
             ),
         )
 
-        max_depth = int(self.cfg.search_max_depth)
-        max_len = float(self.cfg.path_horizon_m)
-        branch_limit = 3  # per node expansion limit (keeps compute bounded)
-
-        # Pick the first start node that yields at least one forward-growing edge.
-        stack = []
-        for start in ranked_starts:
-            trial_stack = []
-            for eid in adj[start]:
+        # Keep nodes with at least one sufficiently forward edge.
+        valid_starts: List[int] = []
+        for s in ranked_starts:
+            for eid in adj[s]:
                 e = edges[eid]
-                pts = self._edge_points_from_node(e, start)
+                pts = self._edge_points_from_node(e, s)
                 f_gain = float(pts[-1, 0] - pts[0, 0])
-                if f_gain < -0.25:
+                if f_gain >= 0.15 and float(e.length_m) >= 0.25:
+                    valid_starts.append(s)
+                    break
+        if not valid_starts:
+            return []
+        k = max(1, int(getattr(self.cfg, "start_nodes_top_k", 1)))
+        return valid_starts[:k]
+
+    def _pick_start_node(
+        self,
+        node_xy_m: np.ndarray,
+        edges: List[AxisEdge],
+        adj: List[List[int]],
+    ) -> int:
+        starts = self._pick_start_nodes(node_xy_m, edges, adj)
+        return int(starts[0]) if starts else -1
+
+    def _search_candidates_dijkstra(
+        self,
+        node_xy_m: np.ndarray,
+        edges: List[AxisEdge],
+        adj: List[List[int]],
+    ) -> List[PathCandidate]:
+        if len(node_xy_m) == 0 or not edges:
+            return []
+
+        active_nodes = [i for i in range(len(node_xy_m)) if adj[i]]
+        if not active_nodes:
+            return []
+
+        starts = self._pick_start_nodes(node_xy_m, edges, adj)
+        if not starts:
+            return []
+
+        max_len = (
+            None
+            if float(getattr(self.cfg, "candidate_resample_max_len_m", 0.0)) <= 0.0
+            else float(self.cfg.candidate_resample_max_len_m)
+        )
+
+        candidates: List[PathCandidate] = []
+        n = len(node_xy_m)
+        inf = float("inf")
+        for start in starts:
+            # Dijkstra from each start node to recover more branch alternatives.
+            dist = [inf] * n
+            parent_node = [-1] * n
+            parent_edge = [-1] * n
+            hops = [10**9] * n
+
+            dist[start] = 0.0
+            hops[start] = 0
+            pq: List[Tuple[float, int, int]] = [(0.0, 0, start)]
+            while pq:
+                cur_d, cur_hops, u = heapq.heappop(pq)
+                if cur_d > dist[u] + 1e-9:
                     continue
-                trial_stack.append({
-                    "node": self._other_node(e, start),
-                    "pts": pts.copy(),
-                    "len": float(e.length_m),
-                    "depth": 1,
-                    "used": {eid},
-                    "first_sig": e.signature,
-                })
-            if trial_stack:
-                stack = trial_stack
-                break
+                if cur_hops > int(self.cfg.search_max_depth):
+                    continue
+                for eid in adj[u]:
+                    e = edges[eid]
+                    v = self._other_node(e, u)
+                    seg = self._edge_points_from_node(e, u)
+                    f_gain = float(seg[-1, 0] - seg[0, 0])
+                    penalty = 0.0 if f_gain >= 0.0 else (0.35 + 0.8 * abs(f_gain))
+                    w = float(e.length_m) + penalty
+                    nd = cur_d + w
+                    nh = cur_hops + 1
+                    if nh <= int(self.cfg.search_max_depth) and nd + 1e-9 < dist[v]:
+                        dist[v] = nd
+                        hops[v] = nh
+                        parent_node[v] = u
+                        parent_edge[v] = eid
+                        heapq.heappush(pq, (nd, nh, v))
+
+            candidates_end: List[int] = []
+            leaf_nodes = [i for i in active_nodes if len(adj[i]) == 1 and i != start]
+            non_leaf_nodes = [i for i in active_nodes if len(adj[i]) > 1 and i != start]
+            end_pool = leaf_nodes + non_leaf_nodes
+            end_pool = sorted(
+                end_pool,
+                key=lambda i: (
+                    -float(node_xy_m[i][0]),      # prefer further forward
+                    abs(float(node_xy_m[i][1])),  # then more centered
+                ),
+            )
+            for nid in end_pool:
+                if not math.isfinite(dist[nid]):
+                    continue
+                if float(node_xy_m[nid][0] - node_xy_m[start][0]) < self.cfg.min_forward_span_m:
+                    continue
+                candidates_end.append(nid)
+                max_end = int(getattr(self.cfg, "search_max_end_nodes", 0))
+                if max_end > 0 and len(candidates_end) >= max_end:
+                    break
+
+            for end in candidates_end:
+                node_seq = [end]
+                edge_seq = []
+                cur = end
+                while cur != start and parent_node[cur] >= 0 and parent_edge[cur] >= 0:
+                    edge_seq.append(parent_edge[cur])
+                    cur = parent_node[cur]
+                    node_seq.append(cur)
+                if cur != start or not edge_seq:
+                    continue
+
+                node_seq.reverse()
+                edge_seq.reverse()
+
+                pts_parts: List[np.ndarray] = []
+                for i, eid in enumerate(edge_seq):
+                    u = node_seq[i]
+                    seg = self._edge_points_from_node(edges[eid], u)
+                    if i == 0:
+                        pts_parts.append(seg.copy())
+                    else:
+                        pts_parts.append(seg[1:].copy())
+                if not pts_parts:
+                    continue
+                cur_pts = np.vstack(pts_parts)
+                if len(cur_pts) < 2:
+                    continue
+
+                first_sig = edges[edge_seq[0]].signature
+                pts = _resample_polyline(cur_pts, self.cfg.path_sample_ds_m, max_len_m=max_len)
+                pts = self._anchor_path_to_ego(pts)
+                x_vals = pts[:, 0]
+                if float(np.max(x_vals) - np.min(x_vals)) < self.cfg.min_forward_span_m:
+                    continue
+                plen = _polyline_length_m(pts)
+                if plen < self.cfg.min_path_len_m:
+                    continue
+                progress = float(np.max(pts[:, 0]))
+                curv = _polyline_curvature_mean(pts)
+                h_end = _polyline_end_heading(pts)
+                candidates.append(
+                    PathCandidate(
+                        points_m=pts,
+                        length_m=plen,
+                        first_edge_sig=first_sig,
+                        progress_m=progress,
+                        curvature_m_inv=curv,
+                        heading_end_rad=h_end,
+                    )
+                )
+
+        # Remove near-duplicate candidates (same first branch and similar endpoint).
+        uniq: List[PathCandidate] = []
+        seen = set()
+        for c in candidates:
+            key = (
+                c.first_edge_sig,
+                int(round(c.progress_m * 5.0)),
+                int(round(c.points_m[-1, 1] * 5.0)),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            uniq.append(c)
+
+        return uniq
+
+    def _search_candidates_dfs(
+        self,
+        node_xy_m: np.ndarray,
+        edges: List[AxisEdge],
+        adj: List[List[int]],
+    ) -> List[PathCandidate]:
+        if len(node_xy_m) == 0 or not edges:
+            return []
+
+        start = self._pick_start_node(node_xy_m, edges, adj)
+        if start < 0:
+            return []
+
+        max_depth = int(self.cfg.search_max_depth)
+        max_len = (
+            None
+            if float(getattr(self.cfg, "candidate_resample_max_len_m", 0.0)) <= 0.0
+            else float(self.cfg.candidate_resample_max_len_m)
+        )
+        branch_limit = 3
+
+        stack = []
+        for eid in adj[start]:
+            e = edges[eid]
+            pts = self._edge_points_from_node(e, start)
+            f_gain = float(pts[-1, 0] - pts[0, 0])
+            if f_gain < -0.25:
+                continue
+            stack.append({
+                "node": self._other_node(e, start),
+                "pts": pts.copy(),
+                "len": float(e.length_m),
+                "depth": 1,
+                "used": {eid},
+                "first_sig": e.signature,
+            })
 
         if not stack:
             return []
@@ -657,9 +892,8 @@ class BEVPathExtractor:
             used = st["used"]
             first_sig = st["first_sig"]
 
-            if cur_len >= max_len or cur_depth >= max_depth:
-                pass
-            else:
+            can_extend_len = (max_len is None) or (cur_len < float(max_len))
+            if can_extend_len and cur_depth < max_depth:
                 next_states = []
                 for eid in adj[cur_node]:
                     if eid in used:
@@ -685,11 +919,9 @@ class BEVPathExtractor:
                     stack.extend(next_states[:branch_limit])
                     continue
 
-            # terminal candidate
             if cur_len >= self.cfg.min_path_len_m and len(cur_pts) >= 2:
                 pts = _resample_polyline(cur_pts, self.cfg.path_sample_ds_m, max_len_m=max_len)
-                # Reject lateral-only traces before scoring/fitting; these look like
-                # "possible paths" in pixels but have no forward progress in metric x.
+                pts = self._anchor_path_to_ego(pts)
                 x_vals = pts[:, 0]
                 if float(np.max(x_vals) - np.min(x_vals)) < self.cfg.min_forward_span_m:
                     continue
@@ -706,7 +938,6 @@ class BEVPathExtractor:
                         heading_end_rad=h_end,
                     )
                 )
-
         return candidates
 
     def _score_candidates(self, cands: List[PathCandidate]) -> List[PathCandidate]:
@@ -717,10 +948,34 @@ class BEVPathExtractor:
         for c in cands:
             j_prog = (H - min(H, c.progress_m)) / H
             j_curv = c.curvature_m_inv / 0.6
-            j_head = abs(c.heading_end_rad - prev_heading) / math.pi
+            d_head = math.atan2(
+                math.sin(c.heading_end_rad - prev_heading),
+                math.cos(c.heading_end_rad - prev_heading),
+            )
+            j_head = abs(d_head) / math.pi
             j_hys = 1.0 if (self.prev_first_edge_sig is not None and c.first_edge_sig != self.prev_first_edge_sig) else 0.0
+            center_norm = max(0.10, float(self.cfg.score_center_norm_m))
+            j_center = self._mean_abs_lateral_near(c.points_m) / center_norm
+
+            j_cont = 0.0
+            if self.prev_best_path_m is not None and len(self.prev_best_path_m) >= 4:
+                x_probes = [0.8, 1.4, 2.2]
+                dy = []
+                for xq in x_probes:
+                    y_prev = self._path_lateral_at_x(self.prev_best_path_m, xq)
+                    y_cur = self._path_lateral_at_x(c.points_m, xq)
+                    dy.append(abs(y_cur - y_prev))
+                cont_norm = max(0.10, float(self.cfg.score_continuity_norm_m))
+                j_cont = float(np.mean(dy)) / cont_norm
             # weighted sum
-            c.cost = 2.0 * j_prog + 1.5 * j_curv + 0.8 * j_head + 1.2 * j_hys
+            c.cost = (
+                2.0 * j_prog
+                + 1.35 * j_curv
+                + 0.75 * j_head
+                + 1.20 * j_hys
+                + float(self.cfg.score_center_weight) * j_center
+                + float(self.cfg.score_continuity_weight) * j_cont
+            )
         cands.sort(key=lambda c: c.cost)
         return cands
 
@@ -822,6 +1077,35 @@ class BEVPathExtractor:
         if float(x[-1] - x[0]) < 1e-5:
             return float(y[-1])
         return float(np.interp(float(x_q), x, y))
+
+    def _anchor_path_to_ego(self, pts_m: np.ndarray) -> np.ndarray:
+        """Blend first section toward ego center to suppress tiny near-ego branch artifacts."""
+        if pts_m is None or len(pts_m) < 2:
+            return np.zeros((0, 2), dtype=np.float32)
+        pts = pts_m.astype(np.float32).copy()
+        pts[:, 0] = np.maximum.accumulate(pts[:, 0])
+        if float(pts[0, 0]) > 1e-4:
+            pts = np.vstack([np.array([[0.0, 0.0]], dtype=np.float32), pts])
+        else:
+            pts[0, 0] = 0.0
+            pts[0, 1] = 0.0
+
+        blend_dist = float(max(0.15, self.cfg.ego_anchor_blend_dist_m))
+        use = pts[:, 0] <= blend_dist
+        if np.any(use):
+            w = np.clip(pts[use, 0] / blend_dist, 0.0, 1.0).astype(np.float32)
+            pts[use, 1] = w * pts[use, 1]
+        return _resample_polyline(pts, self.cfg.path_sample_ds_m, max_len_m=None)
+
+    def _mean_abs_lateral_near(self, pts_m: np.ndarray, max_x_m: float = 2.5) -> float:
+        if pts_m is None or len(pts_m) < 2:
+            return 0.0
+        x = pts_m[:, 0].astype(np.float32)
+        y = pts_m[:, 1].astype(np.float32)
+        use = x <= float(max_x_m)
+        if not np.any(use):
+            use = slice(None)
+        return float(np.mean(np.abs(y[use])))
 
     def _extend_path_forward(self, pts_m: np.ndarray, target_span_m: float) -> np.ndarray:
         if pts_m is None or len(pts_m) < 2:
@@ -965,13 +1249,95 @@ class BEVPathExtractor:
             return np.zeros((0, 2), dtype=np.float32)
         return _resample_polyline(pts_m, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
 
-    def _hold_previous_path(self) -> np.ndarray:
+    def _fallback_skeleton_geodesic(self, skel_bin: np.ndarray) -> np.ndarray:
+        if not bool(getattr(self.cfg, "skeleton_fallback_enabled", True)):
+            return np.zeros((0, 2), dtype=np.float32)
+        ys, xs = np.where(skel_bin > 0)
+        if len(xs) < 2:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        h, w = skel_bin.shape
+        center_x = 0.5 * float(w - 1)
+        pix_set = set((int(x), int(y)) for x, y in zip(xs, ys))
+        y_max = max(y for _, y in pix_set)
+        start_pool = [(x, y) for (x, y) in pix_set if y >= (y_max - 8)]
+        if not start_pool:
+            start_pool = list(pix_set)
+        start = min(start_pool, key=lambda p: (abs(float(p[0]) - center_x), -float(p[1])))
+
+        dist: Dict[Tuple[int, int], float] = {start: 0.0}
+        parent: Dict[Tuple[int, int], Tuple[int, int]] = {}
+        pq: List[Tuple[float, Tuple[int, int]]] = [(0.0, start)]
+        while pq:
+            cur_d, u = heapq.heappop(pq)
+            if cur_d > dist[u] + 1e-9:
+                continue
+            ux, uy = u
+            for vx, vy in self._neighbor_pixels(ux, uy, w, h):
+                v = (vx, vy)
+                if v not in pix_set:
+                    continue
+                step = math.sqrt(2.0) if (vx != ux and vy != uy) else 1.0
+                nd = cur_d + step
+                if nd + 1e-9 < dist.get(v, float("inf")):
+                    dist[v] = nd
+                    parent[v] = u
+                    heapq.heappush(pq, (nd, v))
+
+        if len(dist) < 2:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        min_forward = float(getattr(self.cfg, "skeleton_fallback_min_forward_m", 1.0))
+        center_penalty = float(getattr(self.cfg, "skeleton_fallback_center_penalty", 0.18))
+        best_node = None
+        best_score = -1e9
+        for p in dist.keys():
+            pm = self._metric_from_pixel(np.asarray([[p[0], p[1]]], dtype=np.float32), (h, w))[0]
+            fwd = float(pm[0])
+            lat = float(pm[1])
+            if fwd < min_forward:
+                continue
+            score = fwd - center_penalty * abs(lat)
+            if score > best_score:
+                best_score = score
+                best_node = p
+        if best_node is None:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        chain = [best_node]
+        cur = best_node
+        while cur != start and cur in parent:
+            cur = parent[cur]
+            chain.append(cur)
+        if len(chain) < 2:
+            return np.zeros((0, 2), dtype=np.float32)
+        chain.reverse()
+
+        pts_px = np.asarray(chain, dtype=np.float32)
+        pts_m = self._metric_from_pixel(pts_px, (h, w))
+        pts_m = _resample_polyline(pts_m, self.cfg.path_sample_ds_m, max_len_m=None)
+        pts_m = self._anchor_path_to_ego(pts_m)
+        if len(pts_m) < 2:
+            return np.zeros((0, 2), dtype=np.float32)
+        span = float(np.max(pts_m[:, 0]) - np.min(pts_m[:, 0]))
+        if span < max(self.cfg.min_forward_span_m, min_forward):
+            return np.zeros((0, 2), dtype=np.float32)
+        return pts_m.astype(np.float32)
+
+    def _hold_previous_path(self, aggressive: bool = False) -> np.ndarray:
         if self.prev_best_path_m is None or len(self.prev_best_path_m) < 2:
             return np.zeros((0, 2), dtype=np.float32)
         held = self.prev_best_path_m.astype(np.float32).copy()
         held[:, 0] = np.maximum.accumulate(held[:, 0])
-        decay = float(max(0.55, 1.0 - 0.05 * self.no_path_counter))
+        if aggressive:
+            decay = float(max(0.15, 1.0 - 0.16 * self.no_path_counter))
+        else:
+            decay = float(max(0.55, 1.0 - 0.05 * self.no_path_counter))
         held[:, 1] *= decay
+        if aggressive:
+            # Pull quickly toward center when BEV evidence is nearly empty.
+            blend_to_center = min(0.90, 0.12 * float(self.no_path_counter + 1))
+            held[:, 1] *= float(max(0.05, 1.0 - blend_to_center))
         lat_clip = float(max(0.05, self.cfg.fallback_output_lateral_clip_m))
         held[:, 1] = np.clip(held[:, 1], -lat_clip, lat_clip)
         return _resample_polyline(held, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
@@ -984,24 +1350,133 @@ class BEVPathExtractor:
         orig_h, orig_w = bev_mask_255.shape
 
         mask = self._preprocess(bev_mask_255)
+        mask_nonzero = int(cv2.countNonZero(mask))
+        mask_occ_ratio = float(mask_nonzero) / max(1.0, float(mask.size))
+        self.prev_mask_occ_ratio = mask_occ_ratio
+        ys_nonzero = np.where(mask > 0)[0]
+        if len(ys_nonzero) > 0:
+            forward_reach_m = (
+                (float(mask.shape[0] - 1) - float(np.min(ys_nonzero)))
+                / max(1.0, float(mask.shape[0] - 1))
+                * self.cfg.bev_forward_m
+            )
+        else:
+            forward_reach_m = 0.0
+        low_evidence = (
+            mask_nonzero < int(self.cfg.low_evidence_min_pixels)
+            or mask_occ_ratio < float(self.cfg.low_evidence_occ_ratio)
+            or forward_reach_m < float(self.cfg.low_evidence_min_forward_m)
+        )
         t1 = time.time()
         skel_bin, dist_m = self._extract_medial_axis(mask)
         node_xy_m, edges, adj, skel_work = self._build_graph(skel_bin, dist_m)
         t2 = time.time()
 
         candidates = self._search_candidates(node_xy_m, edges, adj)
+        # Offer centerline fallback as a scored candidate only when graph
+        # search produced no viable candidate at all.
+        fb_cand_path = self._fallback_centerline(mask)
+        if len(candidates) == 0 and len(fb_cand_path) >= 2:
+            candidates.append(
+                PathCandidate(
+                    points_m=fb_cand_path.astype(np.float32),
+                    length_m=float(_polyline_length_m(fb_cand_path)),
+                    first_edge_sig=self._fallback_sig,
+                    progress_m=float(np.max(fb_cand_path[:, 0])) if len(fb_cand_path) else 0.0,
+                    curvature_m_inv=float(_polyline_curvature_mean(fb_cand_path)),
+                    heading_end_rad=float(_polyline_end_heading(fb_cand_path)),
+                )
+            )
+        skel_cand_path = self._fallback_skeleton_geodesic(skel_bin)
+        if len(candidates) <= 1 and len(skel_cand_path) >= 2:
+            candidates.append(
+                PathCandidate(
+                    points_m=skel_cand_path.astype(np.float32),
+                    length_m=float(_polyline_length_m(skel_cand_path)),
+                    first_edge_sig=self._skeleton_fallback_sig,
+                    progress_m=float(np.max(skel_cand_path[:, 0])) if len(skel_cand_path) else 0.0,
+                    curvature_m_inv=float(_polyline_curvature_mean(skel_cand_path)),
+                    heading_end_rad=float(_polyline_end_heading(skel_cand_path)),
+                )
+            )
         candidates = self._score_candidates(candidates)
         best_idx = self._apply_hysteresis(candidates)
+
+        # If graph picks a short near-ego side branch while a centered skeleton
+        # geodesic candidate exists, force skeleton to avoid false early turns.
+        skel_idx = -1
+        for i, c in enumerate(candidates):
+            if tuple(c.first_edge_sig) == self._skeleton_fallback_sig:
+                skel_idx = i
+                break
+        if (
+            best_idx >= 0
+            and skel_idx >= 0
+            and best_idx != skel_idx
+            and tuple(candidates[best_idx].first_edge_sig) != self._fallback_sig
+        ):
+            g = candidates[best_idx]
+            s = candidates[skel_idx]
+            g_probe = min(1.2, max(0.4, float(g.progress_m)))
+            s_probe = min(1.2, max(0.4, float(s.progress_m)))
+            g_lat = abs(self._path_lateral_at_x(g.points_m, g_probe))
+            s_lat = abs(self._path_lateral_at_x(s.points_m, s_probe))
+            if (
+                float(g.progress_m) < float(self.cfg.skeleton_override_graph_short_progress_m)
+                and g_lat > float(self.cfg.skeleton_override_graph_near_abs_lat_m)
+                and s_lat <= float(self.cfg.skeleton_override_skel_near_abs_lat_m)
+            ):
+                best_idx = skel_idx
         t3 = time.time()
 
         graph_has_choice = best_idx >= 0 and best_idx < len(candidates)
         best_path_m = candidates[best_idx].points_m if graph_has_choice else np.zeros((0, 2), dtype=np.float32)
+        selected_is_fallback_cand = (
+            graph_has_choice
+            and tuple(candidates[best_idx].first_edge_sig) == self._fallback_sig
+        )
+        selected_is_skel_fallback_cand = (
+            graph_has_choice
+            and tuple(candidates[best_idx].first_edge_sig) == self._skeleton_fallback_sig
+        )
         if graph_has_choice:
-            best_path_m = _resample_polyline(best_path_m, self.cfg.path_sample_ds_m, self.cfg.path_horizon_m)
-        path_model = self._fit_regularized_cubic(best_path_m) if graph_has_choice else None
+            best_path_m = _resample_polyline(best_path_m, self.cfg.path_sample_ds_m, max_len_m=None)
+            # Reject short, laterally-biased graph paths that usually come from
+            # near-ego triangle artifacts rather than true drivable trunk.
+            g_len = float(_polyline_length_m(best_path_m))
+            end_lat = float(best_path_m[-1, 1]) if len(best_path_m) else 0.0
+            if (
+                g_len < float(self.cfg.graph_min_reliable_len_m)
+                and abs(end_lat) > float(self.cfg.graph_short_max_end_abs_lat_m)
+            ):
+                graph_has_choice = False
+                best_path_m = np.zeros((0, 2), dtype=np.float32)
+        if selected_is_fallback_cand:
+            graph_has_choice = False
+        if selected_is_skel_fallback_cand:
+            graph_has_choice = False
+        path_model = self._fit_regularized_cubic(best_path_m) if len(best_path_m) >= 2 else None
+        if path_model is not None and selected_is_fallback_cand:
+            path_source = "fallback_centerline"
+        elif path_model is not None and selected_is_skel_fallback_cand:
+            path_source = "fallback_skeleton"
+        else:
+            path_source = "graph" if path_model is not None and graph_has_choice else "none"
 
         # Fallback 1: centerline recovery from sparse/noisy mask.
         fallback_selected = False
+        if path_model is None:
+            sk_fb_path = self._fallback_skeleton_geodesic(skel_bin)
+            if len(sk_fb_path) >= 2:
+                sk_fb_model = self._fit_regularized_cubic(sk_fb_path)
+                if sk_fb_model is not None:
+                    best_path_m = sk_fb_path
+                    path_model = sk_fb_model
+                    graph_has_choice = False
+                    fallback_selected = True
+                    path_source = "fallback_skeleton"
+
+        # Fallback 1b: centerline recovery from sparse/noisy mask.
         if path_model is None:
             fb_path = self._fallback_centerline(mask)
             if len(fb_path) >= 2:
@@ -1020,10 +1495,11 @@ class BEVPathExtractor:
                         path_model = fb_model
                         graph_has_choice = False
                         fallback_selected = True
+                        path_source = "fallback_centerline"
 
         # Fallback 2: short hold of previous valid path if no current path can be fit.
         if path_model is None and self.no_path_counter < int(self.cfg.fallback_hold_frames):
-            hold_path = self._hold_previous_path()
+            hold_path = self._hold_previous_path(aggressive=low_evidence)
             if len(hold_path) >= 2:
                 hold_model = self._fit_regularized_cubic(hold_path)
                 if hold_model is not None:
@@ -1031,6 +1507,7 @@ class BEVPathExtractor:
                     path_model = hold_model
                     graph_has_choice = False
                     fallback_selected = True
+                    path_source = "fallback_hold"
 
         has_path = path_model is not None and len(best_path_m) >= 2
         if has_path:
@@ -1042,16 +1519,22 @@ class BEVPathExtractor:
 
         # Ensure returned candidate list always contains selected path.
         if has_path and graph_has_choice and not fallback_selected:
-            order = [best_idx] + [
-                i for i in range(len(candidates))
-                if i != best_idx
-            ][: max(0, self.cfg.search_top_k - 1)]
+            if bool(getattr(self.cfg, "return_all_candidates", True)):
+                order = [best_idx] + [i for i in range(len(candidates)) if i != best_idx]
+            else:
+                order = [best_idx] + [
+                    i for i in range(len(candidates))
+                    if i != best_idx
+                ][: max(0, self.cfg.search_top_k - 1)]
             best_idx_return = 0
         elif has_path:
             order = []
             best_idx_return = 0
         else:
-            order = list(range(min(self.cfg.search_top_k, len(candidates))))
+            if bool(getattr(self.cfg, "return_all_candidates", True)):
+                order = list(range(len(candidates)))
+            else:
+                order = list(range(min(self.cfg.search_top_k, len(candidates))))
             best_idx_return = -1
 
         if has_path and not order:
@@ -1079,6 +1562,8 @@ class BEVPathExtractor:
             graph_edges=int(len(edges)),
             t_skeleton_ms=(t2 - t1) * 1000.0,
             t_path_ms=(t4 - t2) * 1000.0,
+            path_source=path_source if has_path else "none",
+            mask_occ_ratio=float(mask_occ_ratio),
         )
 
 
@@ -1091,6 +1576,7 @@ class AdaptivePurePursuitController:
         self.prev_kappa_ref = 0.0
         self.prev_path: Optional[CubicPathModel] = None
         self.fail_count = 0
+        self.discont_reject_count = 0
 
     def _is_discontinuous(self, new_path: CubicPathModel) -> bool:
         if self.prev_path is None:
@@ -1114,9 +1600,16 @@ class AdaptivePurePursuitController:
         active_path = path
         valid_path = active_path is not None and active_path.length_m > 0.3
         if valid_path and self._is_discontinuous(active_path):
-            # reject discontinuous update for this cycle
-            active_path = self.prev_path
-            valid_path = active_path is not None and active_path.length_m > 0.3
+            self.discont_reject_count += 1
+            # Hold previous path briefly for jitter resistance, but force
+            # re-acquisition after repeated rejects to avoid stale lock.
+            if self.prev_path is not None and self.discont_reject_count <= int(self.cfg.discont_max_hold_frames):
+                active_path = self.prev_path
+                valid_path = active_path is not None and active_path.length_m > 0.3
+            else:
+                self.discont_reject_count = 0
+        elif valid_path:
+            self.discont_reject_count = 0
 
         if valid_path:
             x_ref = min(1.2, active_path.x_max_m)

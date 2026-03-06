@@ -73,7 +73,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
              headless=False, stab_radius=STAB_SMOOTHING_RADIUS,
              mask_alpha=MASK_SMOOTH_ALPHA, bev_alpha=BEV_SMOOTH_ALPHA,
              low_power=False, seg_input_res=SEG_INPUT_RES, path_scale=1.0,
-             detection_stride=1, enable_predict=PREDICT_ENABLED):
+             detection_stride=1, enable_predict=PREDICT_ENABLED,
+             planner_mode="dijkstra"):
     print("\n=== LIVE HEADING + OBJECT DETECTION + GPS DEMO ===")
     stab_radius = max(1, int(stab_radius))
     stride = max(1, int(stride))
@@ -97,6 +98,10 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         print("[Perf] Low-power mode enabled.")
     print(f"[Perf] stride={stride}, det_stride={detection_stride}, "
           f"seg={seg_input_res[0]}x{seg_input_res[1]}, path_scale={path_scale:.2f}")
+    planner_mode = str(planner_mode).strip().lower()
+    if planner_mode not in {"dijkstra", "dfs"}:
+        planner_mode = "dijkstra"
+    print(f"[Planner] mode={planner_mode}")
 
     # Initialize data logger
     logger = None
@@ -160,6 +165,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         bev_forward_m=NAV_BEV_FORWARD_M,
         bev_lateral_m=NAV_BEV_LATERAL_M,
         work_size=(work_grid, work_grid),
+        planner_mode=planner_mode,
     )
     if low_power:
         path_cfg.search_max_depth = 5
@@ -329,51 +335,20 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 bev_sidewalk = bev_smoother.smooth(predicted_mask_255, flow_dy=bev_shift)
                 t_bev = (time.time() - t_bev_start) * 1000
 
-                # Use predicted path directly â€” skip path extraction entirely
-                t_skel = 0.0
-                t_path = 0.0
-                skel = np.zeros(BEV_SIZE[::-1], dtype=np.uint8)
-                has_pred_candidate = predicted_path_m is not None and len(predicted_path_m) >= 2
-                if has_pred_candidate:
-                    # Build a lightweight PathPlanResult-like nav_out
-                    from realtime_nav_core import PathPlanResult
-                    nav_out = PathPlanResult(
-                        has_path=bool(predictor.last_path_model is not None),
-                        path_model=predictor.last_path_model,
-                        best_path_m=predicted_path_m,
-                        best_path_px=path_extractor._pixel_from_metric(
-                            predicted_path_m, bev_sidewalk.shape
-                        ),
-                        candidate_paths_m=[predicted_path_m],
-                        candidate_paths_px=[path_extractor._pixel_from_metric(
-                            predicted_path_m, bev_sidewalk.shape
-                        )],
-                        candidate_lengths_m=[float(np.sum(np.sqrt(
-                            np.sum(np.diff(predicted_path_m, axis=0) ** 2, axis=1)
-                        ))) if len(predicted_path_m) >= 2 else 0.0],
-                        best_idx=0,
-                        skeleton_px=skel,
-                        graph_nodes=0,
-                        graph_edges=0,
-                        t_skeleton_ms=0.0,
-                        t_path_ms=0.0,
-                    )
-                else:
-                    from realtime_nav_core import PathPlanResult
-                    nav_out = PathPlanResult(
-                        has_path=False,
-                        path_model=None,
-                        best_path_m=np.zeros((0, 2), dtype=np.float32),
-                        best_path_px=np.zeros((0, 2), dtype=np.int32),
-                        candidate_paths_m=[],
-                        candidate_paths_px=[],
-                        candidate_lengths_m=[],
-                        best_idx=-1,
-                        skeleton_px=skel,
-                        graph_nodes=0,
-                        graph_edges=0,
-                        t_skeleton_ms=0.0,
-                        t_path_ms=0.0,
+                # IMPORTANT: run graph planner on predicted BEV too, so Dijkstra/DFS
+                # remains active on skip frames (not predictor-path-only).
+                nav_out = path_extractor.process(bev_sidewalk)
+                t_skel = nav_out.t_skeleton_ms
+                t_path = nav_out.t_path_ms
+
+                # Keep predictor state aligned with planner output when available.
+                if nav_out.has_path and nav_out.path_model is not None and nav_out.best_path_m is not None:
+                    predictor.last_path_points_m = nav_out.best_path_m.copy()
+                    predictor.last_path_model = nav_out.path_model
+                    predictor.last_curvature = (
+                        nav_out.path_model.curvature_of_x(1.0)
+                        if nav_out.path_model.x_max_m >= 1.0
+                        else 0.0
                     )
 
                 paths = [(p, l) for p, l in zip(nav_out.candidate_paths_px, nav_out.candidate_lengths_m)]
@@ -384,8 +359,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     else 0.0
                 )
                 best_path_len = best_path_len_m * (bev_sidewalk.shape[0] / max(1e-6, NAV_BEV_FORWARD_M))
-                graph_nodes = 0
-                graph_edges = 0
+                graph_nodes = nav_out.graph_nodes
+                graph_edges = nav_out.graph_edges
 
             else:
                 # --- COMPUTE FRAME: full pipeline ---
@@ -584,6 +559,9 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     best_path_length_px=round(best_path_len, 1),
                     num_graph_nodes=graph_nodes,
                     num_graph_edges=graph_edges,
+                    planner_mode=planner_mode,
+                    path_source=getattr(nav_out, "path_source", ""),
+                    bev_mask_occ_ratio=round(float(getattr(nav_out, "mask_occ_ratio", 0.0)), 5),
                     # Detections
                     num_detections=len(detections),
                     min_obstacle_dist_m=round(min_obstacle_dist, 2) if min_obstacle_dist else "",
@@ -626,7 +604,9 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                                            detections=detections, gps_info=gps_info)
 
                 bev_vis = draw_bev_hud(None, paths, best_idx, skel, bev_sidewalk,
-                                       command, heading_smoothed, speed_smoothed)
+                                       command, heading_smoothed, speed_smoothed,
+                                       path_source=getattr(nav_out, "path_source", None),
+                                       mask_occ_ratio=getattr(nav_out, "mask_occ_ratio", None))
 
                 display_h = 540
                 cam_display = cv2.resize(cam_vis,
@@ -679,6 +659,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 nav_work_grid=work_grid,
                 nav_bev_forward_m=NAV_BEV_FORWARD_M,
                 nav_bev_lateral_m=NAV_BEV_LATERAL_M,
+                planner_mode=planner_mode,
                 yolo_model=YOLO_MODEL_NAME if enable_detection else "disabled",
             )
             logger.close()
@@ -755,6 +736,9 @@ if __name__ == "__main__":
     # BEV prediction
     parser.add_argument("--no-predict", action="store_true",
                         help="Disable BEV predictive frame reuse (run full pipeline every frame)")
+    parser.add_argument("--planner-mode", type=str, default="dijkstra",
+                        choices=["dijkstra", "dfs"],
+                        help="Graph candidate search mode for path planner")
 
     # Display
     parser.add_argument("--headless", action="store_true",
@@ -785,6 +769,7 @@ if __name__ == "__main__":
             path_scale=args.path_scale,
             detection_stride=args.detection_stride,
             enable_predict=not args.no_predict,
+            planner_mode=args.planner_mode,
         )
 
 

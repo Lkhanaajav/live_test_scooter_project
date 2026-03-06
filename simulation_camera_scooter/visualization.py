@@ -90,8 +90,18 @@ def draw_heading_hud(img, command, angle_deg, speed_mps, color, fps, pipeline_ms
     return img
 
 
-def draw_bev_hud(bev_rgb, paths, best_idx, skel, bev_sidewalk, command, angle_deg,
-                 speed_mps=0.0):
+def draw_bev_hud(
+    bev_rgb,
+    paths,
+    best_idx,
+    skel,
+    bev_sidewalk,
+    command,
+    angle_deg,
+    speed_mps=0.0,
+    path_source=None,
+    mask_occ_ratio=None,
+):
     """Draw BEV visualization with paths, heading, and speed."""
     h_bev, w_bev = bev_sidewalk.shape
     # Dark background so sidewalk and paths pop
@@ -133,12 +143,17 @@ def draw_bev_hud(bev_rgb, paths, best_idx, skel, bev_sidewalk, command, angle_de
                     cv2.LINE_AA, tipLength=0.35)
 
     # Semi-transparent black bar for text
-    cv2.rectangle(vis, (0, 0), (w_bev, 65), (0, 0, 0), -1)
+    cv2.rectangle(vis, (0, 0), (w_bev, 90), (0, 0, 0), -1)
 
     # Command + speed text
     cv2.putText(vis, f"{command} ({angle_deg:+.1f} deg)", (10, 25),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     cv2.putText(vis, f"Speed: {speed_mps:.2f} m/s", (10, 52),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+    if path_source is not None or mask_occ_ratio is not None:
+        ptxt = str(path_source) if path_source is not None else "-"
+        otxt = f"{float(mask_occ_ratio) * 100.0:.1f}%" if mask_occ_ratio is not None else "-"
+        cv2.putText(vis, f"Src: {ptxt} | Occ: {otxt}", (10, 78),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.52, (170, 230, 170), 1, cv2.LINE_AA)
 
     return vis

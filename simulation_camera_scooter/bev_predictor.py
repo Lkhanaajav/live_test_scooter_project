@@ -53,6 +53,9 @@ class BEVPredictiveTracker:
         self.last_curvature: float = 0.0
         self.cumulative_skip_count: int = 0
         self.prediction_confidence: float = 1.0
+        self.last_occ_ratio: float = 0.0
+        self._min_occ_ratio: float = 0.012
+        self._min_occ_pixels: int = 450
 
         # BEV geometry
         self._bev_h, self._bev_w = BEV_SIZE[1], BEV_SIZE[0]
@@ -157,6 +160,8 @@ class BEVPredictiveTracker:
             return False
         if self.last_bev_mask is None:
             return False
+        if self.last_occ_ratio < self._min_occ_ratio:
+            return False
         if self.prediction_confidence < PREDICT_CONFIDENCE_FLOOR:
             return False
 
@@ -213,6 +218,9 @@ class BEVPredictiveTracker:
 
         # Store state
         self.last_bev_mask = blended.copy()
+        self.last_occ_ratio = float(np.count_nonzero(blended > 0.45)) / max(1.0, float(blended.size))
+        if self.last_occ_ratio < self._min_occ_ratio:
+            self.prediction_confidence = min(self.prediction_confidence, 0.30)
         if path_result is not None and path_result.has_path:
             self.last_path_points_m = (
                 path_result.best_path_m.copy() if path_result.best_path_m is not None else None
@@ -224,6 +232,8 @@ class BEVPredictiveTracker:
                 else 0.0
             )
         else:
+            self.last_path_points_m = None
+            self.last_path_model = None
             self.last_curvature = 0.0
 
         self.cumulative_skip_count = 0
@@ -252,8 +262,17 @@ class BEVPredictiveTracker:
 
         # Propagate prediction forward (stored state advances)
         self.last_bev_mask = predicted_mask
+        mask_255 = (predicted_mask > 0.45).astype(np.uint8) * 255
+        occ_pixels = int(np.count_nonzero(mask_255))
+        occ_ratio = float(occ_pixels) / max(1.0, float(mask_255.size))
+        self.last_occ_ratio = occ_ratio
+        if occ_pixels < self._min_occ_pixels or occ_ratio < self._min_occ_ratio:
+            # Predicted BEV is too sparse/empty; do not trust predicted path.
+            self.prediction_confidence = min(self.prediction_confidence, 0.25)
+            self.last_path_model = None
+            self.cumulative_skip_count = max(self.cumulative_skip_count, PREDICT_MAX_SKIP_STRAIGHT)
+            return mask_255, None
+
         self.last_path_points_m = predicted_path if len(predicted_path) >= 2 else self.last_path_points_m
         self.cumulative_skip_count += 1
-
-        mask_255 = (predicted_mask > 0.45).astype(np.uint8) * 255
         return mask_255, predicted_path if len(predicted_path) >= 2 else None

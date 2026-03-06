@@ -107,6 +107,7 @@ def anchor_ego_to_mask(
     search_up_px=90,
     max_bridge_px=75,
     bridge_thickness_px=1,
+    center_bias_px=1.35,
 ):
     """[TIER2] Add a thin ego bridge to nearest nearby mask pixel.
 
@@ -131,7 +132,10 @@ def anchor_ego_to_mask(
     pts_y = ys + y0
     pts_x = xs + x0
     d2 = (pts_x - ego_x) ** 2 + (pts_y - ego_y) ** 2
-    idx = int(np.argmin(d2))
+    # Bias bridge target toward centerline so the anchor doesn't seed
+    # right/left "fake turn" geometry when side fragments are closer.
+    score = d2 + float(center_bias_px) * ((pts_x - ego_x) ** 2)
+    idx = int(np.argmin(score))
     tx = int(pts_x[idx])
     ty = int(pts_y[idx])
     if float(np.sqrt(d2[idx])) > float(max_bridge_px):
@@ -177,5 +181,22 @@ def ego_connected_mask(bev_mask_255, bev_size=(600, 500), dilation_k=15):
     forward_reach_px = int(ego_y - int(np.min(ys_conn)))
     if connected_area < 1200 or forward_reach_px < 35:
         return bev_mask_255
+
+    # If flood-filled ego component is much shorter/smaller than global BEV
+    # support, it is likely an anchor/triangle fragment; use main component.
+    ys_all, _ = np.where(bev_mask_255 > 0)
+    if len(ys_all) > 0:
+        global_reach_px = int(ego_y - int(np.min(ys_all)))
+        global_area = int(len(ys_all))
+        short_vs_global = (
+            global_reach_px >= 70
+            and forward_reach_px < int(max(45, 0.55 * float(global_reach_px)))
+        )
+        tiny_vs_global = (
+            global_area >= 2500
+            and connected_area < int(0.35 * float(global_area))
+        )
+        if short_vs_global or tiny_vs_global:
+            return select_main_component(bev_mask_255, bottom_band_px=55, center_weight=0.45)
 
     return connected

@@ -1,0 +1,34 @@
+# SESSION LOG
+
+- 2026-03-06 01:13: Initialized overnight run folder and mandatory logs.
+- 2026-03-06 01:14: Mapped repository structure and confirmed core pipeline path: `live_heading_demo.py` -> BEV cleanup (`masks.py`) -> path extraction/selection (`realtime_nav_core.py`) -> visualization (`visualization.py`).
+- 2026-03-06 01:15: Read planning/design docs: `.planning/PROJECT.md`, `ROADMAP.md`, `STATE.md`, Phase-02 docs, and prior overnight run notes.
+- 2026-03-06 01:16: Inspected paper/report reference images (`thesis/paper_src/images/*`) for target BEV/path behavior.
+- 2026-03-06 01:16-01:19: Baseline run (predict ON) on `test_video_june_03_3.mp4`; saved output/logs under `baseline/`.
+- 2026-03-06 01:19-01:22: Extracted and visually inspected baseline frames around normal and failure windows.
+- 2026-03-06 01:22-01:28: Diagnostic baseline with `--no-predict`; confirmed severe persistent lateral-bias lock in old behavior.
+- 2026-03-06 01:28: Completed focused similar-work review (single-camera robust path paper, pure pursuit reference, OpenCV morphology/DT/CC docs).
+- 2026-03-06 01:29-01:35: Implemented E1 code changes:
+  - predictor occupancy guard + stale-path invalidation,
+  - low-evidence aggressive hold decay,
+  - candidate center/continuity scoring,
+  - bounded discontinuity-hold reacquisition in pure pursuit,
+  - path-source/occupancy debug plumbing to logs + BEV HUD.
+- 2026-03-06 01:35: Ran tests: `py -m pytest tests -q` -> `60 passed`.
+- 2026-03-06 01:35-01:39: Ran E1 validation (predict ON) and collected metrics/frames.
+- 2026-03-06 01:39-01:43: Ran E1 validation with `--no-predict`; verified major improvement vs diagnostic baseline.
+- 2026-03-06 01:43-01:50: Ran E2 low-confidence parameter tweak trial; metrics/frames showed regression (new heading spikes), so change was rejected.
+- 2026-03-06 01:50: Reverted E2 parameter tweak to E1-selected configuration.
+- 2026-03-06 01:50: Ran tests again: `py -m pytest tests -q` -> `60 passed`.
+- 2026-03-06 01:51: Finalized overnight documentation and selected E1 as current best configuration.
+
+- 2026-03-06 13:00: Ran deep frame-level diagnostic (`debug_skeleton_vs_selected`) comparing skeleton leaves vs graph candidates. Found repeated pattern: many leaf nodes exist (often at x~10m), but only 1 reachable Dijkstra candidate is generated.
+- 2026-03-06 13:02: Root-cause trace on frame 350 showed graph is fragmented after pruning/search start selection. Dijkstra itself runs, but start component often has only one reachable endpoint.
+- 2026-03-06 13:06: Implemented skeleton-geodesic fallback candidate in `realtime_nav_core.py` and integrated into candidate/fallback flow.
+- 2026-03-06 13:08: Ran visible no-predict Dijkstra validation (`verify_no_predict_skel_fallback`, run_20260306_130808). Saved overlay video and issue frames.
+- 2026-03-06 13:17: Added targeted graph-vs-skeleton override rule for short near-ego lateral graph branches; validated behavior with sequential debug pass.
+- 2026-03-06 13:19: Tried skeleton-hold strategy (`verify_no_predict_skel_hold`, run_20260306_131916). Rejected due global steering bias drift.
+- 2026-03-06 13:27: Reverted hold strategy, kept targeted override only; reran visible validation (`verify_no_predict_skel_override`, run_20260306_132732).
+- 2026-03-06 13:29: Re-ran tests (`py -m pytest tests -q`): 60 passed.
+- 2026-03-06 13:30: Saved per-run metrics and extracted comparison frames for frames {230,350,355,360,1460,1530,1580,1590}.
+- 2026-03-06 13:58: Ran headed validation with near-ego branch penalty (`verify_no_predict_near_ego_penalty`), measured regressions in late windows, and reverted penalty from `realtime_nav_core.py`.

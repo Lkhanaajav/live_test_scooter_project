@@ -175,6 +175,8 @@ class TestShouldSkip:
     def test_straight_allows_skip(self, tracker):
         """Low curvature allows skipping."""
         tracker.last_bev_mask = np.zeros((500, 600), dtype=np.float32)
+        tracker.last_bev_mask[:, 240:360] = 1.0
+        tracker.last_occ_ratio = 0.20
         tracker.last_curvature = 0.0  # perfectly straight
         tracker.prediction_confidence = 0.9
         tracker.cumulative_skip_count = 0
@@ -183,6 +185,8 @@ class TestShouldSkip:
     def test_sharp_turn_no_skip(self, tracker):
         """High curvature blocks skipping."""
         tracker.last_bev_mask = np.zeros((500, 600), dtype=np.float32)
+        tracker.last_bev_mask[:, 240:360] = 1.0
+        tracker.last_occ_ratio = 0.20
         tracker.last_curvature = 0.5  # sharp
         tracker.prediction_confidence = 0.9
         tracker.cumulative_skip_count = 0
@@ -191,6 +195,8 @@ class TestShouldSkip:
     def test_low_confidence_no_skip(self, tracker):
         """Low prediction confidence blocks skipping."""
         tracker.last_bev_mask = np.zeros((500, 600), dtype=np.float32)
+        tracker.last_bev_mask[:, 240:360] = 1.0
+        tracker.last_occ_ratio = 0.20
         tracker.last_curvature = 0.0
         tracker.prediction_confidence = 0.3  # below floor
         tracker.cumulative_skip_count = 0
@@ -199,6 +205,8 @@ class TestShouldSkip:
     def test_max_consecutive_skips(self, tracker):
         """Exceeding max consecutive skips blocks further skipping."""
         tracker.last_bev_mask = np.zeros((500, 600), dtype=np.float32)
+        tracker.last_bev_mask[:, 240:360] = 1.0
+        tracker.last_occ_ratio = 0.20
         tracker.last_curvature = 0.0
         tracker.prediction_confidence = 0.9
         tracker.cumulative_skip_count = 3  # already at max for straight
@@ -207,11 +215,22 @@ class TestShouldSkip:
     def test_gentle_turn_limited_skip(self, tracker):
         """Gentle turn allows 1 skip only."""
         tracker.last_bev_mask = np.zeros((500, 600), dtype=np.float32)
+        tracker.last_bev_mask[:, 240:360] = 1.0
+        tracker.last_occ_ratio = 0.20
         tracker.last_curvature = 0.2  # gentle turn (between 0.10 and 0.30)
         tracker.prediction_confidence = 0.9
         tracker.cumulative_skip_count = 0
         assert tracker.should_skip(speed=1.0, dt=0.1) is True
         tracker.cumulative_skip_count = 1
+        assert tracker.should_skip(speed=1.0, dt=0.1) is False
+
+    def test_low_occupancy_no_skip(self, tracker):
+        """Very sparse BEV occupancy blocks skip to force compute-frame refresh."""
+        tracker.last_bev_mask = np.zeros((500, 600), dtype=np.float32)
+        tracker.last_occ_ratio = 0.001
+        tracker.last_curvature = 0.0
+        tracker.prediction_confidence = 0.95
+        tracker.cumulative_skip_count = 0
         assert tracker.should_skip(speed=1.0, dt=0.1) is False
 
 
@@ -271,6 +290,7 @@ class TestOnSkipFrame:
     def test_skip_increments_count(self, tracker):
         """Skip frame increments cumulative_skip_count."""
         tracker.last_bev_mask = np.zeros((500, 600), dtype=np.float32)
+        tracker.last_bev_mask[:, 250:350] = 1.0
         tracker.last_path_points_m = np.array([[1, 0], [2, 0]], dtype=np.float32)
         tracker.last_path_model = _make_straight_path_model()
         tracker.cumulative_skip_count = 0
@@ -280,6 +300,17 @@ class TestOnSkipFrame:
 
         tracker.on_skip_frame(speed=1.0, dt=0.1, steer_deg=0.0)
         assert tracker.cumulative_skip_count == 2
+
+    def test_skip_drops_path_on_empty_predicted_mask(self, tracker):
+        """Sparse/empty predicted mask should return no path and lower confidence."""
+        tracker.last_bev_mask = np.zeros((500, 600), dtype=np.float32)
+        tracker.last_path_points_m = np.array([[1, 0], [2, 0]], dtype=np.float32)
+        tracker.last_path_model = _make_straight_path_model()
+        tracker.prediction_confidence = 0.9
+        mask, path = tracker.on_skip_frame(speed=1.0, dt=0.1, steer_deg=0.0)
+        assert mask.dtype == np.uint8
+        assert path is None
+        assert tracker.prediction_confidence <= 0.25
 
 
 # ------------------------------------------------------------------

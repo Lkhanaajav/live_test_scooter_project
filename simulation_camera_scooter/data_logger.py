@@ -33,7 +33,7 @@ class DataLogger:
         "stab_corr_px", "stab_corr_deg",
         # Path info
         "has_candidate_path", "has_model_path", "has_control_path", "has_path", "num_paths", "best_path_length_px",
-        "num_graph_nodes", "num_graph_edges",
+        "num_graph_nodes", "num_graph_edges", "planner_mode", "path_source", "bev_mask_occ_ratio",
         # Object detection
         "num_detections", "min_obstacle_dist_m",
         "detection_classes", "detection_distances",
