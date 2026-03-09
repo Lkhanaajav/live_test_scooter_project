@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03.1-03-PLAN.md (YOLO BEV obstacle integration — all 9 OBS tests green)
-last_updated: "2026-03-09T16:14:04.786Z"
+stopped_at: Completed 03.1-04-PLAN.md (BEV HUD obstacle visualization — human checkpoint approved)
+last_updated: "2026-03-09T17:00:00.000Z"
 last_activity: "2026-03-05 — Plan 01-02 completed: smoother sweep finds alpha=0.65, c_thresh=0.20 at 99.6% stable — Phase 1 COMPLETE"
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 8
-  completed_plans: 5
-  percent: 38
+  completed_plans: 6
+  percent: 44
 ---
 
 ---
@@ -56,10 +56,10 @@ See: .planning/PROJECT.md (updated 2026-03-04)
 
 ## Current Position
 
-Phase: 1 of 4 (Segmentation Stability) — COMPLETE
-Plan: 2 of 2 in phase 1 (all complete)
-Status: Phase 1 done — ready to begin Phase 2 (BEV Calibration)
-Last activity: 2026-03-05 — Plan 01-02 completed: smoother sweep finds alpha=0.65, c_thresh=0.20 at 99.6% stable — Phase 1 COMPLETE
+Phase: 03.1 (YOLO BEV Obstacle Projection) — COMPLETE
+Plan: 4 of 4 in phase 03.1 (all complete)
+Status: Phase 03.1 done — Phase 02 (BEV Calibration) hardware-blocked; Phase 03 Demo Integration plannable
+Last activity: 2026-03-09 — Plan 03.1-04 completed: BEV HUD obstacle visualization human-verified — Phase 03.1 COMPLETE
 
 Progress: [██████████] 100%
 
@@ -85,6 +85,7 @@ Progress: [██████████] 100%
 | Phase 03.1 P03.1-01 | 2 | 2 tasks | 2 files |
 | Phase 03.1 P03.1-02 | 7 | 2 tasks | 3 files |
 | Phase 03.1 P03.1-03 | 20 | 2 tasks | 3 files |
+| Phase 03.1 P03.1-04 | 15 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -108,6 +109,8 @@ Recent decisions affecting current work:
 - [Phase 03.1-02]: bev_obstacle.py has no dependency on realtime_nav_core — clean contract for Wave 2 integration
 - [Phase 03.1]: obstacle_zones_m defaults to None (not []) for explicit no-obstacles vs empty-list distinction in process()
 - [Phase 03.1]: _obstacle_penalty skipped when len(cands) < 2 to avoid penalizing the only viable path (Pitfall 5 from RESEARCH.md)
+- [Phase 03.1-04]: obstacle_zones_m=None default keeps headless callers unaffected; color threshold tied to BEV_HARD_BLOCK_DIST_M so visualization matches planner logic exactly
+- [Phase 03.1-04]: Phase 03.1 COMPLETE — OBS-01 through OBS-09 all satisfied, human verified 2026-03-09
 
 ### Roadmap Evolution
 
@@ -124,6 +127,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09T16:14:04.780Z
-Stopped at: Completed 03.1-03-PLAN.md (YOLO BEV obstacle integration — all 9 OBS tests green)
+Last session: 2026-03-09T17:00:00.000Z
+Stopped at: Completed 03.1-04-PLAN.md (BEV HUD obstacle visualization — human checkpoint approved)
 Resume file: None
