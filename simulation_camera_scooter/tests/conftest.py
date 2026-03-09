@@ -55,3 +55,38 @@ def straight_path_model():
         s_grid=s_grid,
         kappa_grid=kappa_grid,
     )
+
+
+@pytest.fixture
+def bev_h_matrix():
+    """Simple scale homography: image -> BEV pixels. Maps (x_img, y_img) -> (x_img*0.3, y_img*0.5).
+    Not a real perspective matrix — chosen so projection math is analytically verifiable in tests.
+    With this H, a detection with foot at image (300, 400) projects to BEV (90, 200)."""
+    return np.array([[0.3, 0.0, 0.0],
+                     [0.0, 0.5, 0.0],
+                     [0.0, 0.0, 1.0]], dtype=np.float64)
+
+
+@pytest.fixture
+def bev_obstacle_mask_500x600():
+    """Fully white 500x600 BEV mask (numpy HxW = 500 rows x 600 cols)."""
+    return np.ones((500, 600), dtype=np.uint8) * 255
+
+
+@pytest.fixture
+def mock_detections():
+    """Two detection dicts representing a person at safe distance and one at stop distance."""
+    return [
+        {
+            "bbox": (250, 200, 350, 400),
+            "class_name": "person",
+            "confidence": 0.9,
+            "distance_m": 2.5,
+        },
+        {
+            "bbox": (280, 350, 320, 480),
+            "class_name": "person",
+            "confidence": 0.8,
+            "distance_m": 0.8,
+        },
+    ]
