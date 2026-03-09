@@ -39,7 +39,7 @@ Plans:
 **Depends on**: Phase 1
 **Requirements**: BEV-01, BEV-02, BEV-03, PATH-01, PATH-02, PATH-03
 **Success Criteria** (what must be TRUE):
-  1. Running load_bev_params() does NOT print the ill-conditioned WARNING (condition number < 1e6, down from 1.1e+06 current) � note: cond < 1000 is not achievable with a real perspective warp; pixel survival (criterion 2) is the primary metric
+  1. Running load_bev_params() does NOT print the ill-conditioned WARNING (condition number < 1e6, down from 1.1e+06 current) — note: cond < 1000 is not achievable with a real perspective warp; pixel survival (criterion 2) is the primary metric
   2. Inspecting BEV output frames, >= 50% of sidewalk pixels survive the warpPerspective transform (visible as a filled region in BEV view)
   3. has_path rate is >= 60% of frames when running the pipeline on a representative sidewalk video clip
   4. The extracted skeleton path follows the sidewalk centerline in BEV — it does not jump to edges, grass artifacts, or reverse direction on a straight sidewalk
@@ -47,8 +47,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 02-01-PLAN.md � Recalibrate BEV homography with mounted camera video, verify condition number and pixel survival, write calibration SOP (HARDWARE GATE)
-- [ ] 02-02-PLAN.md � Validate path extraction reliability (has_path >= 60%), tune params if needed, visual centerline verification
+- [ ] 02-01-PLAN.md — Recalibrate BEV homography with mounted camera video, verify condition number and pixel survival, write calibration SOP (HARDWARE GATE)
+- [ ] 02-02-PLAN.md — Validate path extraction reliability (has_path >= 60%), tune params if needed, visual centerline verification
 
 ### Phase 3: Demo Integration
 **Goal**: The full pipeline runs end-to-end during a live sidewalk demo — scooter receives steering and speed commands, the video feed shows a path overlay, and the system never abruptly stops
@@ -64,6 +64,19 @@ Plans:
 Plans:
 - [ ] 03-01: Integrate and test serial scooter command output during a real or hardware-in-the-loop demo run
 - [ ] 03-02: Implement and validate graceful degradation behavior (speed hold-down, fallback decay, no abrupt stops)
+
+### Phase 03.1: YOLO BEV Obstacle Projection (INSERTED)
+
+**Goal:** Project YOLOv8-nano detected bounding boxes onto the BEV plane using the existing homography, converting each detection into a 2-D metric exclusion zone. The BEVPathExtractor penalizes candidate paths that pass through exclusion zones and prefers alternative branches when the primary path is blocked.
+**Requirements**: OBS-01, OBS-02, OBS-03, OBS-04, OBS-05, OBS-06, OBS-07, OBS-08, OBS-09
+**Depends on:** Phase 3
+**Plans:** 4 plans
+
+Plans:
+- [ ] 03.1-01-PLAN.md — Wave 0: test stubs for all 9 OBS requirements in tests/test_bev_obstacle.py + conftest fixtures
+- [ ] 03.1-02-PLAN.md — Wave 1: bev_obstacle.py (project_foot_to_bev, detection_to_metric, ObstacleEMAGrid) + config constants; 5 tests green
+- [ ] 03.1-03-PLAN.md — Wave 2: integrate into realtime_nav_core.py (_obstacle_penalty) + live_heading_demo.py (projection loop, hard-block, EMA); all 9 tests green
+- [ ] 03.1-04-PLAN.md — Wave 3: BEV HUD visualization (draw_bev_hud obstacle circles) + human checkpoint
 
 ### Phase 4: Radxa Deployment (STRETCH)
 **Goal**: Pipeline runs on the Rock 5B ARM64 board at >= 5 Hz with scooter connected — eliminates need to carry a laptop
@@ -102,17 +115,19 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 (4 and 5 are stretch only)
+Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5 (4 and 5 are stretch only)
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Segmentation Stability | 2/2 | Complete   | 2026-03-05 |
 | 2. BEV Calibration and Path Reliability | 0/2 | Not started | - |
 | 3. Demo Integration | 0/2 | Not started | - |
+| 3.1 YOLO BEV Obstacle Projection | 0/4 | Planned | - |
 | 4. Radxa Deployment (STRETCH) | 0/2 | Not started | - |
 | 5. Cloud-Offloaded Navigation (STRETCH RESEARCH) | 0/2 | Not started | - |
 
 ---
 *Roadmap created: 2026-03-04*
 *Granularity: coarse (3-5 phases)*
-*Coverage: 15/15 v1 requirements mapped*
+*Coverage: 15/15 v1 requirements mapped + 9 OBS requirements (Phase 03.1)*
+*Last updated: 2026-03-09 — Phase 03.1 planned (4 plans)*

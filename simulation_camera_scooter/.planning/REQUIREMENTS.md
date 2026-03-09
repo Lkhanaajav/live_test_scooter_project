@@ -30,6 +30,18 @@
 - [ ] **DEMO-03**: System runs at >= 8 Hz end-to-end on the demo laptop during live demo
 - [ ] **DEMO-04**: System degrades gracefully — holds last valid path and reduces speed on seg failure, no abrupt stops
 
+### YOLO BEV Obstacle Projection (Phase 03.1)
+
+- [ ] **OBS-01**: Foot-point of a detection centered in the image projects through H to the correct BEV quadrant (center-bottom of BEV = ego-forward)
+- [ ] **OBS-02**: Metric coordinate (forward_m, lateral_m) of projected foot matches analytically expected values given a known H matrix
+- [ ] **OBS-03**: EMA grid decays to near-zero (< 1% max value) after 10 frames with no detection at alpha=0.5
+- [ ] **OBS-04**: EMA grid shows nonzero value (>= 0.4) at the foot-point location after one update from a zero grid
+- [ ] **OBS-05**: A candidate path whose points pass through an obstacle zone receives a higher cost than a clear path — planner prefers the clear path when alternatives exist
+- [ ] **OBS-06**: Hard-block paints BEV mask pixels black within the stop-zone radius for obstacles closer than BEV_HARD_BLOCK_DIST_M
+- [ ] **OBS-07**: Out-of-bounds projected points (negative or > BEV dimensions) are clamped without raising an exception
+- [ ] **OBS-08**: No obstacle penalty is applied when obstacle_zones_m is None or empty — process() result is identical to no-obstacle call
+- [ ] **OBS-09**: Full pipeline (project -> EMA -> hard-block -> process with zones) runs end-to-end on a synthetic BEV mask without crash
+
 ### Embedded Deployment (Stretch)
 
 - [ ] **RADXA-01**: SegFormer exported to ONNX or TensorRT format runnable on Rock 5B at >= 5 Hz
@@ -76,14 +88,23 @@
 | DEMO-02 | Phase 3 | Pending |
 | DEMO-03 | Phase 3 | Pending |
 | DEMO-04 | Phase 3 | Pending |
+| OBS-01 | Phase 03.1 | Pending |
+| OBS-02 | Phase 03.1 | Pending |
+| OBS-03 | Phase 03.1 | Pending |
+| OBS-04 | Phase 03.1 | Pending |
+| OBS-05 | Phase 03.1 | Pending |
+| OBS-06 | Phase 03.1 | Pending |
+| OBS-07 | Phase 03.1 | Pending |
+| OBS-08 | Phase 03.1 | Pending |
+| OBS-09 | Phase 03.1 | Pending |
 | RADXA-01 | Phase 4 | Pending |
 | RADXA-02 | Phase 4 | Pending |
 
 **Coverage:**
-- v1 requirements: 15 total
-- Mapped to phases: 15
+- v1 requirements: 24 total (15 original + 9 OBS)
+- Mapped to phases: 24
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-04*
-*Last updated: 2026-03-04 after roadmap creation*
+*Last updated: 2026-03-09 — added OBS-01 through OBS-09 for Phase 03.1*
