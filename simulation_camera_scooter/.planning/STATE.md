@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03.1-01-PLAN.md (Wave 0 test stubs)
-last_updated: "2026-03-09T16:04:05.639Z"
+stopped_at: Completed 03.1-02-PLAN.md (bev_obstacle.py module)
+last_updated: "2026-03-09T16:07:59.415Z"
 last_activity: "2026-03-05 — Plan 01-02 completed: smoother sweep finds alpha=0.65, c_thresh=0.20 at 99.6% stable — Phase 1 COMPLETE"
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 8
-  completed_plans: 3
+  completed_plans: 4
   percent: 38
 ---
 
@@ -83,6 +83,7 @@ Progress: [██████████] 100%
 *Updated after each plan completion*
 | Phase 01-segmentation-stability P02 | 15 | 2 tasks | 2 files |
 | Phase 03.1 P03.1-01 | 2 | 2 tasks | 2 files |
+| Phase 03.1 P03.1-02 | 7 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -102,6 +103,8 @@ Recent decisions affecting current work:
 - [01-02]: Phase 1 COMPLETE — SEG-01 MET (99.6% >= 90%), SEG-03 PASS (alpha=0.65 >= 0.25), human verified 2026-03-05
 - [Phase 03.1-01]: bev_h_matrix uses scale matrix (x*0.3, y*0.5) for analytically verifiable projection — not a realistic perspective warp
 - [Phase 03.1-01]: test_bev_obstacle.py keeps imports minimal (numpy + pytest only) to avoid ImportError on non-existent bev_obstacle module in Wave 0
+- [Phase 03.1-02]: forward_m clamped to >= 0.3 to filter obstacles at/behind ego (foot below BEV bottom)
+- [Phase 03.1-02]: bev_obstacle.py has no dependency on realtime_nav_core — clean contract for Wave 2 integration
 
 ### Roadmap Evolution
 
@@ -118,6 +121,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09T16:04:05.633Z
-Stopped at: Completed 03.1-01-PLAN.md (Wave 0 test stubs)
+Last session: 2026-03-09T16:07:49.367Z
+Stopped at: Completed 03.1-02-PLAN.md (bev_obstacle.py module)
 Resume file: None

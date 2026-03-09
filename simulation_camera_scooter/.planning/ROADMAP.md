@@ -70,7 +70,7 @@ Plans:
 **Goal:** Project YOLOv8-nano detected bounding boxes onto the BEV plane using the existing homography, converting each detection into a 2-D metric exclusion zone. The BEVPathExtractor penalizes candidate paths that pass through exclusion zones and prefers alternative branches when the primary path is blocked.
 **Requirements**: OBS-01, OBS-02, OBS-03, OBS-04, OBS-05, OBS-06, OBS-07, OBS-08, OBS-09
 **Depends on:** Phase 3
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 
 Plans:
 - [ ] 03.1-01-PLAN.md — Wave 0: test stubs for all 9 OBS requirements in tests/test_bev_obstacle.py + conftest fixtures
