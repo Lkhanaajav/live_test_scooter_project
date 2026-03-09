@@ -19,6 +19,8 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from config import BEV_OBSTACLE_PENALTY_WEIGHT
+
 
 def _odd(v: int) -> int:
     v = max(1, int(v))
@@ -307,6 +309,7 @@ class BEVPathExtractor:
         self.prev_best_path_m: Optional[np.ndarray] = None
         self.no_path_counter: int = 0
         self.prev_mask_occ_ratio: float = 0.0
+        self.obstacle_zones: list = []  # OBS Phase 03.1: [(fwd_m, lat_m, rad_m), ...]
 
     # -------------------------------------------------------------------------
     # Coordinate conversion
@@ -976,8 +979,23 @@ class BEVPathExtractor:
                 + float(self.cfg.score_center_weight) * j_center
                 + float(self.cfg.score_continuity_weight) * j_cont
             )
+            # OBS penalty (Phase 03.1): only when multiple candidates exist
+            if len(cands) >= 2:
+                j_obstacle = self._obstacle_penalty(c.points_m)
+                c.cost += BEV_OBSTACLE_PENALTY_WEIGHT * j_obstacle
         cands.sort(key=lambda c: c.cost)
         return cands
+
+    def _obstacle_penalty(self, path_pts_m: np.ndarray) -> float:
+        """Sum obstacle zone overlap along candidate path. Returns [0, +inf)."""
+        if not self.obstacle_zones:
+            return 0.0
+        penalty = 0.0
+        for fwd_m, lat_m, rad_m in self.obstacle_zones:
+            d = np.sqrt((path_pts_m[:, 0] - fwd_m)**2 + (path_pts_m[:, 1] - lat_m)**2)
+            overlap = float(np.sum(d < rad_m))
+            penalty += overlap
+        return penalty / max(1.0, float(len(path_pts_m)))
 
     def _apply_hysteresis(self, cands: List[PathCandidate]) -> int:
         if not cands:
@@ -1345,8 +1363,9 @@ class BEVPathExtractor:
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
-    def process(self, bev_mask_255: np.ndarray) -> PathPlanResult:
+    def process(self, bev_mask_255: np.ndarray, obstacle_zones_m=None) -> PathPlanResult:
         t0 = time.time()
+        self.obstacle_zones = list(obstacle_zones_m) if obstacle_zones_m else []
         orig_h, orig_w = bev_mask_255.shape
 
         mask = self._preprocess(bev_mask_255)
