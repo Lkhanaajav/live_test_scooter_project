@@ -32,15 +32,15 @@
 
 ### YOLO BEV Obstacle Projection (Phase 03.1)
 
-- [ ] **OBS-01**: Foot-point of a detection centered in the image projects through H to the correct BEV quadrant (center-bottom of BEV = ego-forward)
-- [ ] **OBS-02**: Metric coordinate (forward_m, lateral_m) of projected foot matches analytically expected values given a known H matrix
-- [ ] **OBS-03**: EMA grid decays to near-zero (< 1% max value) after 10 frames with no detection at alpha=0.5
-- [ ] **OBS-04**: EMA grid shows nonzero value (>= 0.4) at the foot-point location after one update from a zero grid
-- [ ] **OBS-05**: A candidate path whose points pass through an obstacle zone receives a higher cost than a clear path — planner prefers the clear path when alternatives exist
-- [ ] **OBS-06**: Hard-block paints BEV mask pixels black within the stop-zone radius for obstacles closer than BEV_HARD_BLOCK_DIST_M
-- [ ] **OBS-07**: Out-of-bounds projected points (negative or > BEV dimensions) are clamped without raising an exception
-- [ ] **OBS-08**: No obstacle penalty is applied when obstacle_zones_m is None or empty — process() result is identical to no-obstacle call
-- [ ] **OBS-09**: Full pipeline (project -> EMA -> hard-block -> process with zones) runs end-to-end on a synthetic BEV mask without crash
+- [x] **OBS-01**: Foot-point of a detection centered in the image projects through H to the correct BEV quadrant (center-bottom of BEV = ego-forward)
+- [x] **OBS-02**: Metric coordinate (forward_m, lateral_m) of projected foot matches analytically expected values given a known H matrix
+- [x] **OBS-03**: EMA grid decays to near-zero (< 1% max value) after 10 frames with no detection at alpha=0.5
+- [x] **OBS-04**: EMA grid shows nonzero value (>= 0.4) at the foot-point location after one update from a zero grid
+- [x] **OBS-05**: A candidate path whose points pass through an obstacle zone receives a higher cost than a clear path — planner prefers the clear path when alternatives exist
+- [x] **OBS-06**: Hard-block paints BEV mask pixels black within the stop-zone radius for obstacles closer than BEV_HARD_BLOCK_DIST_M
+- [x] **OBS-07**: Out-of-bounds projected points (negative or > BEV dimensions) are clamped without raising an exception
+- [x] **OBS-08**: No obstacle penalty is applied when obstacle_zones_m is None or empty — process() result is identical to no-obstacle call
+- [x] **OBS-09**: Full pipeline (project -> EMA -> hard-block -> process with zones) runs end-to-end on a synthetic BEV mask without crash
 
 ### Embedded Deployment (Stretch)
 
@@ -88,15 +88,15 @@
 | DEMO-02 | Phase 3 | Pending |
 | DEMO-03 | Phase 3 | Pending |
 | DEMO-04 | Phase 3 | Pending |
-| OBS-01 | Phase 03.1 | Pending |
-| OBS-02 | Phase 03.1 | Pending |
-| OBS-03 | Phase 03.1 | Pending |
-| OBS-04 | Phase 03.1 | Pending |
-| OBS-05 | Phase 03.1 | Pending |
-| OBS-06 | Phase 03.1 | Pending |
-| OBS-07 | Phase 03.1 | Pending |
-| OBS-08 | Phase 03.1 | Pending |
-| OBS-09 | Phase 03.1 | Pending |
+| OBS-01 | Phase 03.1 | Complete |
+| OBS-02 | Phase 03.1 | Complete |
+| OBS-03 | Phase 03.1 | Complete |
+| OBS-04 | Phase 03.1 | Complete |
+| OBS-05 | Phase 03.1 | Complete |
+| OBS-06 | Phase 03.1 | Complete |
+| OBS-07 | Phase 03.1 | Complete |
+| OBS-08 | Phase 03.1 | Complete |
+| OBS-09 | Phase 03.1 | Complete |
 | RADXA-01 | Phase 4 | Pending |
 | RADXA-02 | Phase 4 | Pending |
 
