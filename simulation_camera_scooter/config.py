@@ -75,6 +75,22 @@ OBSTACLE_CLASSES = {0: "person", 1: "bicycle", 2: "car", 3: "motorcycle",
 OBSTACLE_CLOSE_M = 3.0     # meters -- trigger slowdown
 OBSTACLE_STOP_M = 1.0      # meters -- trigger stop
 YOLO_CONF_THRESH = 0.35    # detection confidence threshold
+
+# BEV obstacle projection constants (Phase 03.1)
+BEV_OBSTACLE_ALPHA = 0.50           # EMA decay rate for obstacle grid (weight for incoming frame)
+BEV_OBSTACLE_RADIUS_PX = {          # BEV footprint radius per YOLO class_name
+    "person": 15,
+    "bicycle": 18,
+    "car": 40,
+    "motorcycle": 20,
+    "bus": 60,
+    "truck": 55,
+    "cat": 10,
+    "dog": 10,
+    "default": 15,
+}
+BEV_OBSTACLE_PENALTY_WEIGHT = 3.0   # cost adder per unit obstacle density in _score_candidates()
+BEV_HARD_BLOCK_DIST_M = 1.2         # obstacles closer than this get hard-blocked in BEV mask
 YOLO_MODEL_NAME = "yolov8n.pt"  # 3.2 MB nano model
 
 # =============================================================================
