@@ -142,6 +142,25 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-09T17:00:00.000Z
-Stopped at: Completed 03.1-04-PLAN.md (BEV HUD obstacle visualization — human checkpoint approved)
-Resume file: None
+Last session: 2026-03-09
+Stopped at: Cross-domain benchmark evaluation (Cityscapes + RUGD) — no plan file, exploratory work
+
+## Work Log
+
+### 2026-03-09 — Phase 03.1 complete + benchmark evaluation
+**Phase 03.1 YOLO BEV Obstacle Projection — ALL 4 PLANS DONE**
+- Plan 03.1-04: draw_bev_hud() extended with obstacle_zones_m, orange/red circles, human verified
+- 69 tests passing (9 new OBS tests + 60 existing)
+
+**Cross-domain segmentation benchmarks (no GSD plan — exploratory)**
+- Created `eval_cityscapes.py` — runs SegFormer on Cityscapes val via HuggingFace streaming
+- Created `eval_rugd.py` — runs SegFormer on RUGD outdoor scenes via HuggingFace streaming
+- New model discovered: `models/drivable-segformer-b0` (base: Cityscapes-pretrained SegFormer-B0, fine-tuned on drivable_dataset_v1, 92.7% custom mIoU)
+- Results: Cityscapes 67.7% road+sw IoU; RUGD 91% recall on asphalt+concrete (50% IoU)
+- Decision: benchmarks → 1 paragraph in §6 Discussion only, NOT full results sections
+- Key insight: RUGD 71.5% GT pixels are gravel trails (irrelevant for scooter); asphalt+concrete recall=91% is the honest number
+
+**Next session priorities:**
+1. Write cross-domain benchmark paragraph into thesis §6
+2. Update thesis with drivable-segformer-b0 numbers (92.7%)
+3. Plan Phase 3 (Demo Integration) — no hardware needed to plan
