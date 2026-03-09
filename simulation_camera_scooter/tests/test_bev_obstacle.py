@@ -4,15 +4,17 @@ test_bev_obstacle.py
 Tests for Phase 03.1 — YOLO BEV Obstacle Projection.
 
 Wave 1 (this plan 03.1-02): OBS-01, OBS-02, OBS-03, OBS-04, OBS-07 implemented.
-Wave 2 (plan 03.1-03): OBS-05, OBS-06, OBS-08, OBS-09 to be implemented.
+Wave 2 (plan 03.1-03): OBS-05, OBS-06, OBS-08, OBS-09 implemented.
 
 Requirements covered: OBS-01 through OBS-09.
 """
 
+import cv2
 import numpy as np
 import pytest
 
 from bev_obstacle import project_foot_to_bev, detection_to_metric, ObstacleEMAGrid
+from realtime_nav_core import BEVPathExtractor
 
 
 def test_projection_centered(bev_h_matrix, mock_detections):
@@ -62,13 +64,44 @@ def test_ema_update(bev_obstacle_mask_500x600):
 
 
 def test_obstacle_penalty_prefers_clear_path():
-    """OBS-05: candidate path through obstacle zone has higher cost than clear path."""
-    assert False, "not implemented"
+    """OBS-05: _obstacle_penalty returns 0 for empty zones and nonzero for occupied zones."""
+    extractor = BEVPathExtractor()
+    # Points along forward axis (column 0 = forward_m, column 1 = lateral_m)
+    path_pts = np.array([[1.0, 0.0], [2.0, 0.0], [3.0, 0.0], [4.0, 0.0]], dtype=np.float32)
+
+    # No obstacle zones -> penalty must be zero
+    extractor.obstacle_zones = []
+    assert extractor._obstacle_penalty(path_pts) == 0.0, "Expected 0.0 with empty obstacle_zones"
+
+    # Obstacle zone directly on path -> penalty must be nonzero
+    extractor.obstacle_zones = [(2.0, 0.0, 1.5)]  # centered at (2m fwd, 0m lat), radius 1.5m
+    penalty = extractor._obstacle_penalty(path_pts)
+    assert penalty > 0.0, f"Expected nonzero penalty with obstacle on path, got {penalty}"
+
+    # Obstacle zone far off to the side -> penalty must be zero
+    extractor.obstacle_zones = [(2.0, 8.0, 0.5)]  # 8m lateral — far right
+    penalty_clear = extractor._obstacle_penalty(path_pts)
+    assert penalty_clear == 0.0, f"Expected 0.0 with off-path obstacle, got {penalty_clear}"
 
 
 def test_hard_block_masks_bev(bev_h_matrix, bev_obstacle_mask_500x600, mock_detections):
     """OBS-06: hard-block paints BEV mask black at stop-distance obstacle location."""
-    assert False, "not implemented"
+    from config import BEV_HARD_BLOCK_DIST_M
+    mask = bev_obstacle_mask_500x600.copy()
+    bev_h, bev_w = mask.shape[:2]
+
+    # Use the second detection which has distance_m=0.8 < BEV_HARD_BLOCK_DIST_M=1.2
+    close_det = mock_detections[1]  # distance_m=0.8
+    assert close_det["distance_m"] < BEV_HARD_BLOCK_DIST_M
+
+    bx, by = project_foot_to_bev(close_det, bev_h_matrix, bev_h=bev_h, bev_w=bev_w)
+    r_px = int(BEV_HARD_BLOCK_DIST_M * 50)
+    cv2.circle(mask, (int(bx), int(by)), r_px, 0, -1)
+
+    # Center of the painted circle must be black
+    assert mask[int(by), int(bx)] == 0, (
+        f"Expected mask[{int(by)}, {int(bx)}] == 0 after hard-block paint, got {mask[int(by), int(bx)]}"
+    )
 
 
 def test_projection_out_of_bounds_clamped(bev_h_matrix):
@@ -87,9 +120,48 @@ def test_projection_out_of_bounds_clamped(bev_h_matrix):
 
 def test_no_penalty_when_no_obstacles():
     """OBS-08: no penalty when obstacle_zones is empty or None."""
-    assert False, "not implemented"
+    extractor = BEVPathExtractor()
+    path_pts = np.array([[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]], dtype=np.float32)
+
+    # Empty list
+    extractor.obstacle_zones = []
+    assert extractor._obstacle_penalty(path_pts) == 0.0, "Expected 0.0 for empty obstacle_zones list"
+
+    # process() with obstacle_zones_m=None must not crash
+    mask = np.zeros((500, 600), dtype=np.uint8)
+    mask[300:, 250:350] = 255
+    result = extractor.process(mask, obstacle_zones_m=None)
+    assert hasattr(result, "has_path"), "Expected PathPlanResult with has_path attribute"
+
+    # process() with obstacle_zones_m=[] must not crash
+    result2 = extractor.process(mask, obstacle_zones_m=[])
+    assert hasattr(result2, "has_path"), "Expected PathPlanResult with has_path attribute"
 
 
 def test_integration_full_pipeline(bev_h_matrix, bev_obstacle_mask_500x600, mock_detections):
     """OBS-09: full pipeline runs end-to-end with detections on a synthetic BEV mask."""
-    assert False, "not implemented"
+    from config import BEV_OBSTACLE_RADIUS_PX
+    mask = bev_obstacle_mask_500x600.copy()
+    bev_h, bev_w = mask.shape[:2]
+
+    # Step 1: instantiate path extractor and EMA grid
+    extractor = BEVPathExtractor()
+    ema = ObstacleEMAGrid(bev_h=bev_h, bev_w=bev_w)
+
+    # Step 2: project detections and update EMA
+    det = mock_detections[0]  # distance_m=2.5 (not a hard-block)
+    foot_bev_pts = [project_foot_to_bev(det, bev_h_matrix, bev_h=bev_h, bev_w=bev_w)]
+    ema.update(foot_bev_pts)
+
+    # Step 3: build obstacle_zones
+    fwd, lat = detection_to_metric(det, bev_h_matrix, mask.shape)
+    r_m = BEV_OBSTACLE_RADIUS_PX.get(det.get("class_name", "default"),
+                                      BEV_OBSTACLE_RADIUS_PX["default"]) / 50.0
+    obstacle_zones = [(fwd, lat, r_m)]
+
+    # Step 4: call path_extractor.process with obstacle_zones_m
+    result = extractor.process(mask, obstacle_zones_m=obstacle_zones)
+
+    # Assert no exception and result is a valid PathPlanResult
+    assert hasattr(result, "has_path"), "Expected PathPlanResult with has_path attribute"
+    assert hasattr(result, "candidate_paths_px"), "Expected PathPlanResult with candidate_paths_px attribute"

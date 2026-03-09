@@ -51,12 +51,15 @@ from config import (
     GPS_STEER_GAIN, GPS_STEER_BIAS_MAX_DEG,
     SPEED_TURN,
     PREDICT_ENABLED,
+    BEV_OBSTACLE_RADIUS_PX,
+    BEV_HARD_BLOCK_DIST_M,
 )
 from data_logger import DataLogger
 from scooter_commander import ScooterCommander
 from gps_navigator import GPSNavigator
 from object_detector import TinyObjectDetector, estimate_obstacle_distance
 from bev_calibration import run_calibration, load_bev_params
+from bev_obstacle import project_foot_to_bev, detection_to_metric, ObstacleEMAGrid
 from stabilization import FrameStabilizer, TemporalMaskSmoother
 from masks import split_masks, suppress_grass_in_mask, clean_sidewalk_mask, select_main_component, anchor_ego_to_mask, ego_connected_mask
 from heading import heading_to_command, compute_speed
@@ -172,6 +175,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         path_cfg.search_top_k = 4
     path_extractor = BEVPathExtractor(path_cfg)
     pp_controller = AdaptivePurePursuitController(PurePursuitConfig(dt_s=1.0 / 8.0))
+    obstacle_ema = ObstacleEMAGrid(bev_h=BEV_SIZE[1], bev_w=BEV_SIZE[0])
     print(f"BEV planner ENABLED (work grid {work_grid}x{work_grid}).")
 
     # Initialize BEV predictive frame reuse
@@ -399,9 +403,14 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     min_obstacle_dist = min((d["distance_m"] for d in detections), default=None)
                     last_detections = detections
                     last_min_obstacle_dist = min_obstacle_dist
+                    # --- Obstacle BEV projection + EMA update ---
+                    foot_bev_pts = [project_foot_to_bev(d, H_mat, bev_h=BEV_SIZE[1], bev_w=BEV_SIZE[0])
+                                    for d in detections]
+                    obstacle_ema.update(foot_bev_pts)
                 else:
                     detections = last_detections
                     min_obstacle_dist = last_min_obstacle_dist
+                    obstacle_ema.update([])  # decay EMA on skipped detection frames
                 t_det = (time.time() - t_det_start) * 1000
 
                 # --- 3) BEV projection + cleaning ---
@@ -423,7 +432,18 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 t_bev = (time.time() - t_bev_start) * 1000
 
                 # --- 4) Path extraction (medial axis + graph + spline) ---
-                nav_out = path_extractor.process(bev_sidewalk)
+                # Hard-block: paint stop-zone obstacles black in BEV mask; build metric zones
+                obstacle_zones: list = []
+                for _d in detections:
+                    _bx, _by = project_foot_to_bev(_d, H_mat, bev_h=BEV_SIZE[1], bev_w=BEV_SIZE[0])
+                    if _d.get("distance_m", 999.0) < BEV_HARD_BLOCK_DIST_M:
+                        _r_px = int(BEV_HARD_BLOCK_DIST_M * 50)
+                        cv2.circle(bev_sidewalk, (int(_bx), int(_by)), _r_px, 0, -1)
+                    _fwd, _lat = detection_to_metric(_d, H_mat, bev_sidewalk.shape)
+                    _r_m = BEV_OBSTACLE_RADIUS_PX.get(_d.get("class_name", "default"),
+                                                       BEV_OBSTACLE_RADIUS_PX["default"]) / 50.0
+                    obstacle_zones.append((_fwd, _lat, _r_m))
+                nav_out = path_extractor.process(bev_sidewalk, obstacle_zones_m=obstacle_zones if obstacle_zones else None)
                 t_skel = nav_out.t_skeleton_ms
                 t_path = nav_out.t_path_ms
 
