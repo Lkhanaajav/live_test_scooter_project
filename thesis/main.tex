@@ -412,7 +412,7 @@ We define three metrics to quantify pipeline quality:
 \label{ch:closed_loop}
 % =====================================================================
 
-This chapter extends the offline perception pipeline described in Chapter~\ref{ch:methodology} to a real-time closed-loop system capable of autonomous sidewalk navigation. We describe seven additions: (1)~a two-layer temporal mask stabilization scheme, (2)~a lightweight object-detection module for dynamic obstacle awareness, (3)~GPS-based waypoint navigation for global route following, (4)~precise steering-angle and speed computation, (5)~a serial command protocol for the scooter platform, (6)~temporal smoothing for heading and speed stability, and (7)~a live demonstration system that integrates all components.
+This chapter extends the offline perception pipeline described in Chapter~\ref{ch:methodology} to a real-time closed-loop system capable of autonomous sidewalk navigation. We describe eight additions: (1)~a two-layer temporal mask stabilization scheme, (2)~a lightweight object-detection module for dynamic obstacle awareness, (3)~GPS-based waypoint navigation for global route following, (4)~occupancy-aware path planner robustness for handling BEV collapse and stale-path lock, (5)~precise steering-angle and speed computation, (6)~a serial command protocol for the scooter platform, (7)~temporal smoothing for heading and speed stability, and (8)~a live demonstration system that integrates all components.
 
 \section{Extended System Architecture}
 \label{sec:system_arch}
@@ -574,6 +574,46 @@ The final heading command blends local vision heading $\theta_{\text{vis}}$ and 
 \label{eq:heading_fusion}
 \end{equation}
 We use $w_v = 0.7$, $w_g = 0.3$ so that vision dominates for obstacle avoidance and local path tracking, while GPS gently biases the scooter toward the correct global direction. When no GPS fix is available (e.g., under heavy tree canopy), $w_g$ falls to zero and the system reverts to pure vision control.
+
+% -----------------------------------------------------------------
+\section{Occupancy-Aware Path Planner Robustness}
+\label{sec:path_robustness}
+
+The BEV path extractor operates on a segmentation mask that can undergo transient \emph{occupancy collapse}---frames in which the projected BEV sidewalk region shrinks dramatically due to segmentation under-confidence, glare, or textural ambiguity near the edges of the camera's view. Without mitigation, such collapses cause the predictor to hold a stale path estimate and the controller to apply a persistent lateral bias that outlasts the collapse window. This section describes the occupancy-aware mechanisms introduced to address this failure mode.
+
+\subsection{BEV Occupancy Gating in the Frame Predictor}
+
+The predictive frame-reuse module skips full BEV segmentation inference on frames where the predicted BEV occupancy is expected to resemble the previous frame, reducing latency at the cost of a small accuracy trade-off. A failure mode arises when the predictor continues to skip while actual BEV occupancy has dropped sharply, propagating a stale high-confidence path derived from a mask that no longer reflects the current scene.
+
+We address this with two additions:
+\begin{enumerate}
+  \item \textbf{Occupancy tracking:} After each compute frame, the BEV occupancy ratio $r_{\mathrm{occ}} \in [0,1]$ (fraction of BEV pixels classified as sidewalk) is stored in the predictor state.
+  \item \textbf{Skip blocking:} Before allowing a skip, the predictor checks whether the stored $r_{\mathrm{occ}}$ falls below a minimum evidence threshold. If so, the skip is blocked and full inference is forced. Additionally, if the predicted BEV mask is sparse, the predicted path is invalidated and the stale path state is cleared to prevent prolonged steering lock.
+\end{enumerate}
+
+\subsection{Low-Evidence Mode and Aggressive Hold Decay}
+
+Even when the predictor runs full inference every frame, transient BEV collapses can still cause the path extractor's hold mechanism to accumulate lateral bias over multiple frames. We introduce a \emph{low-evidence mode}: when $r_{\mathrm{occ}}$ falls below a configurable floor threshold, the extractor activates an aggressive hold-decay policy that progressively attenuates the lateral component of the retained path, steering the output toward the image center as evidence degrades. When $r_{\mathrm{occ}}$ recovers, the extractor exits low-evidence mode and resumes normal candidate scoring.
+
+\subsection{Center- and Continuity-Aware Candidate Scoring}
+
+The path extractor evaluates multiple candidate paths extracted from the skeleton graph and selects the highest-scoring one. The original scoring function used only path length and forward progress. We add two terms:
+\begin{itemize}
+  \item \textbf{Center preference:} A penalty proportional to the lateral offset of the path's near-ego segment from the BEV centerline. This biases selection toward paths that depart the ego zone along the image center axis, suppressing spurious short branches that point toward the BEV image edges.
+  \item \textbf{Temporal continuity:} A bonus for candidate paths whose near-ego heading agrees with the previously accepted heading, reducing abrupt direction changes at junction frames.
+\end{itemize}
+
+\subsection{Skeleton Geodesic Fallback Path}
+
+When the skeleton graph is fragmented---a common consequence of aggressive branch pruning on short BEV masks---the Dijkstra-based extractor may produce only zero or one viable graph candidate. In such frames, the system falls back to a \emph{skeleton geodesic path}: a direct shortest-path computation over the raw skeleton pixel graph from the ego-nearest skeleton seed to the most forward-progressing far endpoint, using a pixel-level Dijkstra traversal. The resulting pixel-space polyline is converted to metric coordinates and ego-anchored.
+
+The skeleton fallback is preferred over the mask-centerline fallback, which uses only the column-wise centroid of the BEV mask and carries no skeleton geometry. An override rule additionally forces skeleton candidate selection when the top-scoring graph candidate is both short in forward progress ($<$\SI{0.8}{m}) and laterally biased near the ego point---a signature of near-ego triangle branch artifacts that cause false early turns.
+
+\subsection{Bounded Discontinuity Hold in Pure Pursuit}
+
+When the selected path changes abruptly between frames---for example, when the planner transitions from a held stale path to a freshly recomputed one---the instantaneous heading change can be large enough to cause physical instability. We add a \emph{bounded discontinuity hold}: when the heading implied by the new path differs from the current heading by more than a threshold, the controller holds the previous heading for up to $N_{\mathrm{hold}}$ frames while gradually blending toward the new path. If no acceptable path is found within $N_{\mathrm{hold}}$ frames, the hold is released and the system falls back to a centerline estimate, preventing indefinite stale-path lock while still absorbing brief acquisition transients.
+
+Path source (which component produced the accepted path) and BEV occupancy ratio are logged to CSV and overlaid on the BEV HUD at runtime, enabling post-hoc diagnosis of collapse windows and fallback activations.
 
 % -----------------------------------------------------------------
 \section{Steering Angle and Speed Computation}
@@ -839,6 +879,57 @@ GPS waypoint following was tested along a five-waypoint route on the OU Norman c
   \item Under tree canopy, GPS accuracy degraded (horizontal error $> \SI{5}{m}$), but the vision-dominant weighting prevented the heading from deviating into obstacles.
 \end{itemize}
 
+\section{Path Planning Robustness Evaluation}
+\label{sec:path_robustness_results}
+
+To quantify the benefit of the occupancy-aware robustness improvements described in Section~\ref{sec:path_robustness}, we ran the full pipeline on a held-out campus recording (\texttt{test\_video\_june\_03\_3.mp4}, 2,058 frames, $\approx$3.8~min at 9~FPS) under three configurations: the baseline (predictor enabled, original hold logic), a diagnostic no-predict baseline (predictor disabled entirely), and Experiment~1 (E1: selected occupancy-aware improvements).
+
+\subsection{Heading Error Reduction}
+
+Heading error is measured as the absolute steering angle $|\theta|$ (degrees) output by the vision path pipeline.
+Table~\ref{tab:robustness_heading} compares the configurations globally and within a known BEV collapse window (frames 1520--1600) where intermittent occupancy drops were identified during diagnosis.
+
+\begin{table}[h]
+\centering
+\caption{Path planning robustness evaluation on \texttt{test\_video\_june\_03\_3.mp4} (2,058~frames). Collapse window = frames 1520--1600 (80~frames with confirmed BEV occupancy drop). E1 = selected occupancy-aware improvements (Section~\ref{sec:path_robustness}).}
+\label{tab:robustness_heading}
+\begin{tabular}{lcccc}
+\toprule
+Configuration & Mean $|\theta|$ ($^\circ$) & P95 $|\theta|$ ($^\circ$) & Collapse mean ($^\circ$) & Collapse $|\theta|{>}8^\circ$ (frames) \\
+\midrule
+Baseline (predict ON)     & 0.824 & 2.693 & 5.85 & 38 \\
+E1 (predict ON)           & \textbf{0.690} & \textbf{2.407} & \textbf{2.58} & \textbf{2} \\
+\midrule
+No-predict before E1      & 19.98 & 28.13 & ---  & --- \\
+No-predict after E1       & 0.776 & 2.646 & ---  & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The E1 configuration reduces mean heading error by 16.3\% and P95 heading error by 10.6\% across all frames. The most substantial improvement is in the collapse window: the number of frames exceeding $8^\circ$ drops from 38 to~2 (a 94.7\% reduction), and the collapse-window mean error decreases from $5.85^\circ$ to $2.58^\circ$ (55.9\% reduction). The no-predict diagnostic is particularly revealing: without the predictor, the baseline exhibits severe persistent steering lock (mean $|\theta| = 19.98^\circ$, P95~$= 28.13^\circ$), confirming that the original hold mechanism was accumulating lateral bias independently of the predictor. After the E1 fix, no-predict operation recovers to mean $|\theta| = 0.776^\circ$ and P95~$= 2.646^\circ$---comparable to the predict-ON baseline---confirming that the stale-lock failure originated in the path-hold logic rather than in the predictor itself.
+
+\subsection{Path Source Distribution}
+
+Table~\ref{tab:path_source_dist} shows the distribution of accepted path sources for the primary E1 run.
+
+\begin{table}[h]
+\centering
+\caption{Path source distribution for E1 (predict ON) run on \texttt{test\_video\_june\_03\_3.mp4} (2,057~accepted frames). Sources reported per-frame in the \texttt{path\_source} CSV field.}
+\label{tab:path_source_dist}
+\begin{tabular}{lrr}
+\toprule
+Path Source & Frames & Fraction (\%) \\
+\midrule
+\texttt{predict}              & 1457 & 70.8 \\
+\texttt{graph}                & 523  & 25.4 \\
+\texttt{fallback\_centerline} & 55   &  2.7 \\
+\texttt{fallback\_hold}       & 22   &  1.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The predictor path dominates at 70.8\%, as expected given the inter-frame consistency of campus sidewalk geometry at 9~FPS. Dijkstra graph paths account for 25.4\% of frames, covering compute frames where predictor skip is blocked by low occupancy. The two degenerate fallbacks (centerline and hold) together account for fewer than 4\% of frames, confirming that the graph and predictor layers resolve the vast majority of frames without resorting to geometry-free fallbacks.
+
 \section{Live Demonstration Results}
 
 The full integrated system---segmentation, object detection, GPS, and serial commands---was tested on campus sidewalks at the University of Oklahoma using an iPhone camera connected to a MacBook via Continuity Camera. The HUD displays the steering angle, speed, serial command string, detection boxes with distances, and GPS status simultaneously.
@@ -878,7 +969,7 @@ This thesis presented a modular vision-based sidewalk navigation system designed
 
 By combining hand-labeled and pseudo-labeled data in a teacher--student setup, we trained a compact SegFormer-B0 model that achieves robust sidewalk segmentation under diverse campus lighting and geometry while remaining suitable for CPU-only inference. The full pipeline runs at approximately \SI{9}{FPS} at $640\times360$ resolution, selects the correct branch at T- and 4-way junctions in 95\% of evaluated cases, and maintains an average mask--path alignment of 98\%.
 
-The closed-loop extension demonstrates that the perception-to-control stack can operate within the latency budget for pedestrian-speed navigation. A systematic benchmark across 11 SegFormer checkpoints identified \texttt{my-segformer-road} as the most stable model variant, achieving 99.3\% of consecutive frame pairs with IoU $\geq 0.85$ on raw unsmoothed output. A subsequent 35-combination EMA parameter sweep ($\alpha \times c_{\text{thresh}}$) raised smoothed stability to 99.6\%---a 9.6~percentage-point margin above the 90\% target---with $\alpha = 0.65$ selected to preserve obstacle responsiveness. Temporal smoothing of heading estimates further reduces frame-to-frame jitter, and the live demonstration system validates the approach on real sidewalks with a consumer camera.
+The closed-loop extension demonstrates that the perception-to-control stack can operate within the latency budget for pedestrian-speed navigation. A systematic benchmark across 11 SegFormer checkpoints identified \texttt{my-segformer-road} as the most stable model variant, achieving 99.3\% of consecutive frame pairs with IoU $\geq 0.85$ on raw unsmoothed output. A subsequent 35-combination EMA parameter sweep ($\alpha \times c_{\text{thresh}}$) raised smoothed stability to 99.6\%---a 9.6~percentage-point margin above the 90\% target---with $\alpha = 0.65$ selected to preserve obstacle responsiveness. Occupancy-aware path planner robustness improvements reduced mean absolute heading error from $0.824^\circ$ to $0.690^\circ$ overall, and cut the number of frames exceeding $8^\circ$ during BEV collapse windows from 38 to 2 (a 94.7\% reduction). Temporal smoothing of heading estimates further reduces frame-to-frame jitter, and the live demonstration system validates the approach on real sidewalks with a consumer camera.
 
 \section{Limitations}
 
@@ -892,10 +983,10 @@ Several limitations remain:
 
 \section{Future Work}
 
-Future work will extend the system along three directions:
+Future work will extend the system along five directions:
 
 \begin{enumerate}
-  \item \textbf{Dynamic obstacle detection and avoidance.} Integrate a lightweight person/bicycle detector (e.g., YOLOv8-nano) into the BEV layer, projecting detections as exclusion zones that the skeleton path routes around. Add explicit stop/slow behavior when the path is fully blocked.
+  \item \textbf{BEV obstacle projection from YOLO detections.} YOLOv8-nano object detection is currently used only for speed modulation via monocular distance estimation (Section~\ref{sec:object_detection}). A natural next step is to project each detected bounding box onto the BEV plane using the same homography, converting it into a 2-D exclusion zone that the skeleton-based path planner must route around. This would enable the path to actively deviate from an oncoming pedestrian rather than only slowing down, and would allow the planner to find an alternative branch when the primary path is fully blocked by a static obstacle.
 
   \item \textbf{Additional fine-tuning data.} The segmentation model was trained on 300 hand-labeled frames supplemented by 2{,}300 pseudo-labeled frames. Collecting and annotating additional frames from diverse conditions---wet pavement, nighttime, steep ramps, and dense pedestrian environments---using a labeling tool such as LabelStudio and retraining with the teacher--student pipeline is expected to further improve boundary accuracy and reduce false positives at sidewalk edges.
 

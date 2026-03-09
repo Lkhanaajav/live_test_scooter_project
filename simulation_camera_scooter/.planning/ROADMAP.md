@@ -126,6 +126,16 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5 (4 and 5 are 
 | 4. Radxa Deployment (STRETCH) | 0/2 | Not started | - |
 | 5. Cloud-Offloaded Navigation (STRETCH RESEARCH) | 0/2 | Not started | - |
 
+### Phase 6: Path quality improvements: post-selection smoothing, BEV mask morphological closing, stronger temporal continuity weight, and draw fitted cubic on overlay
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 5
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 6 to break down)
+
 ---
 *Roadmap created: 2026-03-04*
 *Granularity: coarse (3-5 phases)*

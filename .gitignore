@@ -1,0 +1,22 @@
+# Video files
+*.mp4
+*.MOV
+*.avi
+*.mov
+*.mkv
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Large model binaries (keep config/json, skip weights)
+simulation_camera_scooter/models/drivable-segformer-b0/
+
+# Zip archives
+*.zip
+
+# Temp / generated
+*.tmp
+/tmp/

@@ -130,6 +130,7 @@ Recent decisions affecting current work:
 ### Roadmap Evolution
 
 - Phase 3.1 inserted after Phase 3: YOLO BEV Obstacle Projection (INSERTED 2026-03-09) — project YOLO detections onto BEV as metric exclusion zones for path-avoiding navigation
+- Phase 6 added: Path quality improvements — post-selection smoothing, BEV mask morphological closing, stronger temporal continuity weight, draw fitted cubic on overlay
 
 ### Pending Todos
 
