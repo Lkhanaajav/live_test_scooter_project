@@ -101,6 +101,7 @@ def draw_bev_hud(
     speed_mps=0.0,
     path_source=None,
     mask_occ_ratio=None,
+    obstacle_zones_m=None,
 ):
     """Draw BEV visualization with paths, heading, and speed."""
     h_bev, w_bev = bev_sidewalk.shape
@@ -110,8 +111,9 @@ def draw_bev_hud(
     vis[bev_sidewalk > 0] = (80, 160, 80)
 
     # Skeleton in bright white, thicker for visibility
-    skel_thick = cv2.dilate(skel, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
-    vis[skel_thick > 0] = (200, 200, 200)
+    if skel is not None:
+        skel_thick = cv2.dilate(skel, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+        vis[skel_thick > 0] = (200, 200, 200)
 
     # Draw all candidate paths
     for idx, (path_pts, plen) in enumerate(paths):
@@ -155,5 +157,19 @@ def draw_bev_hud(
         otxt = f"{float(mask_occ_ratio) * 100.0:.1f}%" if mask_occ_ratio is not None else "-"
         cv2.putText(vis, f"Src: {ptxt} | Occ: {otxt}", (10, 78),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.52, (170, 230, 170), 1, cv2.LINE_AA)
+
+    # Obstacle exclusion zone circles (Phase 03.1) -- only drawn when provided
+    if obstacle_zones_m:
+        from config import NAV_BEV_FORWARD_M, NAV_BEV_LATERAL_M, BEV_HARD_BLOCK_DIST_M
+        for fwd_m, lat_m, rad_m in obstacle_zones_m:
+            col = int((lat_m / max(1e-6, NAV_BEV_LATERAL_M) + 0.5) * max(1, w_bev - 1))
+            row = int((1.0 - fwd_m / max(1e-6, NAV_BEV_FORWARD_M)) * max(1, h_bev - 1))
+            r_px = max(3, int(rad_m * h_bev / max(1e-6, NAV_BEV_FORWARD_M)))
+            col = int(np.clip(col, 0, w_bev - 1))
+            row = int(np.clip(row, 0, h_bev - 1))
+            # Red = stop zone, orange = approaching
+            color = (0, 0, 255) if fwd_m < BEV_HARD_BLOCK_DIST_M else (0, 165, 255)
+            cv2.circle(vis, (col, row), r_px, color, 2)
+            cv2.circle(vis, (col, row), 3, color, -1)
 
     return vis

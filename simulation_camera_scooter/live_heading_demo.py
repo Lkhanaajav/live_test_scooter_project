@@ -290,6 +290,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             dt_frame = 1.0 / fps if fps > 0.5 else 0.13
             speed_est = speed_buffer[-1] if speed_buffer else 0.0
             heading_est = heading_buffer[-1] if heading_buffer else 0.0
+            obstacle_zones: list = []  # populated in compute branch; empty on skip frames
             predict_skip = (
                 predictor is not None
                 and predictor.should_skip(speed=speed_est, dt=dt_frame)
@@ -626,7 +627,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 bev_vis = draw_bev_hud(None, paths, best_idx, skel, bev_sidewalk,
                                        command, heading_smoothed, speed_smoothed,
                                        path_source=getattr(nav_out, "path_source", None),
-                                       mask_occ_ratio=getattr(nav_out, "mask_occ_ratio", None))
+                                       mask_occ_ratio=getattr(nav_out, "mask_occ_ratio", None),
+                                       obstacle_zones_m=obstacle_zones if obstacle_zones else None)
 
                 display_h = 540
                 cam_display = cv2.resize(cam_vis,
