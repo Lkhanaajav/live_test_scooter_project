@@ -128,16 +128,17 @@ Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5 (4 and 5 are 
 
 ### Phase 6: Path quality improvements: post-selection smoothing, BEV mask morphological closing, stronger temporal continuity weight, and draw fitted cubic on overlay
 
-**Goal:** [To be planned]
-**Requirements**: TBD
-**Depends on:** Phase 5
-**Plans:** 0 plans
+**Goal:** Improve visible path quality on the camera overlay and reduce frame-to-frame instability: smooth lateral jitter in the extracted path before cubic fitting, fill larger BEV mask gaps with stronger morphological closing, increase temporal continuity weight to reduce branch-flipping, and draw the fitted cubic spline (not raw skeleton pixels) on the camera overlay.
+**Requirements**: PATH-SMOOTH-01, MORPH-CLOSE-01, CONT-WEIGHT-01, CUBIC-OVERLAY-01
+**Depends on:** Phase 5 (planned after Phase 03.1 completion)
+**Plans:** 2 plans
 
 Plans:
-- [ ] TBD (run /gsd:plan-phase 6 to break down)
+- [ ] 06-01-PLAN.md — Wave 1: Write 10 failing test stubs in tests/test_path_quality.py + noisy_path_m fixture in conftest.py
+- [ ] 06-02-PLAN.md — Wave 2: Implement all 4 improvements in realtime_nav_core.py + live_heading_demo.py; all 10 tests green
 
 ---
 *Roadmap created: 2026-03-04*
 *Granularity: coarse (3-5 phases)*
-*Coverage: 15/15 v1 requirements mapped + 9 OBS requirements (Phase 03.1)*
-*Last updated: 2026-03-09 — Phase 03.1 planned (4 plans)*
+*Coverage: 15/15 v1 requirements mapped + 9 OBS requirements (Phase 03.1) + 4 PATH-QUALITY requirements (Phase 6)*
+*Last updated: 2026-03-11 — Phase 6 planned (2 plans)*
