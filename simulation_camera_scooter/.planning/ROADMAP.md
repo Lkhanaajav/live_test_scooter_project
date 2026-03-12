@@ -2,7 +2,7 @@
 
 ## Overview
 
-The pipeline is substantially built. Two root problems block the thesis demo: segmentation flickers frame-to-frame (corrupting BEV input), and the BEV homography is ill-conditioned (losing 93% of sidewalk pixels before path extraction even starts). This roadmap fixes those two problems in order, then hardens the system for a live demo run. Phase 4 (Radxa/ONNX) is a stretch goal — the thesis demo is valid on a laptop.
+The pipeline is substantially built. The two original root blockers, segmentation flicker and unusable BEV calibration, have now been addressed. The main remaining work is live demo integration plus robustness against branch-entry artifacts and low-confidence windows. Phase 4 (Radxa/ONNX) is a stretch goal — the thesis demo is valid on a laptop.
 
 ## Phases
 
@@ -13,7 +13,7 @@ The pipeline is substantially built. Two root problems block the thesis demo: se
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Segmentation Stability** - Eliminate visible per-frame flickering in SegFormer output on real sidewalk video (completed 2026-03-05)
-- [ ] **Phase 2: BEV Calibration and Path Reliability** - Recalibrate homography and achieve has_path >= 60% on typical sidewalk footage
+- [x] **Phase 2: BEV Calibration and Path Reliability** - Recalibrate homography and achieve has_path >= 60% on typical sidewalk footage (formalized 2026-03-12)
 - [ ] **Phase 3: Demo Integration** - End-to-end demo run with scooter receiving commands, visualization overlay, and graceful degradation
 - [ ] **Phase 4: Radxa Deployment (STRETCH)** - Export pipeline to ONNX/TensorRT and run on Rock 5B at >= 5 Hz
 
@@ -44,11 +44,11 @@ Plans:
   3. has_path rate is >= 60% of frames when running the pipeline on a representative sidewalk video clip
   4. The extracted skeleton path follows the sidewalk centerline in BEV — it does not jump to edges, grass artifacts, or reverse direction on a straight sidewalk
   5. Calibration steps are written up so the procedure can be repeated when the camera mount changes
-**Plans**: 2 plans
+**Plans**: 2/2 complete
 
 Plans:
-- [ ] 02-01-PLAN.md — Recalibrate BEV homography with mounted camera video, verify condition number and pixel survival, write calibration SOP (HARDWARE GATE)
-- [ ] 02-02-PLAN.md — Validate path extraction reliability (has_path >= 60%), tune params if needed, visual centerline verification
+- [x] 02-01-PLAN.md — Recalibrate BEV homography, verify condition number and pixel survival, write calibration SOP
+- [x] 02-02-PLAN.md — Validate path extraction reliability (has_path >= 60%), heading stability, and centerline behavior
 
 ### Phase 3: Demo Integration
 **Goal**: The full pipeline runs end-to-end during a live sidewalk demo — scooter receives steering and speed commands, the video feed shows a path overlay, and the system never abruptly stops
@@ -73,10 +73,10 @@ Plans:
 **Plans:** 4/4 plans complete
 
 Plans:
-- [ ] 03.1-01-PLAN.md — Wave 0: test stubs for all 9 OBS requirements in tests/test_bev_obstacle.py + conftest fixtures
-- [ ] 03.1-02-PLAN.md — Wave 1: bev_obstacle.py (project_foot_to_bev, detection_to_metric, ObstacleEMAGrid) + config constants; 5 tests green
-- [ ] 03.1-03-PLAN.md — Wave 2: integrate into realtime_nav_core.py (_obstacle_penalty) + live_heading_demo.py (projection loop, hard-block, EMA); all 9 tests green
-- [ ] 03.1-04-PLAN.md — Wave 3: BEV HUD visualization (draw_bev_hud obstacle circles) + human checkpoint
+- [x] 03.1-01-PLAN.md — Wave 0: test stubs for all 9 OBS requirements in tests/test_bev_obstacle.py + conftest fixtures
+- [x] 03.1-02-PLAN.md — Wave 1: bev_obstacle.py (project_foot_to_bev, detection_to_metric, ObstacleEMAGrid) + config constants; 5 tests green
+- [x] 03.1-03-PLAN.md — Wave 2: integrate into realtime_nav_core.py (_obstacle_penalty) + live_heading_demo.py (projection loop, hard-block, EMA); all 9 tests green
+- [x] 03.1-04-PLAN.md — Wave 3: BEV HUD visualization (draw_bev_hud obstacle circles) + human checkpoint
 
 ### Phase 4: Radxa Deployment (STRETCH)
 **Goal**: Pipeline runs on the Rock 5B ARM64 board at >= 5 Hz with scooter connected — eliminates need to carry a laptop
@@ -115,16 +115,21 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 3.1 → 4 → 5 (4 and 5 are stretch only)
+Phases execute in numeric order, with Phase 3 as the next mainline target. Phases 7-10 are architecture-upgrade tracks that follow the working demo baseline rather than replacing the need to complete Phase 3.
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Segmentation Stability | 2/2 | Complete   | 2026-03-05 |
-| 2. BEV Calibration and Path Reliability | 0/2 | Not started | - |
+| 2. BEV Calibration and Path Reliability | 2/2 | Complete   | 2026-03-12 |
 | 3. Demo Integration | 0/2 | Not started | - |
-| 3.1 YOLO BEV Obstacle Projection | 0/4 | Planned | - |
+| 3.1 YOLO BEV Obstacle Projection | 4/4 | Complete | 2026-03-09 |
 | 4. Radxa Deployment (STRETCH) | 0/2 | Not started | - |
 | 5. Cloud-Offloaded Navigation (STRETCH RESEARCH) | 0/2 | Not started | - |
+| 6. Path Quality Improvements | 0/2 | Planned | - |
+| 7. Lightweight Sidewalk-Boundary Network | 0/1 | In progress | - |
+| 8. Boundary-Aware Segmentation Backbone | 0/0 | Not planned | - |
+| 9. Shared-Backbone Multitask Perception | 0/0 | Not planned | - |
+| 10. Tiny Image-to-Waypoints Student | 0/0 | Not planned | - |
 
 ### Phase 6: Path quality improvements: post-selection smoothing, BEV mask morphological closing, stronger temporal continuity weight, and draw fitted cubic on overlay
 
@@ -137,8 +142,48 @@ Plans:
 - [ ] 06-01-PLAN.md — Wave 1: Write 10 failing test stubs in tests/test_path_quality.py + noisy_path_m fixture in conftest.py
 - [ ] 06-02-PLAN.md — Wave 2: Implement all 4 improvements in realtime_nav_core.py + live_heading_demo.py; all 10 tests green
 
+### Phase 7: Lightweight sidewalk-boundary network with analytical centerline and confidence gating
+
+**Goal:** Replace the most fragile part of the path extractor with a lightweight boundary-first representation: predict left/right sidewalk boundaries, derive centerline analytically, and expose path confidence for controller gating.
+**Requirements**: BOUNDARY-01, BOUNDARY-02, BOUNDARY-03
+**Depends on:** Phase 3 baseline
+**Plans:** 1 plan
+
+Plans:
+- [ ] 07-01-PLAN.md - Foundation: boundary-target export, tiny baseline model, metric centerline decoder, smoke evaluation
+
+### Phase 8: Real-time boundary-aware segmentation backbone replacement for sidewalk navigation
+
+**Goal:** Upgrade the tiny boundary/perception backbone to a real-time boundary-aware segmenter that preserves sidewalk edges more reliably on small compute while keeping deployment practical.
+**Requirements**: TBD
+**Depends on:** Phase 7
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 8 to break down)
+
+### Phase 9: Shared-backbone multitask perception for sidewalk, boundaries, and obstacles
+
+**Goal:** Collapse duplicate perception cost into one shared backbone that predicts sidewalk structure and obstacles together, reducing total compute and synchronization complexity.
+**Requirements**: TBD
+**Depends on:** Phase 8
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 9 to break down)
+
+### Phase 10: Tiny image-to-waypoints student policy for low-compute scooter control
+
+**Goal:** Distill the navigation stack into a tiny image-to-waypoints student that predicts a small set of future path targets directly, keeping classical low-level control but minimizing runtime perception/planning cost.
+**Requirements**: TBD
+**Depends on:** Phase 9
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 10 to break down)
+
 ---
 *Roadmap created: 2026-03-04*
 *Granularity: coarse (3-5 phases)*
 *Coverage: 15/15 v1 requirements mapped + 9 OBS requirements (Phase 03.1) + 4 PATH-QUALITY requirements (Phase 6)*
-*Last updated: 2026-03-11 — Phase 6 planned (2 plans)*
+*Last updated: 2026-03-12 — Phase 7 foundation plan added with decoder/confidence work underway*

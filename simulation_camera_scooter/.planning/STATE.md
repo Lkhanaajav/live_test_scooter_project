@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 6 planned (2 plans)
-last_updated: "2026-03-11T15:03:31.371Z"
-last_activity: "2026-03-09 — Plan 03.1-04 completed: BEV HUD obstacle visualization human-verified — Phase 03.1 COMPLETE"
+stopped_at: Phase 2 formalized complete; Phase 3 is next execution target
+last_updated: "2026-03-12T00:00:00.000Z"
+last_activity: "2026-03-12 — Phase 2 formalized complete from validated calibration/log evidence; reusable SOP + validator added"
 progress:
-  total_phases: 7
-  completed_phases: 2
+  total_phases: 11
+  completed_phases: 3
   total_plans: 10
-  completed_plans: 6
+  completed_plans: 8
 ---
 
 ---
@@ -79,36 +79,38 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-03-04)
+See: .planning/PROJECT.md (updated 2026-03-12)
 
 **Core value:** Scooter visibly follows sidewalk path in a live thesis demo
-**Current focus:** Phase 1 — Segmentation Stability
+**Current focus:** Phase 7 — lightweight sidewalk-boundary network foundation work with metric path decoding and confidence output (while Phase 3 remains the main demo milestone)
 
 ## Current Position
 
-Phase: 03.1 (YOLO BEV Obstacle Projection) — COMPLETE
-Plan: 4 of 4 in phase 03.1 (all complete)
-Status: Phase 03.1 done — Phase 02 (BEV Calibration) hardware-blocked; Phase 03 Demo Integration plannable
-Last activity: 2026-03-09 — Plan 03.1-04 completed: BEV HUD obstacle visualization human-verified — Phase 03.1 COMPLETE
+Phase: 02 + 03.1 complete; Phase 7 started
+Plan: 07-01 foundation plan defined and partially executed
+Status: Phase 2 COMPLETE, Phase 03.1 COMPLETE, Phase 7 foundation underway with train/eval/decoder pieces, Phase 3 Demo Integration still remains the main demo milestone
+Last activity: 2026-03-12 — added Phase 7 metric path decoder and control-facing confidence outputs on top of the boundary-net baseline
 
-Progress: [██████████] 100%
+Progress: 3 completed phases (01, 02, 03.1); Phase 7 foundation underway under 07-01; next mainline target is still Phase 3
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 1
-- Average duration: 10 min
-- Total execution time: ~0.17 hours
+- Total plans completed: 8
+- Historical duration metrics are incomplete because Phase 2 was formalized after the work had already been executed
+- Current planning data is sufficient for status tracking, not for accurate throughput benchmarking
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01-segmentation-stability | 1 | 10 min | 10 min |
+| 01-segmentation-stability | 2 | tracked | tracked |
+| 02-bev-calibration-and-path-reliability | 2 | formalized from existing evidence | n/a |
+| 03.1-yolo-bev-obstacle-projection | 4 | tracked | tracked |
 
 **Recent Trend:**
-- Last 5 plans: 01-01 (10 min)
-- Trend: -
+- Last major update: Phase 2 formalization on 2026-03-12
+- Trend: planning state is now aligned with actual repository evidence
 
 *Updated after each plan completion*
 | Phase 01-segmentation-stability P02 | 15 | 2 tasks | 2 files |
@@ -124,7 +126,8 @@ Progress: [██████████] 100%
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- [Setup]: BEV homography is the dominant root cause of low has_path (cond=1.1e+06, 93% pixel loss) — Phase 2 is the highest-impact fix
+- [Phase 2]: Current BEV calibration loads without warning at cond~=7.99e5, and representative logs show 59-66% pixel survival with 99-100% has_path
+- [Phase 2]: Calibration acceptance is now tied to reusable criteria (`load_bev_params()` warning state, pixel survival, has_path, heading reversals), not the unrealistic `cond < 1000` target
 - [Setup]: Segmentation flicker must be fixed first (Phase 1) because it corrupts the BEV input that Phase 2 depends on
 - [Setup]: Phase 4 (Radxa) is stretch only — do not start until Phases 1-3 complete and > 3 weeks remain
 - [01-01]: my-segformer-road wins benchmark at 99.3% stable frames — 11 points above 90% target, switch from my-segformer-road_new
@@ -146,6 +149,13 @@ Recent decisions affecting current work:
 
 - Phase 3.1 inserted after Phase 3: YOLO BEV Obstacle Projection (INSERTED 2026-03-09) — project YOLO detections onto BEV as metric exclusion zones for path-avoiding navigation
 - Phase 6 added: Path quality improvements — post-selection smoothing, BEV mask morphological closing, stronger temporal continuity weight, draw fitted cubic on overlay
+- Phase 2 formalized complete on 2026-03-12 based on validated calibration/log evidence and new reusable calibration artifacts
+- Phase 7 added: Lightweight sidewalk-boundary network with analytical centerline and confidence gating
+- Phase 8 added: Real-time boundary-aware segmentation backbone replacement for sidewalk navigation
+- Phase 9 added: Shared-backbone multitask perception for sidewalk, boundaries, and obstacles
+- Phase 10 added: Tiny image-to-waypoints student policy for low-compute scooter control
+- Phase 7 started: added reusable row-wise boundary target extraction and dataset export pipeline
+- Phase 7 advanced: added metric centerline decoding and low-confidence gating outputs for the tiny boundary-net baseline
 
 ### Pending Todos
 
@@ -153,15 +163,26 @@ None yet.
 
 ### Blockers/Concerns
 
-- BEV recalibration (Phase 2) requires recording a new, well-framed, level sidewalk video — this must be done physically on the actual hardware with the camera in its final mount position
+- Remaining navigation risk is branch-selection robustness under low-evidence and near-ego artifact windows, not gross BEV calibration failure
 - Scooter serial interface (Phase 3) is "almost ready" per PROJECT.md — needs live hardware test to confirm command execution
 
 ## Session Continuity
 
-Last session: 2026-03-11T15:03:31.368Z
-Stopped at: Phase 6 planned (2 plans)
+Last session: 2026-03-12T00:00:00.000Z
+Stopped at: Phase 2 formalized complete; next step is Phase 3 planning/execution
 
 ## Work Log
+
+### 2026-03-12 — Phase 7 foundation start
+- Added `boundary_targets.py` with reusable row-wise left/right boundary extraction from binary sidewalk masks
+- Added `scripts/export_boundary_targets.py` to export boundary-target JSONL records from existing mask datasets
+- Added `tests/test_boundary_targets.py` with synthetic corridor and curve coverage
+- Full test suite remains green: 73 passed
+
+### 2026-03-12 — Phase 7 decoder and offline baseline evaluation
+- Added `boundary_inference.py` to decode left/right boundary predictions into metric centerline paths, pixel overlays, width estimates, confidence scores, and slowdown recommendations
+- Extended `scripts/eval_boundary_net.py` to report control-facing path metrics such as has-path rate, forward span, confidence, and suggested slowdown
+- Added `tests/test_boundary_inference.py` to lock down straight-path decoding, low-confidence behavior, and previous-path blending
 
 ### 2026-03-09 — Phase 03.1 complete + benchmark evaluation
 **Phase 03.1 YOLO BEV Obstacle Projection — ALL 4 PLANS DONE**

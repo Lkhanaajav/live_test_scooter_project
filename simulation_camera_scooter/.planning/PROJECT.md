@@ -26,9 +26,9 @@ The scooter must visibly and convincingly follow the sidewalk path in a live dem
 
 ### Active
 
-- [ ] Segmentation is temporally stable — no visible frame-to-frame flickering on real sidewalk video
-- [ ] BEV drivable path is detected reliably — has_path rate ≥ 60% of frames on typical sidewalk footage
-- [ ] BEV calibration is accurate for the actual recording setup — warpPerspective preserves ≥50% sidewalk pixels
+- [x] Segmentation is temporally stable — no visible frame-to-frame flickering on representative real sidewalk video
+- [x] BEV drivable path is detected reliably — `has_path` rate exceeds 60% on representative sidewalk footage
+- [x] BEV calibration is accurate for the actual recording setup — `warpPerspective` preserves at least 50% of sidewalk pixels on validated runs
 - [ ] Pipeline runs at ≥ 8 Hz on laptop during demo (current: ~12 Hz but seg inconsistency degrades quality)
 - [ ] Scooter receives and executes steering + speed commands in real-time during demo run
 - [ ] System degrades gracefully — holds last valid path and reduces speed when seg fails, no sudden stops
@@ -44,9 +44,9 @@ The scooter must visibly and convincingly follow the sidewalk path in a live dem
 
 - **Thesis document**: University of Oklahoma Master's Thesis — `C:/Users/miji0000/Desktop/thesis_prep/thesis/main.tex` (LaTeX, figures in `thesis/figures/`). PDF manuscript: `thesis_prep/2025_Lkhaana_Manuscript__mono_camera_auto_drive_scooter (1).pdf`
 - **Data logs**: `simulation_camera_scooter/logs/` (current runs) + `thesis_prep/logs/` (older runs). CSV per run + JSON metadata. `analyze_log.py` generates thesis figures from these logs.
-- **Segmentation model**: Custom-trained SegFormer (`models/my-segformer-road_new`), runs on CUDA GPU (Quadro P620 on dev machine). Multiple checkpoints available (500–5000 steps).
-- **BEV calibration**: Homography stored in `bev_calibration.npy`. Current calibration is ill-conditioned (cond=1.1e+06) causing 93% pixel loss after warpPerspective — dominant root cause of low has_path rate.
-- **Path planning baseline**: After Tier 1 + Tier 2 tuning, has_path improved from 0% → ~2% on tilted phone video. Root cause remains calibration mismatch, not algorithm.
+- **Segmentation model**: Custom-trained SegFormer (`models/my-segformer-road`), runs on CUDA GPU (Quadro P620 on dev machine). The March 2026 stability benchmark selected this checkpoint as the best demo model.
+- **BEV calibration**: Homography stored in `bev_calibration.npy`. Current calibration loads without the ill-conditioned warning and measures `cond(H) ~= 8.0e5`, with representative run logs showing roughly 59-66% BEV pixel survival.
+- **Path planning baseline**: After calibration recovery plus path-reliability tuning, representative March 2026 runs now show roughly 99-100% `has_path`. Remaining failures are concentrated in branch-entry artifacts and low-evidence windows rather than gross BEV collapse.
 - **Scooter**: 3-wheeler, can physically carry a laptop. Serial interface almost ready for live commands.
 - **Timeline**: 1–2 months to thesis demo.
 
@@ -62,12 +62,12 @@ The scooter must visibly and convincingly follow the sidewalk path in a live dem
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| SegFormer for segmentation | High accuracy on road/sidewalk scenes, custom-trained checkpoint available | — Pending (flickering issue to resolve) |
-| BEV homography calibration | Enables metric-space path extraction without depth sensor | ⚠️ Revisit — current calibration ill-conditioned |
-| Medial-axis skeleton for path | Topology-preserving, works on arbitrary sidewalk shapes | — Pending (depends on BEV fix) |
+| SegFormer for segmentation | High accuracy on road/sidewalk scenes, custom-trained checkpoint available | ✓ Complete - `my-segformer-road` validated in Phase 1 |
+| BEV homography calibration | Enables metric-space path extraction without depth sensor | ✓ Complete - Phase 2 calibration validated by survival and no-warning loading |
+| Medial-axis skeleton for path | Topology-preserving, works on arbitrary sidewalk shapes | ✓ Good - reliable in validated runs; remaining work is branch robustness under low evidence |
 | Adaptive pure pursuit controller | Simple, real-time, works with cubic spline path model | ✓ Good |
 | Temporal EMA smoothing (seg + BEV) | Reduces flickering without changing model | ✓ Good — but insufficient alone |
 | TIER2 BEV post-processing | anchor_ego_to_mask + ego_connected_mask + near-field closing | — Pending evaluation |
 
 ---
-*Last updated: 2026-03-04 after initialization*
+*Last updated: 2026-03-12 after Phase 2 formalization*
