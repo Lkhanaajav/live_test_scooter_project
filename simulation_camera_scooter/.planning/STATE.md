@@ -157,6 +157,7 @@ Recent decisions affecting current work:
 - Phase 11 added: Template path fitting inside segmentation corridor with path approval scoring
 - Phase 7 started: added reusable row-wise boundary target extraction and dataset export pipeline
 - Phase 7 advanced: added metric centerline decoding and low-confidence gating outputs for the tiny boundary-net baseline
+- Phase 11 planned: added requirements, context, research, validation, and four execution plans for template-path approval scoring
 
 ### Pending Todos
 
@@ -184,6 +185,11 @@ Stopped at: Phase 2 formalized complete; next step is Phase 3 planning/execution
 - Added `boundary_inference.py` to decode left/right boundary predictions into metric centerline paths, pixel overlays, width estimates, confidence scores, and slowdown recommendations
 - Extended `scripts/eval_boundary_net.py` to report control-facing path metrics such as has-path rate, forward span, confidence, and suggested slowdown
 - Added `tests/test_boundary_inference.py` to lock down straight-path decoding, low-confidence behavior, and previous-path blending
+
+### 2026-03-12 — Phase 11 planning
+- Added Phase 11 requirement IDs (`TPL-01` through `TPL-04`) and roadmap success criteria for template-path approval scoring
+- Added `11-CONTEXT.md`, `11-RESEARCH.md`, and `11-VALIDATION.md` for the new phase
+- Planned Phase 11 into four execution waves covering corridor abstraction, template approval, runtime integration, and replay evaluation
 
 ### 2026-03-09 — Phase 03.1 complete + benchmark evaluation
 **Phase 03.1 YOLO BEV Obstacle Projection — ALL 4 PLANS DONE**

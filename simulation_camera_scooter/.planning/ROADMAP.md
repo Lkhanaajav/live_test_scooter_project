@@ -130,7 +130,7 @@ Phases execute in numeric order, with Phase 3 as the next mainline target. Phase
 | 8. Boundary-Aware Segmentation Backbone | 0/0 | Not planned | - |
 | 9. Shared-Backbone Multitask Perception | 0/0 | Not planned | - |
 | 10. Tiny Image-to-Waypoints Student | 0/0 | Not planned | - |
-| 11. Template Path Approval Scoring | 0/0 | Not planned | - |
+| 11. Template Path Approval Scoring | 0/4 | Planned | - |
 
 ### Phase 6: Path quality improvements: post-selection smoothing, BEV mask morphological closing, stronger temporal continuity weight, and draw fitted cubic on overlay
 
@@ -158,7 +158,7 @@ Plans:
 **Goal:** Upgrade the tiny boundary/perception backbone to a real-time boundary-aware segmenter that preserves sidewalk edges more reliably on small compute while keeping deployment practical.
 **Requirements**: TBD
 **Depends on:** Phase 7
-**Plans:** 0 plans
+**Plans:** 4 plans
 
 Plans:
 - [ ] TBD (run /gsd:plan-phase 8 to break down)
@@ -186,15 +186,25 @@ Plans:
 ### Phase 11: Template path fitting inside segmentation corridor with path approval scoring
 
 **Goal:** Replace raw centerline following with a small-compute path-approval planner: generate a bank of smooth candidate paths in BEV, score how well each fits inside the perceived sidewalk corridor, and approve only paths that stay feasible, centered, and temporally consistent.
-**Requirements**: TBD
+**Requirements**: TPL-01, TPL-02, TPL-03, TPL-04
 **Depends on:** Phase 7
 **Plans:** 0 plans
 
+**Success Criteria** (what must be TRUE):
+  1. A reusable candidate-path generator produces a bounded set of forward trajectories covering straight, gentle-turn, and stronger-turn behaviors in BEV without per-scene retuning
+  2. On representative recorded sidewalk frames, the selected path stays inside the segmented/boundary-defined corridor and rejects candidates that visibly exit the sidewalk region
+  3. On turning sequences, path approval is temporally stable — the planner does not branch-flip frame to frame when corridor evidence is still consistent
+  4. On ambiguous or low-evidence frames, the planner outputs low confidence plus slowdown/hold advice instead of committing to an unsupported turn
+  5. The final approved path can be exported in the same metric-path format consumed by the existing controller and overlay code
+
 Plans:
-- [ ] TBD (run /gsd:plan-phase 11 to break down)
+- [ ] 11-01-PLAN.md - Corridor abstraction from BEV mask + synthetic corridor tests
+- [ ] 11-02-PLAN.md - Ego-anchored template bank, scoring terms, and approval logic
+- [ ] 11-03-PLAN.md - Integrate template approval into `BEVPathExtractor.process()` and live-loop confidence handling
+- [ ] 11-04-PLAN.md - Replay evaluation harness and threshold tuning
 
 ---
 *Roadmap created: 2026-03-04*
 *Granularity: coarse (3-5 phases)*
-*Coverage: 15/15 v1 requirements mapped + 9 OBS requirements (Phase 03.1) + 4 PATH-QUALITY requirements (Phase 6)*
-*Last updated: 2026-03-12 — Phase 11 added for template-path approval scoring; Phase 7 boundary-net foundation remains in progress*
+*Coverage: 15/15 v1 requirements mapped + 9 OBS requirements (Phase 03.1) + 4 PATH-QUALITY requirements (Phase 6) + 4 TPL requirements (Phase 11)*
+*Last updated: 2026-03-12 — Phase 11 researched and planned into four execution waves; Phase 7 boundary-net foundation remains in progress*

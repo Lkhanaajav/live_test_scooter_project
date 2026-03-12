@@ -47,6 +47,13 @@
 - [ ] **RADXA-01**: SegFormer exported to ONNX or TensorRT format runnable on Rock 5B at >= 5 Hz
 - [ ] **RADXA-02**: Full pipeline tested on Radxa board end-to-end with scooter connected
 
+### Template Path Approval (Phase 11)
+
+- [ ] **TPL-01**: A fixed bank of smooth candidate paths can be generated in BEV from the ego pose with bounded curvature suitable for pedestrian-speed scooter control
+- [ ] **TPL-02**: Candidate paths are scored against the perceived sidewalk corridor using corridor fit, boundary clearance, center preference, and continuity with the previous approved path
+- [ ] **TPL-03**: The approved path remains inside the sidewalk corridor on representative straight and turning sequences and rejects obviously invalid templates that leave the corridor
+- [ ] **TPL-04**: When no candidate path scores above approval threshold, the planner emits low confidence and a slowdown/hold recommendation instead of forcing a turn guess
+
 ## v2 Requirements
 
 ### Advanced Navigation
@@ -99,12 +106,16 @@
 | OBS-09 | Phase 03.1 | Complete |
 | RADXA-01 | Phase 4 | Pending |
 | RADXA-02 | Phase 4 | Pending |
+| TPL-01 | Phase 11 | Pending |
+| TPL-02 | Phase 11 | Pending |
+| TPL-03 | Phase 11 | Pending |
+| TPL-04 | Phase 11 | Pending |
 
 **Coverage:**
-- v1 requirements: 24 total (15 original + 9 OBS)
-- Mapped to phases: 24
+- v1 requirements: 28 total (15 original + 9 OBS + 4 TPL)
+- Mapped to phases: 28
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-03-04*
-*Last updated: 2026-03-12 — Phase 2 requirements formalized as complete*
+*Last updated: 2026-03-12 — added Phase 11 template-path approval requirements*
