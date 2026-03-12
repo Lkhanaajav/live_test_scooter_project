@@ -154,6 +154,7 @@ Recent decisions affecting current work:
 - Phase 8 added: Real-time boundary-aware segmentation backbone replacement for sidewalk navigation
 - Phase 9 added: Shared-backbone multitask perception for sidewalk, boundaries, and obstacles
 - Phase 10 added: Tiny image-to-waypoints student policy for low-compute scooter control
+- Phase 11 added: Template path fitting inside segmentation corridor with path approval scoring
 - Phase 7 started: added reusable row-wise boundary target extraction and dataset export pipeline
 - Phase 7 advanced: added metric centerline decoding and low-confidence gating outputs for the tiny boundary-net baseline
 

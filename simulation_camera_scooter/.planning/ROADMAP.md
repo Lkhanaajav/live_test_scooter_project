@@ -130,6 +130,7 @@ Phases execute in numeric order, with Phase 3 as the next mainline target. Phase
 | 8. Boundary-Aware Segmentation Backbone | 0/0 | Not planned | - |
 | 9. Shared-Backbone Multitask Perception | 0/0 | Not planned | - |
 | 10. Tiny Image-to-Waypoints Student | 0/0 | Not planned | - |
+| 11. Template Path Approval Scoring | 0/0 | Not planned | - |
 
 ### Phase 6: Path quality improvements: post-selection smoothing, BEV mask morphological closing, stronger temporal continuity weight, and draw fitted cubic on overlay
 
@@ -182,8 +183,18 @@ Plans:
 Plans:
 - [ ] TBD (run /gsd:plan-phase 10 to break down)
 
+### Phase 11: Template path fitting inside segmentation corridor with path approval scoring
+
+**Goal:** Replace raw centerline following with a small-compute path-approval planner: generate a bank of smooth candidate paths in BEV, score how well each fits inside the perceived sidewalk corridor, and approve only paths that stay feasible, centered, and temporally consistent.
+**Requirements**: TBD
+**Depends on:** Phase 7
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd:plan-phase 11 to break down)
+
 ---
 *Roadmap created: 2026-03-04*
 *Granularity: coarse (3-5 phases)*
 *Coverage: 15/15 v1 requirements mapped + 9 OBS requirements (Phase 03.1) + 4 PATH-QUALITY requirements (Phase 6)*
-*Last updated: 2026-03-12 — Phase 7 foundation plan added with decoder/confidence work underway*
+*Last updated: 2026-03-12 — Phase 11 added for template-path approval scoring; Phase 7 boundary-net foundation remains in progress*
