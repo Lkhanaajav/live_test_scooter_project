@@ -1,8 +1,21 @@
 # Phase 11 Research: Template path fitting inside segmentation corridor with path approval scoring
 
+## Design Correction
+
+This research was initially written assuming the planner might decide among left, right, or straight alternatives directly from vision. That is no longer the intended design.
+
+Locked correction:
+
+- GPS or route logic provides maneuver intent (`straight`, `left`, `right`)
+- vision/perception defines the feasible sidewalk corridor
+- Phase 11 only approves or rejects paths that are consistent with the commanded intent
+- if intent-consistent paths are not well-supported by the corridor, the planner must emit low confidence and slowdown/hold instead of selecting a different maneuver
+
+The rest of this document should be read through that lens: corridor fitting is the geometric job, maneuver choice is external.
+
 ## What This Phase Is Solving In This Repo
 
-The current live stack still chooses a path mainly by extracting a skeleton/graph from the BEV sidewalk mask and then scoring graph-derived candidates in `realtime_nav_core.py`. That works when the mask is clean, but the repo history already documents the remaining failure mode: near-ego branch artifacts and low-evidence collapse windows can still produce false turn commitment or stale path lock. Phase 11 should move final path choice from "follow the extracted centerline/graph" to "approve one of a small set of smooth ego-anchored path templates only when corridor evidence supports it."
+The current live stack still chooses a path mainly by extracting a skeleton/graph from the BEV sidewalk mask and then scoring graph-derived candidates in `realtime_nav_core.py`. That works when the mask is clean, but the repo history already documents the remaining failure mode: near-ego branch artifacts and low-evidence collapse windows can still produce false turn commitment or stale path lock. Phase 11 should move final path choice from "follow the extracted centerline/graph" to "approve one of a small set of smooth ego-anchored path templates only when corridor evidence supports the commanded intent."
 
 This phase should not replace the controller contract. The approved output still needs to look like the existing `PathPlanResult` contract used by `live_heading_demo.py`: metric path polyline, pixel path polyline, a fitted `CubicPathModel`, and control-facing confidence/slowdown guidance.
 
@@ -22,6 +35,7 @@ This phase should not replace the controller contract. The approved output still
 Current control limitation:
 
 - the live loop currently gates speed mostly on `has_path`, controller validity, obstacle distance, and segmentation instability; it does not yet consume a planner-native confidence scalar for slowdown/hold behavior
+- the live loop also lacks a clean notion of external maneuver intent driving path-family selection
 
 `BEVPathExtractor.process()` currently owns:
 

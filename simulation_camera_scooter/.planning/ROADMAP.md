@@ -168,7 +168,7 @@ Plans:
 **Goal:** Collapse duplicate perception cost into one shared backbone that predicts sidewalk structure and obstacles together, reducing total compute and synchronization complexity.
 **Requirements**: TBD
 **Depends on:** Phase 8
-**Plans:** 0 plans
+**Plans:** 4 plans
 
 Plans:
 - [ ] TBD (run /gsd:plan-phase 9 to break down)
@@ -185,26 +185,26 @@ Plans:
 
 ### Phase 11: Template path fitting inside segmentation corridor with path approval scoring
 
-**Goal:** Replace raw centerline following with a small-compute path-approval planner: generate a bank of smooth candidate paths in BEV, score how well each fits inside the perceived sidewalk corridor, and approve only paths that stay feasible, centered, and temporally consistent.
+**Goal:** Replace raw centerline following with a small-compute, GPS intent-conditioned path planner: given a commanded maneuver (`straight`, `left`, `right`), generate only intent-consistent smooth candidate paths in BEV, score how well they fit inside the perceived sidewalk corridor, and approve only paths that stay feasible and well-supported by vision.
 **Requirements**: TPL-01, TPL-02, TPL-03, TPL-04
 **Depends on:** Phase 7
 **Plans:** 0 plans
 
 **Success Criteria** (what must be TRUE):
-  1. A reusable candidate-path generator produces a bounded set of forward trajectories covering straight, gentle-turn, and stronger-turn behaviors in BEV without per-scene retuning
-  2. On representative recorded sidewalk frames, the selected path stays inside the segmented/boundary-defined corridor and rejects candidates that visibly exit the sidewalk region
-  3. On turning sequences, path approval is temporally stable — the planner does not branch-flip frame to frame when corridor evidence is still consistent
-  4. On ambiguous or low-evidence frames, the planner outputs low confidence plus slowdown/hold advice instead of committing to an unsupported turn
+  1. The planner takes route intent from GPS or route logic and restricts candidate generation to paths consistent with that commanded maneuver instead of free-guessing left vs right
+  2. On representative recorded sidewalk frames, the selected path stays inside the segmented/boundary-defined corridor and rejects candidates that visibly exit the sidewalk region, especially in the first 1-2 meters near ego
+  3. On turning sequences, path approval is temporally stable for the commanded intent — the planner does not branch-flip frame to frame when corridor evidence is still consistent
+  4. On ambiguous or low-evidence frames, the planner outputs low confidence plus slowdown/hold advice instead of selecting a different maneuver than the commanded intent
   5. The final approved path can be exported in the same metric-path format consumed by the existing controller and overlay code
 
 Plans:
 - [ ] 11-01-PLAN.md - Corridor abstraction from BEV mask + synthetic corridor tests
-- [ ] 11-02-PLAN.md - Ego-anchored template bank, scoring terms, and approval logic
-- [ ] 11-03-PLAN.md - Integrate template approval into `BEVPathExtractor.process()` and live-loop confidence handling
-- [ ] 11-04-PLAN.md - Replay evaluation harness and threshold tuning
+- [ ] 11-02-PLAN.md - Intent-conditioned template bank, scoring terms, and approval logic
+- [ ] 11-03-PLAN.md - Integrate intent-conditioned template approval into `BEVPathExtractor.process()` and live-loop confidence handling
+- [ ] 11-04-PLAN.md - Replay evaluation harness and threshold tuning for intent-conditioned planning
 
 ---
 *Roadmap created: 2026-03-04*
 *Granularity: coarse (3-5 phases)*
 *Coverage: 15/15 v1 requirements mapped + 9 OBS requirements (Phase 03.1) + 4 PATH-QUALITY requirements (Phase 6) + 4 TPL requirements (Phase 11)*
-*Last updated: 2026-03-12 — Phase 11 researched and planned into four execution waves; Phase 7 boundary-net foundation remains in progress*
+*Last updated: 2026-03-13 — Phase 11 reframed as GPS intent-conditioned corridor fitting; Phase 7 boundary-net foundation remains in progress*

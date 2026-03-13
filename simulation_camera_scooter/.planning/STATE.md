@@ -158,6 +158,7 @@ Recent decisions affecting current work:
 - Phase 7 started: added reusable row-wise boundary target extraction and dataset export pipeline
 - Phase 7 advanced: added metric centerline decoding and low-confidence gating outputs for the tiny boundary-net baseline
 - Phase 11 planned: added requirements, context, research, validation, and four execution plans for template-path approval scoring
+- Phase 11 reframed: GPS or route logic provides maneuver intent; vision only fits intent-conditioned paths inside the corridor and may refuse unsupported turns
 
 ### Pending Todos
 
@@ -190,6 +191,11 @@ Stopped at: Phase 2 formalized complete; next step is Phase 3 planning/execution
 - Added Phase 11 requirement IDs (`TPL-01` through `TPL-04`) and roadmap success criteria for template-path approval scoring
 - Added `11-CONTEXT.md`, `11-RESEARCH.md`, and `11-VALIDATION.md` for the new phase
 - Planned Phase 11 into four execution waves covering corridor abstraction, template approval, runtime integration, and replay evaluation
+
+### 2026-03-13 — Phase 11 spec correction
+- Reframed Phase 11 as GPS intent-conditioned template fitting rather than free left/right guessing from vision
+- Locked the design rule that vision fits geometry inside the corridor while GPS or route logic provides maneuver intent
+- Updated Phase 11 requirements, roadmap goal, context, research notes, validation language, and Wave 2-4 plans to enforce intent-conditioned approval
 
 ### 2026-03-09 — Phase 03.1 complete + benchmark evaluation
 **Phase 03.1 YOLO BEV Obstacle Projection — ALL 4 PLANS DONE**

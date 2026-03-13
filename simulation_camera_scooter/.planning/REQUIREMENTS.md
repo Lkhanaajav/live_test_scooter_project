@@ -49,10 +49,10 @@
 
 ### Template Path Approval (Phase 11)
 
-- [ ] **TPL-01**: A fixed bank of smooth candidate paths can be generated in BEV from the ego pose with bounded curvature suitable for pedestrian-speed scooter control
-- [ ] **TPL-02**: Candidate paths are scored against the perceived sidewalk corridor using corridor fit, boundary clearance, center preference, and continuity with the previous approved path
-- [ ] **TPL-03**: The approved path remains inside the sidewalk corridor on representative straight and turning sequences and rejects obviously invalid templates that leave the corridor
-- [ ] **TPL-04**: When no candidate path scores above approval threshold, the planner emits low confidence and a slowdown/hold recommendation instead of forcing a turn guess
+- [ ] **TPL-01**: The planner accepts an external maneuver intent (`straight`, `left`, `right`) and generates only controller-feasible candidate paths consistent with that intent
+- [ ] **TPL-02**: Intent-conditioned candidate paths are scored against the perceived sidewalk corridor using near-field fit, corridor containment, edge clearance, continuity with the previous approved path, and obstacle cost
+- [ ] **TPL-03**: The approved path remains inside the sidewalk corridor on representative straight and turning sequences while matching the commanded intent instead of free-guessing left vs right
+- [ ] **TPL-04**: When intent-consistent candidates do not fit the corridor with enough confidence, the planner emits low confidence and a slowdown/hold recommendation instead of selecting a different maneuver
 
 ## v2 Requirements
 

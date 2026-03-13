@@ -60,8 +60,8 @@ created: 2026-03-12
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| Overlay path remains visually inside sidewalk corridor on representative turning video | TPL-03 | Final visual acceptability is easier to judge in replay than by a single scalar | Run headless replay on the representative video, save output video, inspect left/right turns and branch-entry windows for visible corridor exit or branch-flip |
-| Low-confidence slowdown looks sensible during ambiguous turns | TPL-04 | Human judgment is needed to decide whether slowdown/hold behavior is too timid or too aggressive | Replay a low-evidence sequence, inspect logged `approval_confidence`, `suggested_slowdown`, and resulting speed command trend |
+| Overlay path remains visually inside sidewalk corridor on representative turning video for the commanded maneuver | TPL-03 | Final visual acceptability is easier to judge in replay than by a single scalar | Run headless replay on the representative video with known maneuver intent, save output video, inspect left/right turns and branch-entry windows for visible corridor exit or wrong-maneuver approval |
+| Low-confidence slowdown looks sensible when GPS intent is not yet visually supported | TPL-04 | Human judgment is needed to decide whether slowdown/hold behavior is too timid or too aggressive | Replay a low-evidence sequence with a commanded turn, inspect logged `approval_confidence`, `suggested_slowdown`, and resulting speed command trend |
 
 ---
 
