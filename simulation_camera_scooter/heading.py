@@ -84,3 +84,21 @@ def compute_speed(angle_deg, min_obstacle_dist, has_path):
         return SPEED_MAX - t * (SPEED_MAX - SPEED_TURN)
     else:
         return SPEED_SHARP_TURN
+
+
+def apply_planner_speed_limit(speed_mps, suggested_slowdown, is_low_confidence, cautious_speed_mps=SPEED_TURN):
+    """
+    Reduce speed based on planner-native slowdown guidance.
+    `suggested_slowdown` is expected in [0, 1], where 1 means "slow aggressively".
+    """
+    base = float(speed_mps)
+    slowdown = max(0.0, min(1.0, float(suggested_slowdown)))
+    if slowdown <= 1e-6:
+        return base
+
+    cautious = max(0.05, float(cautious_speed_mps))
+    low_conf = bool(is_low_confidence)
+    gain = 0.85 if low_conf else 0.65
+    floor_scale = 0.20 if low_conf else 0.35
+    cap = max(cautious * floor_scale, base * (1.0 - gain * slowdown))
+    return float(min(base, cap))

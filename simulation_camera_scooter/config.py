@@ -43,7 +43,10 @@ DEFAULT_DST_POINTS = np.array(
 
 BEV_SIZE = (600, 500)
 TRIM_BOTTOM = 0           # was 20 — tier1 tuning: keep near-field BEV pixels
-CALIBRATION_FILE = "bev_calibration.npy"
+CALIBRATION_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "bev_calibration.npy",
+)
 
 # =============================================================================
 # Skeleton / path tuning

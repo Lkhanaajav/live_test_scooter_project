@@ -10,7 +10,7 @@ Design goals:
 - robust branch handling (T/Y) with hysteresis
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 import heapq
 import math
 import time
@@ -20,6 +20,13 @@ import cv2
 import numpy as np
 
 from config import BEV_OBSTACLE_PENALTY_WEIGHT
+from template_path_planner import (
+    CorridorConfig,
+    TemplateApprovalResult,
+    TemplatePlannerConfig,
+    approve_template_bank,
+    corridor_from_mask,
+)
 
 
 def _odd(v: int) -> int:
@@ -159,6 +166,8 @@ class PathExtractorConfig:
     skeleton_override_graph_short_progress_m: float = 3.0
     skeleton_override_graph_near_abs_lat_m: float = 0.45
     skeleton_override_skel_near_abs_lat_m: float = 0.30
+    template_planner_enabled: bool = True
+    template_planner_cfg: TemplatePlannerConfig = field(default_factory=TemplatePlannerConfig)
 
 
 @dataclass
@@ -226,6 +235,16 @@ class PathPlanResult:
     t_path_ms: float
     path_source: str = "none"
     mask_occ_ratio: float = 0.0
+    approval_confidence: float = 0.0
+    approval_margin: float = 0.0
+    is_low_confidence: bool = False
+    suggested_slowdown: float = 0.0
+    selected_template_id: str = ""
+    selected_template_family: str = ""
+    corridor_confidence: float = 0.0
+    corridor_valid_ratio: float = 0.0
+    corridor_forward_span_m: float = 0.0
+    corridor_width_cv: float = 0.0
 
 
 @dataclass
@@ -307,9 +326,108 @@ class BEVPathExtractor:
         self.prev_end_heading: float = 0.0
         self.branch_hold_counter: int = 0
         self.prev_best_path_m: Optional[np.ndarray] = None
+        self.prev_template_family: str = ""
         self.no_path_counter: int = 0
         self.prev_mask_occ_ratio: float = 0.0
         self.obstacle_zones: list = []  # OBS Phase 03.1: [(fwd_m, lat_m, rad_m), ...]
+
+    def _make_template_planner_cfg(self) -> TemplatePlannerConfig:
+        base = self.cfg.template_planner_cfg
+        corridor_cfg = replace(
+            base.corridor_cfg,
+            bev_forward_m=float(self.cfg.bev_forward_m),
+            bev_lateral_m=float(self.cfg.bev_lateral_m),
+        )
+        return replace(
+            base,
+            bev_forward_m=float(self.cfg.bev_forward_m),
+            bev_lateral_m=float(self.cfg.bev_lateral_m),
+            path_horizon_m=float(self.cfg.path_horizon_m),
+            path_sample_ds_m=max(0.05, min(float(base.path_sample_ds_m), float(self.cfg.path_sample_ds_m))),
+            max_curvature_m_inv=float(self.cfg.spline_kappa_max_m_inv),
+            corridor_cfg=corridor_cfg,
+        )
+
+    def _build_result(
+        self,
+        *,
+        orig_shape_hw: Tuple[int, int],
+        best_path_m: np.ndarray,
+        path_model: Optional["CubicPathModel"],
+        cand_paths_m: List[np.ndarray],
+        cand_lens_m: List[float],
+        best_idx: int,
+        skel_work: Optional[np.ndarray],
+        graph_nodes: int,
+        graph_edges: int,
+        t_skeleton_ms: float,
+        t_path_ms: float,
+        path_source: str,
+        mask_occ_ratio: float,
+        template_approval: Optional[TemplateApprovalResult] = None,
+    ) -> PathPlanResult:
+        orig_h, orig_w = orig_shape_hw
+        cand_paths_px = [self._pixel_from_metric(p, (orig_h, orig_w)) for p in cand_paths_m]
+        best_path_px = (
+            self._pixel_from_metric(best_path_m, (orig_h, orig_w))
+            if best_path_m is not None and len(best_path_m) >= 2
+            else np.zeros((0, 2), dtype=np.int32)
+        )
+        if skel_work is None:
+            skel_px = np.zeros((orig_h, orig_w), dtype=np.uint8)
+        else:
+            skel_px = cv2.resize((skel_work > 0).astype(np.uint8) * 255, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+
+        if template_approval is not None:
+            approval_conf = float(template_approval.confidence)
+            approval_margin = float(template_approval.approval_margin)
+            is_low_conf = bool(template_approval.is_low_confidence)
+            slowdown = float(template_approval.suggested_slowdown)
+            template_id = str(template_approval.selected_template_id)
+            template_family = str(template_approval.selected_template_family)
+            corridor_conf = float(template_approval.corridor.confidence)
+            corridor_valid_ratio = float(template_approval.corridor.valid_ratio)
+            corridor_forward_span = float(template_approval.corridor.forward_span_m)
+            corridor_width_cv = float(template_approval.corridor.width_cv)
+        else:
+            approval_conf = 0.0
+            approval_margin = 0.0
+            is_low_conf = False
+            slowdown = 0.0
+            template_id = ""
+            template_family = ""
+            corridor_conf = 0.0
+            corridor_valid_ratio = 0.0
+            corridor_forward_span = 0.0
+            corridor_width_cv = 0.0
+
+        return PathPlanResult(
+            has_path=bool(path_model is not None and best_path_m is not None and len(best_path_m) >= 2),
+            path_model=path_model,
+            best_path_m=best_path_m.astype(np.float32) if best_path_m is not None else np.zeros((0, 2), dtype=np.float32),
+            best_path_px=best_path_px.astype(np.int32),
+            candidate_paths_m=[p.astype(np.float32) for p in cand_paths_m],
+            candidate_paths_px=[p.astype(np.int32) for p in cand_paths_px],
+            candidate_lengths_m=[float(v) for v in cand_lens_m],
+            best_idx=int(best_idx),
+            skeleton_px=skel_px.astype(np.uint8),
+            graph_nodes=int(graph_nodes),
+            graph_edges=int(graph_edges),
+            t_skeleton_ms=float(t_skeleton_ms),
+            t_path_ms=float(t_path_ms),
+            path_source=path_source if path_model is not None and best_path_m is not None and len(best_path_m) >= 2 else "none",
+            mask_occ_ratio=float(mask_occ_ratio),
+            approval_confidence=approval_conf,
+            approval_margin=approval_margin,
+            is_low_confidence=is_low_conf,
+            suggested_slowdown=slowdown,
+            selected_template_id=template_id,
+            selected_template_family=template_family,
+            corridor_confidence=corridor_conf,
+            corridor_valid_ratio=corridor_valid_ratio,
+            corridor_forward_span_m=corridor_forward_span,
+            corridor_width_cv=corridor_width_cv,
+        )
 
     # -------------------------------------------------------------------------
     # Coordinate conversion
@@ -1360,6 +1478,19 @@ class BEVPathExtractor:
         held[:, 1] = np.clip(held[:, 1], -lat_clip, lat_clip)
         return _resample_polyline(held, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
 
+    def _commit_selected_path(self, best_path_m: np.ndarray, path_source: str, template_family: str = "") -> None:
+        if best_path_m is None or len(best_path_m) < 2:
+            return
+        self.prev_best_path_m = best_path_m.astype(np.float32).copy()
+        self.prev_end_heading = _polyline_end_heading(best_path_m)
+        self.no_path_counter = 0
+
+        normalized_source = str(path_source or "").strip().lower()
+        if normalized_source == "template":
+            self.prev_template_family = str(template_family or "").strip().lower()
+        elif normalized_source != "fallback_hold":
+            self.prev_template_family = ""
+
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
@@ -1386,6 +1517,96 @@ class BEVPathExtractor:
             or mask_occ_ratio < float(self.cfg.low_evidence_occ_ratio)
             or forward_reach_m < float(self.cfg.low_evidence_min_forward_m)
         )
+        t_pre = time.time()
+        template_approval = None
+        if bool(getattr(self.cfg, "template_planner_enabled", True)):
+            template_cfg = self._make_template_planner_cfg()
+            template_approval = approve_template_bank(
+                corridor_from_mask(mask, template_cfg.corridor_cfg),
+                template_cfg,
+                prev_path_m=self.prev_best_path_m,
+                prev_template_family=self.prev_template_family,
+                obstacle_zones_m=self.obstacle_zones,
+            )
+            if (template_approval.approved or template_approval.reuse_selected_path) and len(template_approval.selected_path_m) >= 2:
+                best_path_m = self._anchor_path_to_ego(
+                    _resample_polyline(template_approval.selected_path_m, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
+                )
+                path_model = self._fit_regularized_cubic(best_path_m)
+                if path_model is not None:
+                    self._commit_selected_path(
+                        best_path_m,
+                        path_source="template",
+                        template_family=template_approval.selected_template_family,
+                    )
+                    self.prev_first_edge_sig = None
+                    self.branch_hold_counter = 0
+                    ranked = list(template_approval.candidates[: max(1, int(template_cfg.candidate_output_top_k))])
+                    cand_paths_m = [c.template.points_m.astype(np.float32) for c in ranked]
+                    cand_lens_m = [float(c.template.length_m) for c in ranked]
+                    return self._build_result(
+                        orig_shape_hw=(orig_h, orig_w),
+                        best_path_m=best_path_m,
+                        path_model=path_model,
+                        cand_paths_m=cand_paths_m,
+                        cand_lens_m=cand_lens_m,
+                        best_idx=0,
+                        skel_work=None,
+                        graph_nodes=0,
+                        graph_edges=0,
+                        t_skeleton_ms=0.0,
+                        t_path_ms=(time.time() - t_pre) * 1000.0,
+                        path_source="template",
+                        mask_occ_ratio=mask_occ_ratio,
+                        template_approval=template_approval,
+                    )
+
+            if template_approval.recommend_hold:
+                best_path_m = np.zeros((0, 2), dtype=np.float32)
+                path_model = None
+                path_source = "none"
+                hold_path = self._hold_previous_path(aggressive=low_evidence or template_approval.is_low_confidence)
+                if len(hold_path) >= 2:
+                    hold_model = self._fit_regularized_cubic(hold_path)
+                    if hold_model is not None:
+                        best_path_m = hold_path
+                        path_model = hold_model
+                        path_source = "fallback_hold"
+                if path_model is None:
+                    fb_path = self._fallback_centerline(mask)
+                    if len(fb_path) >= 2:
+                        fb_model = self._fit_regularized_cubic(fb_path)
+                        if fb_model is not None:
+                            best_path_m = fb_path
+                            path_model = fb_model
+                            path_source = "fallback_centerline"
+                if path_model is not None and len(best_path_m) >= 2:
+                    self._commit_selected_path(
+                        best_path_m,
+                        path_source=path_source,
+                        template_family=template_approval.selected_template_family,
+                    )
+                    ranked = list(template_approval.candidates[: max(1, int(template_cfg.candidate_output_top_k))])
+                    extra_paths_m = [c.template.points_m.astype(np.float32) for c in ranked]
+                    extra_lens_m = [float(c.template.length_m) for c in ranked]
+                    cand_paths_m = [best_path_m.astype(np.float32)] + extra_paths_m
+                    cand_lens_m = [float(_polyline_length_m(best_path_m))] + extra_lens_m
+                    return self._build_result(
+                        orig_shape_hw=(orig_h, orig_w),
+                        best_path_m=best_path_m,
+                        path_model=path_model,
+                        cand_paths_m=cand_paths_m,
+                        cand_lens_m=cand_lens_m,
+                        best_idx=0,
+                        skel_work=None,
+                        graph_nodes=0,
+                        graph_edges=0,
+                        t_skeleton_ms=0.0,
+                        t_path_ms=(time.time() - t_pre) * 1000.0,
+                        path_source=path_source,
+                        mask_occ_ratio=mask_occ_ratio,
+                        template_approval=template_approval,
+                    )
         t1 = time.time()
         skel_bin, dist_m = self._extract_medial_axis(mask)
         node_xy_m, edges, adj, skel_work = self._build_graph(skel_bin, dist_m)
@@ -1530,9 +1751,7 @@ class BEVPathExtractor:
 
         has_path = path_model is not None and len(best_path_m) >= 2
         if has_path:
-            self.prev_best_path_m = best_path_m.astype(np.float32).copy()
-            self.prev_end_heading = _polyline_end_heading(best_path_m)
-            self.no_path_counter = 0
+            self._commit_selected_path(best_path_m, path_source=path_source)
         else:
             self.no_path_counter = min(1000, self.no_path_counter + 1)
 
@@ -1562,27 +1781,22 @@ class BEVPathExtractor:
         else:
             cand_paths_m = [candidates[i].points_m for i in order]
             cand_lens_m = [float(candidates[i].length_m) for i in order]
-        cand_paths_px = [self._pixel_from_metric(p, (orig_h, orig_w)) for p in cand_paths_m]
-        best_path_px = self._pixel_from_metric(best_path_m, (orig_h, orig_w)) if len(best_path_m) else np.zeros((0, 2), dtype=np.int32)
-        skel_px = cv2.resize((skel_work > 0).astype(np.uint8) * 255, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
-
         t4 = time.time()
-        return PathPlanResult(
-            has_path=bool(has_path),
-            path_model=path_model,
+        return self._build_result(
+            orig_shape_hw=(orig_h, orig_w),
             best_path_m=best_path_m.astype(np.float32),
-            best_path_px=best_path_px.astype(np.int32),
-            candidate_paths_m=[p.astype(np.float32) for p in cand_paths_m],
-            candidate_paths_px=[p.astype(np.int32) for p in cand_paths_px],
-            candidate_lengths_m=cand_lens_m,
+            path_model=path_model,
+            cand_paths_m=cand_paths_m,
+            cand_lens_m=cand_lens_m,
             best_idx=best_idx_return,
-            skeleton_px=skel_px.astype(np.uint8),
+            skel_work=skel_work,
             graph_nodes=int(len(node_xy_m)),
             graph_edges=int(len(edges)),
             t_skeleton_ms=(t2 - t1) * 1000.0,
             t_path_ms=(t4 - t2) * 1000.0,
             path_source=path_source if has_path else "none",
             mask_occ_ratio=float(mask_occ_ratio),
+            template_approval=template_approval,
         )
 
 

@@ -40,6 +40,48 @@ def curved_bev_mask():
 
 
 @pytest.fixture
+def wide_straight_bev_mask():
+    """220x220 mask with a wider straight corridor for ambiguous-template tests."""
+    mask = np.zeros((220, 220), dtype=np.uint8)
+    mask[:, 60:160] = 255
+    return mask
+
+
+@pytest.fixture
+def right_curved_bev_mask():
+    """220x220 uint8 mask with a corridor that curves to the right."""
+    mask = np.zeros((220, 220), dtype=np.uint8)
+    for row in range(220):
+        shift = int((220 - row) * 0.25)
+        cx = 110 - shift
+        left = max(0, cx - 30)
+        right = min(220, cx + 30)
+        mask[row, left:right] = 255
+    return mask
+
+
+@pytest.fixture
+def fragmented_near_field_bev_mask():
+    """Straight corridor with broken near-field support and missing rows."""
+    mask = np.zeros((220, 220), dtype=np.uint8)
+    mask[:, 85:135] = 255
+    mask[188:220, :] = 0
+    mask[150:168, :] = 0
+    mask[112:124, 85:118] = 0
+    return mask
+
+
+@pytest.fixture
+def false_pocket_bev_mask():
+    """Straight corridor with a false side pocket near ego on the left."""
+    mask = np.zeros((220, 220), dtype=np.uint8)
+    mask[:, 86:136] = 255
+    mask[185:220, 18:62] = 255
+    mask[185:220, 62:86] = 0
+    return mask
+
+
+@pytest.fixture
 def straight_path_model():
     """Pre-built CubicPathModel for a perfectly straight line (y=0)."""
     x_grid = np.linspace(0.0, 4.5, 120, dtype=np.float64)

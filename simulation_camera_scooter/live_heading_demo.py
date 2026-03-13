@@ -62,7 +62,7 @@ from bev_calibration import run_calibration, load_bev_params
 from bev_obstacle import project_foot_to_bev, detection_to_metric, ObstacleEMAGrid
 from stabilization import FrameStabilizer, TemporalMaskSmoother
 from masks import split_masks, suppress_grass_in_mask, clean_sidewalk_mask, select_main_component, anchor_ego_to_mask, ego_connected_mask
-from heading import heading_to_command, compute_speed
+from heading import heading_to_command, compute_speed, apply_planner_speed_limit
 from visualization import draw_heading_hud, draw_bev_hud
 from bev_predictor import BEVPredictiveTracker
 
@@ -77,7 +77,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
              mask_alpha=MASK_SMOOTH_ALPHA, bev_alpha=BEV_SMOOTH_ALPHA,
              low_power=False, seg_input_res=SEG_INPUT_RES, path_scale=1.0,
              detection_stride=1, enable_predict=PREDICT_ENABLED,
-             planner_mode="dijkstra"):
+             planner_mode="dijkstra", template_planner_enabled=True,
+             max_frames=None):
     print("\n=== LIVE HEADING + OBJECT DETECTION + GPS DEMO ===")
     stab_radius = max(1, int(stab_radius))
     stride = max(1, int(stride))
@@ -105,6 +106,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     if planner_mode not in {"dijkstra", "dfs"}:
         planner_mode = "dijkstra"
     print(f"[Planner] mode={planner_mode}")
+    print(f"[Planner] template_planner={'on' if template_planner_enabled else 'off'}")
 
     # Initialize data logger
     logger = None
@@ -169,6 +171,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         bev_lateral_m=NAV_BEV_LATERAL_M,
         work_size=(work_grid, work_grid),
         planner_mode=planner_mode,
+        template_planner_enabled=bool(template_planner_enabled),
     )
     if low_power:
         path_cfg.search_max_depth = 5
@@ -253,6 +256,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
 
     try:
         while True:
+            if max_frames is not None and frame_id >= int(max_frames):
+                break
             t0 = time.time()
 
             ret, frame = cap.read()
@@ -516,6 +521,12 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             has_control_path = bool(ctrl_out.valid_path)
             path_valid_for_speed = bool(has_model_path or has_control_path)
             speed_raw = compute_speed(heading_smoothed, min_obstacle_dist, path_valid_for_speed)
+            speed_raw = apply_planner_speed_limit(
+                speed_raw,
+                getattr(nav_out, "suggested_slowdown", 0.0),
+                getattr(nav_out, "is_low_confidence", False),
+                cautious_speed_mps=SPEED_TURN,
+            )
             speed_buffer.append(speed_raw)
             speed_smoothed = float(np.mean(speed_buffer))
 
@@ -583,6 +594,16 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     planner_mode=planner_mode,
                     path_source=getattr(nav_out, "path_source", ""),
                     bev_mask_occ_ratio=round(float(getattr(nav_out, "mask_occ_ratio", 0.0)), 5),
+                    approval_confidence=round(float(getattr(nav_out, "approval_confidence", 0.0)), 4),
+                    approval_margin=round(float(getattr(nav_out, "approval_margin", 0.0)), 4),
+                    planner_low_confidence=int(bool(getattr(nav_out, "is_low_confidence", False))),
+                    planner_slowdown=round(float(getattr(nav_out, "suggested_slowdown", 0.0)), 4),
+                    selected_template_id=getattr(nav_out, "selected_template_id", ""),
+                    selected_template_family=getattr(nav_out, "selected_template_family", ""),
+                    corridor_confidence=round(float(getattr(nav_out, "corridor_confidence", 0.0)), 4),
+                    corridor_valid_ratio=round(float(getattr(nav_out, "corridor_valid_ratio", 0.0)), 4),
+                    corridor_forward_span_m=round(float(getattr(nav_out, "corridor_forward_span_m", 0.0)), 4),
+                    corridor_width_cv=round(float(getattr(nav_out, "corridor_width_cv", 0.0)), 4),
                     # Detections
                     num_detections=len(detections),
                     min_obstacle_dist_m=round(min_obstacle_dist, 2) if min_obstacle_dist else "",
@@ -628,6 +649,9 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                                        command, heading_smoothed, speed_smoothed,
                                        path_source=getattr(nav_out, "path_source", None),
                                        mask_occ_ratio=getattr(nav_out, "mask_occ_ratio", None),
+                                       approval_confidence=getattr(nav_out, "approval_confidence", None),
+                                       selected_template_family=getattr(nav_out, "selected_template_family", None),
+                                       suggested_slowdown=getattr(nav_out, "suggested_slowdown", None),
                                        obstacle_zones_m=obstacle_zones if obstacle_zones else None)
 
                 display_h = 540
@@ -682,6 +706,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 nav_bev_forward_m=NAV_BEV_FORWARD_M,
                 nav_bev_lateral_m=NAV_BEV_LATERAL_M,
                 planner_mode=planner_mode,
+                template_planner_enabled=bool(template_planner_enabled),
+                max_frames=int(max_frames) if max_frames is not None else None,
                 yolo_model=YOLO_MODEL_NAME if enable_detection else "disabled",
             )
             logger.close()
@@ -761,6 +787,10 @@ if __name__ == "__main__":
     parser.add_argument("--planner-mode", type=str, default="dijkstra",
                         choices=["dijkstra", "dfs"],
                         help="Graph candidate search mode for path planner")
+    parser.add_argument("--no-template-planner", action="store_true",
+                        help="Disable Phase 11 template approval and use graph/fallback baseline only")
+    parser.add_argument("--max-frames", type=int, default=None,
+                        help="Optional maximum number of processed frames")
 
     # Display
     parser.add_argument("--headless", action="store_true",
@@ -792,6 +822,8 @@ if __name__ == "__main__":
             detection_stride=args.detection_stride,
             enable_predict=not args.no_predict,
             planner_mode=args.planner_mode,
+            template_planner_enabled=not args.no_template_planner,
+            max_frames=args.max_frames,
         )
 
 

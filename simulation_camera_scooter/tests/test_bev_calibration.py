@@ -12,10 +12,14 @@ import numpy as np
 import pytest
 
 from bev_calibration import load_bev_params
-from config import DEFAULT_SRC_POINTS, DEFAULT_DST_POINTS
+from config import CALIBRATION_FILE, DEFAULT_SRC_POINTS, DEFAULT_DST_POINTS
 
 
 class TestLoadBevParams:
+
+    def test_calibration_file_is_absolute(self):
+        """Calibration path should not depend on the current working directory."""
+        assert os.path.isabs(CALIBRATION_FILE)
 
     def test_load_bev_params_returns_3_values(self):
         """load_bev_params should return a 3-tuple."""

@@ -64,6 +64,28 @@ class TestBEVPathExtractor:
         assert isinstance(result.t_skeleton_ms, float)
         assert isinstance(result.t_path_ms, float)
 
+    def test_commit_selected_path_clears_template_family_for_graph(self):
+        """Graph/fallback commits should not keep stale template family intent alive."""
+        extractor = BEVPathExtractor()
+        extractor.prev_template_family = "right"
+        path = np.array([[0.0, 0.0], [1.0, 0.1]], dtype=np.float32)
+
+        extractor._commit_selected_path(path, path_source="graph")
+
+        assert extractor.prev_template_family == ""
+        assert extractor.no_path_counter == 0
+
+    def test_commit_selected_path_keeps_template_family_for_hold(self):
+        """Fallback hold should preserve the last template family for short reuse windows."""
+        extractor = BEVPathExtractor()
+        extractor.prev_template_family = "left"
+        path = np.array([[0.0, 0.0], [1.0, -0.1]], dtype=np.float32)
+
+        extractor._commit_selected_path(path, path_source="fallback_hold")
+
+        assert extractor.prev_template_family == "left"
+        assert extractor.no_path_counter == 0
+
 
 # ---------------------------------------------------------------------------
 # AdaptivePurePursuitController tests

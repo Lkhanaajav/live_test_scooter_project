@@ -101,6 +101,9 @@ def draw_bev_hud(
     speed_mps=0.0,
     path_source=None,
     mask_occ_ratio=None,
+    approval_confidence=None,
+    selected_template_family=None,
+    suggested_slowdown=None,
     obstacle_zones_m=None,
 ):
     """Draw BEV visualization with paths, heading, and speed."""
@@ -145,7 +148,7 @@ def draw_bev_hud(
                     cv2.LINE_AA, tipLength=0.35)
 
     # Semi-transparent black bar for text
-    cv2.rectangle(vis, (0, 0), (w_bev, 90), (0, 0, 0), -1)
+    cv2.rectangle(vis, (0, 0), (w_bev, 110), (0, 0, 0), -1)
 
     # Command + speed text
     cv2.putText(vis, f"{command} ({angle_deg:+.1f} deg)", (10, 25),
@@ -157,6 +160,12 @@ def draw_bev_hud(
         otxt = f"{float(mask_occ_ratio) * 100.0:.1f}%" if mask_occ_ratio is not None else "-"
         cv2.putText(vis, f"Src: {ptxt} | Occ: {otxt}", (10, 78),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.52, (170, 230, 170), 1, cv2.LINE_AA)
+    if approval_confidence is not None or selected_template_family is not None or suggested_slowdown is not None:
+        ttxt = str(selected_template_family) if selected_template_family else "-"
+        ctxt = f"{float(approval_confidence):.2f}" if approval_confidence is not None else "-"
+        stxt = f"{float(suggested_slowdown):.2f}" if suggested_slowdown is not None else "-"
+        cv2.putText(vis, f"Tpl: {ttxt} | Conf: {ctxt} | Slow: {stxt}", (10, 100),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 215, 120), 1, cv2.LINE_AA)
 
     # Obstacle exclusion zone circles (Phase 03.1) -- only drawn when provided
     if obstacle_zones_m:
