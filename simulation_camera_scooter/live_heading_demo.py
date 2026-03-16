@@ -249,7 +249,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     fps = 0.0
     vw = None
 
-    print("Running... Press 'q' or ESC to quit.\n")
+    gps_intent_family: str | None = None  # s=straight, l=left, r=right, ESC=clear
+    print("Running... Press 'q'/ESC to quit | 's' straight | 'l' left | 'r' right | 'c' clear intent\n")
     print(f"{'Frame':>6} | {'Command':>12} | {'Steer':>8} | {'Speed':>7} | "
           f"{'Obst':>5} | {'ms':>5} | {'FPS':>5} | {'IoU':>5} | {'Mode':>7}")
     print("-" * 92)
@@ -449,7 +450,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     _r_m = BEV_OBSTACLE_RADIUS_PX.get(_d.get("class_name", "default"),
                                                        BEV_OBSTACLE_RADIUS_PX["default"]) / 50.0
                     obstacle_zones.append((_fwd, _lat, _r_m))
-                nav_out = path_extractor.process(bev_sidewalk, obstacle_zones_m=obstacle_zones if obstacle_zones else None)
+                nav_out = path_extractor.process(bev_sidewalk, obstacle_zones_m=obstacle_zones if obstacle_zones else None, gps_intent_family=gps_intent_family)
                 t_skel = nav_out.t_skeleton_ms
                 t_path = nav_out.t_path_ms
 
@@ -686,6 +687,18 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q') or key == 27:
                     break
+                elif key == ord('s'):
+                    gps_intent_family = 'straight'
+                    print(f"[Intent] straight")
+                elif key == ord('l'):
+                    gps_intent_family = 'left'
+                    print(f"[Intent] left")
+                elif key == ord('r'):
+                    gps_intent_family = 'right'
+                    print(f"[Intent] right")
+                elif key == ord('c'):
+                    gps_intent_family = None
+                    print(f"[Intent] cleared")
 
             frame_id += 1
 

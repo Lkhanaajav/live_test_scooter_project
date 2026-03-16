@@ -1,0 +1,64 @@
+[
+  {
+    "csv_path": "eval_runs\\phase11_improvements\\test_video_june_03_3\\graph_baseline\\logs\\run_20260313_121301.csv",
+    "frames": 150,
+    "has_path_rate": 1.0,
+    "mean_abs_heading_deg": 2.3010800000000002,
+    "p95_abs_heading_deg": 17.89004999999997,
+    "max_abs_heading_deg": 22.438,
+    "high_heading_frames": 12,
+    "mean_speed_mps": 1.4870933333333334,
+    "low_confidence_rate": 0.0,
+    "mean_slowdown": 0.0,
+    "template_rate": 0.0,
+    "graph_rate": 0.42,
+    "fallback_rate": 0.58,
+    "path_source_switches": 53,
+    "template_family_switches": 0,
+    "mean_bev_occ_ratio": 0.6953187333333333,
+    "low_occ_rate": 0.0,
+    "path_source_counts": {
+      "graph": 63,
+      "fallback_skeleton": 60,
+      "fallback_centerline": 27
+    },
+    "template_family_counts": {
+      "": 150
+    },
+    "mode": "graph_baseline",
+    "video_label": "test_video_june_03_3",
+    "video_path": "test_video_june_03_3.mp4"
+  },
+  {
+    "csv_path": "eval_runs\\phase11_improvements\\test_video_june_03_3\\template_phase11\\logs\\run_20260313_121329.csv",
+    "frames": 150,
+    "has_path_rate": 1.0,
+    "mean_abs_heading_deg": 0.28273333333333334,
+    "p95_abs_heading_deg": 1.649,
+    "max_abs_heading_deg": 3.432,
+    "high_heading_frames": 0,
+    "mean_speed_mps": 1.2553533333333333,
+    "low_confidence_rate": 0.23333333333333334,
+    "mean_slowdown": 0.21639799999999998,
+    "template_rate": 0.7666666666666667,
+    "graph_rate": 0.03333333333333333,
+    "fallback_rate": 0.2,
+    "path_source_switches": 16,
+    "template_family_switches": 0,
+    "mean_bev_occ_ratio": 0.6957115333333334,
+    "low_occ_rate": 0.0,
+    "path_source_counts": {
+      "template": 115,
+      "fallback_hold": 16,
+      "fallback_skeleton": 8,
+      "fallback_centerline": 6,
+      "graph": 5
+    },
+    "template_family_counts": {
+      "straight": 150
+    },
+    "mode": "template_phase11",
+    "video_label": "test_video_june_03_3",
+    "video_path": "test_video_june_03_3.mp4"
+  }
+]

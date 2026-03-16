@@ -116,7 +116,7 @@ class PathExtractorConfig:
     junction_prune_angle_deg: float = 75.0
     junction_short_branch_len_m: float = 1.20
 
-    path_horizon_m: float = 4.5
+    path_horizon_m: float = 8.0
     min_path_len_m: float = 0.80  # was 1.50 â€” tier1 tuning: shorter minimum path accepted
     min_forward_span_m: float = 0.80
     search_max_depth: int = 24
@@ -168,6 +168,7 @@ class PathExtractorConfig:
     skeleton_override_skel_near_abs_lat_m: float = 0.30
     template_planner_enabled: bool = True
     template_planner_cfg: TemplatePlannerConfig = field(default_factory=TemplatePlannerConfig)
+    endpoint_arc_enabled: bool = True  # replace raw graph polyline with smooth cubic to detected endpoint
 
 
 @dataclass
@@ -1478,6 +1479,34 @@ class BEVPathExtractor:
         held[:, 1] = np.clip(held[:, 1], -lat_clip, lat_clip)
         return _resample_polyline(held, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
 
+    def _smooth_endpoint_arc(self, end_x_m: float, end_y_m: float, end_heading_rad: float) -> np.ndarray:
+        """Fit a clean cubic from ego (0,0) to a skeleton-detected endpoint.
+
+        The cubic y(x) satisfies: y(0)=0, y'(0)=0, y(L)=end_y, y'(L)=tan(end_heading).
+        dy1 is clamped so that a2 >= 0 (same sign as end_y), which guarantees the
+        curve is monotone — no S-curve where a right-turn path initially goes left.
+        """
+        L = max(0.5, float(end_x_m))
+        end_y = float(end_y_m)
+        raw_heading = float(np.clip(end_heading_rad, -1.4, 1.4))
+        dy1 = math.tan(raw_heading)
+        # S-curve guard: a2 = 3*end_y/L^2 - dy1/L must have same sign as end_y.
+        # This holds iff |dy1| <= 3*|end_y|/L.  Clamp dy1 to that bound.
+        dy1_max = 3.0 * abs(end_y) / L
+        if end_y >= 0.0:
+            dy1 = min(dy1, dy1_max)   # right turn: cap positive slope
+        else:
+            dy1 = max(dy1, -dy1_max)  # left turn: cap negative slope
+        # a0=0, a1=0 (zero lateral offset and slope at ego origin)
+        a2 = 3.0 * end_y / (L * L) - dy1 / L
+        a3 = dy1 / (L * L) - 2.0 * end_y / (L * L * L)
+        ds = max(0.05, float(self.cfg.path_sample_ds_m))
+        n = max(5, int(L / ds) + 2)
+        x = np.linspace(0.0, L, n, dtype=np.float32)
+        y = (a2 * x * x + a3 * x * x * x).astype(np.float32)
+        pts = np.stack([x, y], axis=1)
+        return _resample_polyline(pts, ds)
+
     def _commit_selected_path(self, best_path_m: np.ndarray, path_source: str, template_family: str = "") -> None:
         if best_path_m is None or len(best_path_m) < 2:
             return
@@ -1494,7 +1523,7 @@ class BEVPathExtractor:
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
-    def process(self, bev_mask_255: np.ndarray, obstacle_zones_m=None) -> PathPlanResult:
+    def process(self, bev_mask_255: np.ndarray, obstacle_zones_m=None, gps_intent_family: str | None = None) -> PathPlanResult:
         t0 = time.time()
         self.obstacle_zones = list(obstacle_zones_m) if obstacle_zones_m else []
         orig_h, orig_w = bev_mask_255.shape
@@ -1527,6 +1556,7 @@ class BEVPathExtractor:
                 prev_path_m=self.prev_best_path_m,
                 prev_template_family=self.prev_template_family,
                 obstacle_zones_m=self.obstacle_zones,
+                gps_intent_family=gps_intent_family,
             )
             if (template_approval.approved or template_approval.reuse_selected_path) and len(template_approval.selected_path_m) >= 2:
                 best_path_m = self._anchor_path_to_ego(
@@ -1695,11 +1725,24 @@ class BEVPathExtractor:
             graph_has_choice = False
         if selected_is_skel_fallback_cand:
             graph_has_choice = False
+        # Endpoint arc: replace raw skeleton polyline with a smooth cubic anchored at detected endpoint.
+        endpoint_arc_applied = False
+        if graph_has_choice and bool(getattr(self.cfg, "endpoint_arc_enabled", True)) and len(best_path_m) >= 2:
+            arc = self._smooth_endpoint_arc(
+                float(best_path_m[-1, 0]),
+                float(best_path_m[-1, 1]),
+                _polyline_end_heading(best_path_m),
+            )
+            if len(arc) >= 2:
+                best_path_m = arc
+                endpoint_arc_applied = True
         path_model = self._fit_regularized_cubic(best_path_m) if len(best_path_m) >= 2 else None
         if path_model is not None and selected_is_fallback_cand:
             path_source = "fallback_centerline"
         elif path_model is not None and selected_is_skel_fallback_cand:
             path_source = "fallback_skeleton"
+        elif path_model is not None and endpoint_arc_applied:
+            path_source = "endpoint_arc"
         else:
             path_source = "graph" if path_model is not None and graph_has_choice else "none"
 

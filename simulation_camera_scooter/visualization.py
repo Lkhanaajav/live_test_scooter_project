@@ -118,21 +118,13 @@ def draw_bev_hud(
         skel_thick = cv2.dilate(skel, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
         vis[skel_thick > 0] = (200, 200, 200)
 
-    # Draw all candidate paths
-    for idx, (path_pts, plen) in enumerate(paths):
-        color = PATH_COLORS[idx % len(PATH_COLORS)]
-        thickness = 6 if idx == best_idx else 3
-        path_np = np.int32(path_pts).reshape(-1, 1, 2)
-        cv2.polylines(vis, [path_np], False, color, thickness, cv2.LINE_AA)
-
-    # Draw best path thick and bright green
+    # Draw only the selected path — clean single line
     if paths and best_idx >= 0:
         best_path = paths[best_idx][0]
         path_np = np.int32(best_path).reshape(-1, 1, 2)
-        cv2.polylines(vis, [path_np], False, (0, 255, 0), 10, cv2.LINE_AA)
-        # Draw start/end circles
-        cv2.circle(vis, tuple(np.int32(best_path[0])), 10, (0, 255, 255), -1)
-        cv2.circle(vis, tuple(np.int32(best_path[-1])), 10, (0, 0, 255), -1)
+        cv2.polylines(vis, [path_np], False, (0, 255, 0), 6, cv2.LINE_AA)
+        cv2.circle(vis, tuple(np.int32(best_path[0])), 8, (0, 255, 255), -1)
+        cv2.circle(vis, tuple(np.int32(best_path[-1])), 8, (0, 0, 255), -1)
 
     # Ego indicator at bottom center
     ego_x, ego_y = w_bev // 2, h_bev - 15

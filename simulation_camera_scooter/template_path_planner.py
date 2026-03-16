@@ -79,6 +79,65 @@ def _curvature_from_cubic(coeff: np.ndarray, x_grid: np.ndarray) -> np.ndarray:
     return (ddy / np.maximum(1e-6, (1.0 + dy * dy) ** 1.5)).astype(np.float32)
 
 
+def _build_arc_template_path(
+    horizon_m: float,
+    ds_m: float,
+    turn_start_m: float,
+    end_heading_rad: float,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """
+    Straight section [0, turn_start] then a constant-curvature circular arc.
+
+    The arc radius is chosen so the arc terminates exactly at x = horizon_m.
+    Curvature is constant = 1/R in the arc zone (zero in straight zone).
+    This produces a clean 'straight then bend' shape matching real road geometry.
+
+      end_heading_rad > 0  →  right turn (positive lateral)
+      end_heading_rad < 0  →  left turn  (negative lateral)
+      end_heading_rad = 0  →  straight   (radius → ∞)
+    """
+    horizon = max(1.5, float(horizon_m))
+    ds = max(0.05, float(ds_m))
+    ts = float(np.clip(turn_start_m, 0.0, horizon - 0.3))
+    theta = abs(float(end_heading_rad))
+    sign = 1.0 if float(end_heading_rad) >= 0.0 else -1.0
+
+    if theta < 1e-4:
+        # Straight template: no arc
+        n = max(3, int(horizon / ds) + 2)
+        x_grid = np.linspace(0.0, horizon, n, dtype=np.float32)
+        pts_m = np.stack([x_grid, np.zeros_like(x_grid)], axis=1).astype(np.float32)
+        return np.zeros(4, dtype=np.float32), pts_m, 0.0
+
+    # Radius: arc forward span = R * sin(theta) must equal (horizon - turn_start)
+    arc_forward_span = max(0.1, horizon - ts)
+    R = arc_forward_span / math.sin(theta)
+    R = max(0.5, R)
+
+    # Straight section
+    n_straight = max(2, int(ts / ds) + 1)
+    x_straight = np.linspace(0.0, ts, n_straight, dtype=np.float32)
+    y_straight = np.zeros(n_straight, dtype=np.float32)
+
+    # Arc section: sweep angle phi in [0, theta]
+    arc_len = R * theta
+    n_arc = max(3, int(arc_len / ds) + 2)
+    phi = np.linspace(0.0, theta, n_arc, dtype=np.float32)
+    x_arc = (ts + R * np.sin(phi)).astype(np.float32)
+    y_arc = (sign * R * (1.0 - np.cos(phi))).astype(np.float32)
+
+    # Combine, skip duplicate at joint
+    x_all = np.concatenate([x_straight, x_arc[1:]])
+    y_all = np.concatenate([y_straight, y_arc[1:]])
+
+    # Clip to horizon
+    mask = x_all <= horizon + ds * 0.5
+    pts_m = np.stack([x_all[mask], y_all[mask]], axis=1).astype(np.float32)
+    pts_m = _resample_polyline(pts_m, ds)
+
+    return np.zeros(4, dtype=np.float32), pts_m, 1.0 / R
+
+
 def _build_turn_template_path(
     horizon_m: float,
     ds_m: float,
@@ -148,7 +207,7 @@ class CorridorConfig:
     row_step_px: int = 4
     min_row_pixels: int = 6
     min_width_m: float = 0.60
-    max_width_m: float = 8.50
+    max_width_m: float = 9.50
     near_field_m: float = 1.20
     min_valid_ratio: float = 0.15
     min_near_field_valid_ratio: float = 0.35
@@ -188,7 +247,7 @@ class Corridor:
 class TemplatePlannerConfig:
     bev_forward_m: float = 10.0
     bev_lateral_m: float = 10.0
-    path_horizon_m: float = 4.5
+    path_horizon_m: float = 8.0
     path_sample_ds_m: float = 0.25
     near_field_m: float = 1.20
     max_curvature_m_inv: float = 0.90
@@ -206,7 +265,7 @@ class TemplatePlannerConfig:
     straight_preference_margin: float = 0.03
     candidate_output_top_k: int = 5
     reuse_score_floor: float = 0.42
-    reuse_confidence_floor: float = 0.75
+    reuse_confidence_floor: float = 0.60
     reuse_near_containment_ratio: float = 0.58
     corridor_cfg: CorridorConfig = CorridorConfig()
 
@@ -415,34 +474,34 @@ def generate_template_bank(cfg: TemplatePlannerConfig | None = None) -> list[Pat
     if x_grid[-1] < horizon:
         x_grid = np.append(x_grid, np.float32(horizon))
 
-    # Small reusable intent bank:
-    # - straight
-    # - left turn with near / mid / late onset
-    # - right turn with near / mid / late onset
-    # This matches the intended "few possible paths" behavior better than
-    # a larger family of always-turning templates.
+    # Circular arc bank: straight approach then constant-curvature bend.
+    # Radius is auto-computed per arc so the path terminates at x = horizon.
+    # Convention: positive end_heading_deg → right, negative → left.
+    # turn_start controls where the arc begins (shorter = bend starts closer to ego).
+    # end_heading_deg controls arc sweep angle = final heading off-axis.
     base_specs = [
-        ("straight_center", "straight", 0.0, 0.00, 0.0),
-        ("left_near", "left", 0.80, 0.90, 18.0),
-        ("left_mid", "left", 1.30, 1.40, 28.0),
-        ("left_late", "left", 1.85, 1.95, 40.0),
-        ("right_near", "right", 0.80, -0.90, -18.0),
-        ("right_mid", "right", 1.30, -1.40, -28.0),
-        ("right_late", "right", 1.85, -1.95, -40.0),
+        # (template_id, family, turn_start_m, end_heading_deg)
+        ("straight_center",  "straight", 0.00,   0.0),
+        ("left_gentle",      "left",     0.80, -40.0),
+        ("left_medium",      "left",     0.50, -60.0),
+        ("left_sharp",       "left",     0.30, -75.0),
+        ("right_gentle",     "right",    0.80,  40.0),
+        ("right_medium",     "right",    0.50,  60.0),
+        ("right_sharp",      "right",    0.30,  75.0),
     ]
 
     templates: list[PathTemplate] = []
-    for template_id, family, turn_start_m, end_lat, end_heading_deg in base_specs:
+    for template_id, family, turn_start_m, end_heading_deg in base_specs:
         end_heading = math.radians(float(end_heading_deg))
-        coeff, pts_m, max_curv = _build_turn_template_path(
+        coeff, pts_m, max_curv = _build_arc_template_path(
             horizon,
             ds,
             turn_start_m,
-            float(end_lat),
             end_heading,
         )
         if max_curv > float(cfg.max_curvature_m_inv) + 0.05:
             continue
+        end_lat = float(pts_m[-1, 1]) if len(pts_m) > 0 else 0.0
         templates.append(
             PathTemplate(
                 template_id=template_id,
@@ -452,7 +511,7 @@ def generate_template_bank(cfg: TemplatePlannerConfig | None = None) -> list[Pat
                 length_m=_polyline_length_m(pts_m),
                 max_curvature_m_inv=max_curv,
                 end_heading_rad=float(end_heading),
-                end_lateral_m=float(end_lat),
+                end_lateral_m=end_lat,
                 turn_start_m=float(turn_start_m),
             )
         )
@@ -587,7 +646,10 @@ def score_template_against_corridor(
         near_containment_ratio = containment_ratio
 
     clearance = np.minimum(path_m[:, 1] - left_q, right_q - path_m[:, 1])
-    clearance_norm = np.clip(clearance / np.maximum(1e-3, 0.5 * width_q), 0.0, 1.0)
+    # Absolute clearance: score 1.0 at >=0.20m from wall, 0.0 on wall edge.
+    # Avoids the normalized version rewarding paths that merely exist inside a wide corridor.
+    _min_clearance_m = 0.20
+    clearance_norm = np.clip(clearance / _min_clearance_m, 0.0, 1.0)
     clearance_score = float(np.mean(clearance_norm[support])) if np.any(support) else 0.0
 
     center_err = np.abs(path_m[:, 1] - center_q) / np.maximum(1e-3, 0.5 * width_q)
@@ -602,7 +664,7 @@ def score_template_against_corridor(
         0.22 * containment_ratio
         + 0.18 * near_containment_ratio
         + 0.16 * clearance_score
-        + 0.10 * center_score * float(corridor.confidence)
+        + 0.10 * center_score  # decoupled from corridor.confidence — low evidence != low centering need
         + float(cfg.continuity_weight) * continuity
         + 0.08 * curvature_score
         + 0.06 * progress_score
@@ -642,9 +704,23 @@ def approve_template_bank(
     prev_template_family: str | None = None,
     obstacle_zones_m: Sequence[Sequence[float]] | None = None,
     templates: Iterable[PathTemplate] | None = None,
+    gps_intent_family: str | None = None,
 ) -> TemplateApprovalResult:
     cfg = cfg or TemplatePlannerConfig()
     templates = list(templates) if templates is not None else generate_template_bank(cfg)
+
+    # GPS intent conditioning: filter to only intent-consistent templates.
+    # "straight" intent → only straight; "left"/"right" → only that direction.
+    # Per design spec: do not fall back to a different direction if the intent fails.
+    _intent = str(gps_intent_family or "").strip().lower()
+    _intent_filtered = bool(_intent in {"straight", "left", "right"})
+    if _intent_filtered:
+        intent_candidates = [t for t in templates if t.family == _intent]
+        if intent_candidates:
+            templates = intent_candidates
+        # If no templates match the intent family (e.g. bank only has 'straight'),
+        # fall through with the full bank so the approval gate can still reject.
+
     if not templates:
         empty = _invalid_corridor(np.zeros((2, 2), dtype=np.uint8), cfg.corridor_cfg)
         return TemplateApprovalResult(
@@ -674,13 +750,34 @@ def approve_template_bank(
     ]
     scored.sort(key=lambda s: s.total_score, reverse=True)
     prioritized = _prioritize_candidates(scored, prev_template_family, cfg)
+
+    # GPS intent: when a direction is given, commit to the sharpest template
+    # in that family (most lateral displacement) regardless of mask fit score.
+    # The intent overrides corridor evidence — the turn may not be visible yet.
+    if _intent_filtered and _intent in {"left", "right"}:
+        prioritized = sorted(
+            prioritized,
+            key=lambda s: abs(s.template.end_lateral_m),
+            reverse=True,
+        )
+
     best = prioritized[0]
     best_group = _family_group(best.template.family)
     runner_up = next((cand for cand in prioritized[1:] if _family_group(cand.template.family) != best_group), None)
     margin = float(best.total_score - runner_up.total_score) if runner_up is not None else float(best.total_score)
-    approved = bool(best.approved and best.total_score >= float(cfg.approval_threshold) and margin >= float(cfg.approval_margin))
+    # An off-intent selection (shouldn't happen after filtering, but guards template=None fallback)
+    _intent_violated = bool(
+        _intent_filtered and _intent and best.template.family != _intent
+    )
+    approved = bool(
+        best.approved
+        and best.total_score >= float(cfg.approval_threshold)
+        and margin >= float(cfg.approval_margin)
+        and not _intent_violated
+    )
     reuse_selected_path = bool(
         not approved
+        and not _intent_violated
         and str(prev_template_family or "").strip().lower() == best.template.family
         and corridor.confidence >= float(cfg.reuse_confidence_floor)
         and best.total_score >= float(cfg.reuse_score_floor)
@@ -713,7 +810,10 @@ def approve_template_bank(
     recommend_hold = bool(
         (not approved and not reuse_selected_path)
         and (
-            corridor.confidence < 0.35
+            # GPS intent was given but no intent-consistent template cleared the gate.
+            # Per design spec: do not fall back to a different maneuver direction.
+            _intent_violated
+            or corridor.confidence < 0.35
             or (
                 corridor.near_field_valid_ratio < float(cfg.corridor_cfg.min_near_field_valid_ratio)
                 and corridor.valid_ratio < max(0.25, float(cfg.corridor_cfg.min_valid_ratio))
