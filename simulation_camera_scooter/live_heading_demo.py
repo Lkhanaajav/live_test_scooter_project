@@ -749,6 +749,8 @@ if __name__ == "__main__":
                         help="Video file path (instead of live camera)")
     parser.add_argument("--calibrate", action="store_true",
                         help="Run BEV calibration mode")
+    parser.add_argument("--calib-frame", type=int, default=0,
+                        help="Frame number to start calibration on (default: 0)")
     parser.add_argument("--stride", type=int, default=1,
                         help="Process every Nth frame (1=all)")
     parser.add_argument("--save", action="store_true",
@@ -812,7 +814,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.calibrate:
-        run_calibration(camera_id=args.camera, video_path=args.video)
+        run_calibration(camera_id=args.camera, video_path=args.video, start_frame=args.calib_frame)
     else:
         run_live(
             camera_id=args.camera,
