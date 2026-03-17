@@ -16,6 +16,7 @@ import math
 from typing import Iterable, Optional, Sequence
 
 import numpy as np
+from config import bev_ego_x_px
 
 # Research impl: optional DT corridor — import lazily to avoid circular deps
 try:
@@ -194,7 +195,8 @@ def _pixel_to_forward_m(row_px: np.ndarray, height: int, bev_forward_m: float) -
 
 
 def _pixel_to_lateral_m(col_px: np.ndarray, width: int, bev_lateral_m: float) -> np.ndarray:
-    return ((col_px.astype(np.float32) / max(1.0, float(width - 1)) - 0.5) * float(bev_lateral_m)).astype(np.float32)
+    ego_x = bev_ego_x_px(width)
+    return (((col_px.astype(np.float32) - ego_x) / max(1.0, float(width - 1))) * float(bev_lateral_m)).astype(np.float32)
 
 
 def _split_runs(xs: np.ndarray) -> list[tuple[int, int]]:
@@ -392,7 +394,7 @@ def corridor_from_mask(mask_255: np.ndarray, cfg: CorridorConfig | None = None) 
     center_px = np.zeros(n, dtype=np.float32)
     valid = np.zeros(n, dtype=bool)
 
-    image_center_px = 0.5 * float(w - 1)
+    image_center_px = bev_ego_x_px(w)
     ref_center_px = image_center_px
     min_width_px = max(
         int(cfg.min_row_pixels),

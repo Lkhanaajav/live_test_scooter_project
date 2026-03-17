@@ -14,6 +14,7 @@ from config import (
     COLOR_OBJ_WARN,
     OBSTACLE_CLOSE_M,
     PATH_COLORS,
+    bev_ego_x_px,
 )
 
 
@@ -127,9 +128,9 @@ def draw_bev_hud(
         cv2.circle(vis, tuple(np.int32(best_path[-1])), 8, (0, 0, 255), -1)
 
     # Ego indicator at bottom center
-    ego_x, ego_y = w_bev // 2, h_bev - 15
-    cv2.circle(vis, (ego_x, ego_y), 12, (0, 200, 255), -1)
-    cv2.circle(vis, (ego_x, ego_y), 12, (255, 255, 255), 2)
+    ego_x, ego_y = int(round(bev_ego_x_px(w_bev))), h_bev - 1
+    cv2.circle(vis, (ego_x, ego_y), 10, (0, 200, 255), -1)
+    cv2.circle(vis, (ego_x, ego_y), 10, (255, 255, 255), 2)
 
     # Direction arrow from ego
     arrow_len = 60
@@ -163,7 +164,8 @@ def draw_bev_hud(
     if obstacle_zones_m:
         from config import NAV_BEV_FORWARD_M, NAV_BEV_LATERAL_M, BEV_HARD_BLOCK_DIST_M
         for fwd_m, lat_m, rad_m in obstacle_zones_m:
-            col = int((lat_m / max(1e-6, NAV_BEV_LATERAL_M) + 0.5) * max(1, w_bev - 1))
+            ego_x_px = bev_ego_x_px(w_bev)
+            col = int(round(ego_x_px + (lat_m / max(1e-6, NAV_BEV_LATERAL_M)) * max(1, w_bev - 1)))
             row = int((1.0 - fwd_m / max(1e-6, NAV_BEV_FORWARD_M)) * max(1, h_bev - 1))
             r_px = max(3, int(rad_m * h_bev / max(1e-6, NAV_BEV_FORWARD_M)))
             col = int(np.clip(col, 0, w_bev - 1))

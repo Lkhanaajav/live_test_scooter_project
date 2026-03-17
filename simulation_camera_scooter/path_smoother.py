@@ -238,7 +238,7 @@ def _path_source_category(source: str) -> str:
     s = str(source).lower().strip()
     if s in {"template"}:
         return "template"
-    if s in {"graph", "endpoint_arc"}:
+    if s in {"graph", "endpoint_arc", "dt_corridor"}:
         return "graph"
     if s in {"fallback_centerline", "fallback_skeleton", "fallback_hold"}:
         return "fallback"

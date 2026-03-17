@@ -46,6 +46,7 @@ from config import (
     BEV_PIXELS_PER_METER_LATERAL,
     NAV_BEV_FORWARD_M,
     NAV_BEV_LATERAL_M,
+    bev_ego_x_px,
 )
 
 
@@ -166,7 +167,7 @@ class DtSafeCorridor:
 
         # --- Step 3: Dijkstra forward from ego ---
         start_row = H - 1
-        start_col = W // 2
+        start_col = int(round(bev_ego_x_px(W)))
 
         # If ego position is not on road, find nearest road pixel in bottom band.
         # Search upward row by row (up to 30px) to handle cases where the mask
@@ -213,7 +214,8 @@ class DtSafeCorridor:
 
         # Metric: forward = distance from bottom (ego), lateral = offset from center
         forward_m = (float(H - 1) - rows_arr) * m_per_px_fwd
-        lateral_m = (cols_smooth / max(1.0, float(W - 1)) - 0.5) * self.bev_lateral_m
+        ego_x = bev_ego_x_px(W)
+        lateral_m = ((cols_smooth - ego_x) / max(1.0, float(W - 1))) * self.bev_lateral_m
         centerline_m = np.stack([forward_m, lateral_m], axis=1).astype(np.float32)
 
         # Per-point width estimate: 2 * DT_at_centerline * m_per_px
@@ -244,7 +246,7 @@ class DtSafeCorridor:
 
     def _find_nearest_road_col(self, road: np.ndarray, row: int, W: int) -> int:
         """Find the nearest road column to center in the given row."""
-        center = W // 2
+        center = int(round(bev_ego_x_px(W)))
         road_cols = np.where(road[row])[0]
         if len(road_cols) == 0:
             # Search up a few rows

@@ -31,6 +31,7 @@ from config import (
     PREDICT_CONFIDENCE_FLOOR,
     BEV_PIXELS_PER_METER_FORWARD,
     BEV_PIXELS_PER_METER_LATERAL,
+    bev_ego_x_px,
 )
 
 
@@ -105,7 +106,7 @@ class BEVPredictiveTracker:
         New pixels from top/sides fill with 0 (unknown).
         """
         h, w = bev_mask_f.shape[:2]
-        ego_x = w / 2.0
+        ego_x = bev_ego_x_px(w)
         ego_y = float(h - 1)
 
         # Rotation around ego point

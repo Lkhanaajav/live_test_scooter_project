@@ -5,6 +5,7 @@ Shared constants for the scooter navigation pipeline.
 All module-level constants extracted from live_heading_demo.py.
 """
 
+import json
 import os
 import numpy as np
 
@@ -33,20 +34,45 @@ DEFAULT_SRC_POINTS = np.array(
 
 DEFAULT_DST_POINTS = np.array(
     [
-        [100, 480],  # bottom-left
-        [500, 480],  # bottom-right
-        [400, 100],  # top-right
-        [200, 100],  # top-left
+        [100, 576],  # bottom-left
+        [500, 576],  # bottom-right
+        [400, 120],  # top-right
+        [200, 120],  # top-left
     ],
     dtype=np.float32,
 )
 
-BEV_SIZE = (600, 500)
+BEV_SIZE = (600, 600)
 TRIM_BOTTOM = 0           # was 20 — tier1 tuning: keep near-field BEV pixels
 CALIBRATION_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "bev_calibration.npy",
 )
+CALIBRATION_META_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "bev_calibration_meta.json",
+)
+
+
+def _load_bev_calibration_meta() -> dict:
+    """Load optional BEV runtime metadata saved alongside the 4-point calibration."""
+    if not os.path.exists(CALIBRATION_META_FILE):
+        return {}
+    try:
+        with open(CALIBRATION_META_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+_BEV_META = _load_bev_calibration_meta()
+BEV_EGO_X_FRAC = float(np.clip(float(_BEV_META.get("ego_x_frac", 0.5)), 0.05, 0.95))
+
+
+def bev_ego_x_px(width: int) -> float:
+    """Return the calibrated BEV ego x-position in pixels for the given width."""
+    return float(np.clip(BEV_EGO_X_FRAC, 0.05, 0.95) * max(1.0, float(width - 1)))
 
 # =============================================================================
 # Skeleton / path tuning
@@ -157,7 +183,7 @@ NAV_BEV_LATERAL_M = 10.0
 NAV_WORK_GRID_BASE = 220
 
 # BEV motion compensation: forward pixel displacement per meter of travel
-# BEV_SIZE[1]=500 px covers NAV_BEV_FORWARD_M=10 m → 50 px/m
+# BEV_SIZE[1]=600 px covers NAV_BEV_FORWARD_M=10 m → 60 px/m
 BEV_PIXELS_PER_METER_FORWARD = BEV_SIZE[1] / NAV_BEV_FORWARD_M
 # BEV_SIZE[0]=600 px covers NAV_BEV_LATERAL_M=10 m → 60 px/m
 BEV_PIXELS_PER_METER_LATERAL = BEV_SIZE[0] / NAV_BEV_LATERAL_M

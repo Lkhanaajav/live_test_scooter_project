@@ -5,13 +5,17 @@ BEV (Bird's Eye View) calibration tool and parameter loader.
 """
 
 import os
+import json
 import cv2
 import numpy as np
 
 from config import (
     DEFAULT_SRC_POINTS,
     DEFAULT_DST_POINTS,
+    BEV_SIZE,
     CALIBRATION_FILE,
+    CALIBRATION_META_FILE,
+    bev_ego_x_px,
 )
 
 
@@ -62,6 +66,7 @@ def run_calibration(camera_id=0, video_path=None, start_frame=0):
     points = []
     labels = ["Bottom-Left", "Bottom-Right", "Top-Right", "Top-Left"]
     frame_holder = [frame.copy()]
+    ego_x_px = [int(round(bev_ego_x_px(BEV_SIZE[0])))]
 
     def on_trackbar(val):
         cap.set(cv2.CAP_PROP_POS_FRAMES, val)
@@ -96,14 +101,34 @@ def run_calibration(camera_id=0, video_path=None, start_frame=0):
             if len(points) == 4:
                 cv2.line(display, tuple(points[3]), tuple(points[0]), (0, 255, 0), 2)
 
+        # Draw a small BEV-width ruler that shows the ego anchor position.
+        bar_w = min(420, max(180, display.shape[1] // 3))
+        bar_h = 18
+        bar_x0 = display.shape[1] - bar_w - 20
+        bar_y0 = display.shape[0] - 50
+        ego_x_bar = int(round(bar_x0 + (ego_x_px[0] / max(1.0, float(BEV_SIZE[0] - 1))) * (bar_w - 1)))
+        cv2.rectangle(display, (bar_x0, bar_y0), (bar_x0 + bar_w, bar_y0 + bar_h), (80, 80, 80), -1)
+        cv2.rectangle(display, (bar_x0, bar_y0), (bar_x0 + bar_w, bar_y0 + bar_h), (255, 255, 255), 1)
+        cv2.line(display, (ego_x_bar, bar_y0 - 10), (ego_x_bar, bar_y0 + bar_h + 10), (255, 255, 0), 2)
+        cv2.putText(display, "BEV ego x", (bar_x0, bar_y0 - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
+
         frame_info = f"Frame {current_frame[0]}/{total_frames}" if is_video else "Live"
-        info = f"{frame_info} | Points: {len(points)}/4 | r=reset  s=save  q=quit"
+        info = (
+            f"{frame_info} | Points: {len(points)}/4 | bev_ego_x={ego_x_px[0]} px | "
+            "a/d=move ego  r=reset  s=save  q=quit"
+        )
         cv2.rectangle(display, (0, 0), (display.shape[1], 38), (0, 0, 0), -1)
         cv2.putText(display, info, (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2)
         cv2.imshow("BEV Calibration", display)
 
         key = cv2.waitKey(30) & 0xFF
-        if key == ord('r'):
+        if key == ord('a'):
+            ego_x_px[0] = max(0, ego_x_px[0] - 5)
+            print(f"  Ego anchor x -> {ego_x_px[0]} px")
+        elif key == ord('d'):
+            ego_x_px[0] = min(BEV_SIZE[0] - 1, ego_x_px[0] + 5)
+            print(f"  Ego anchor x -> {ego_x_px[0]} px")
+        elif key == ord('r'):
             points.clear()
             print("  Points reset.")
         elif key == ord('s') and len(points) == 4:
@@ -118,6 +143,10 @@ def run_calibration(camera_id=0, video_path=None, start_frame=0):
             np.save("bev_H.npy", H)
             np.save("bev_Hinv.npy", Hinv)
             print(f"  Also saved bev_H.npy and bev_Hinv.npy")
+            ego_x_frac = float(np.clip(float(ego_x_px[0]) / max(1.0, float(BEV_SIZE[0] - 1)), 0.05, 0.95))
+            with open(CALIBRATION_META_FILE, "w", encoding="utf-8") as f:
+                json.dump({"ego_x_frac": ego_x_frac}, f, indent=2)
+            print(f"  Saved ego anchor to {CALIBRATION_META_FILE} (ego_x_frac={ego_x_frac:.4f})")
             break
         elif key == ord('q') or key == 27:
             print("  Calibration cancelled.")

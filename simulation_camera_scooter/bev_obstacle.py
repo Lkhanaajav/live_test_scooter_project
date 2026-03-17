@@ -29,6 +29,7 @@ from config import (
     NAV_BEV_LATERAL_M,
     BEV_OBSTACLE_ALPHA,
     BEV_OBSTACLE_RADIUS_PX,
+    bev_ego_x_px,
 )
 
 
@@ -95,7 +96,8 @@ def detection_to_metric(
     bev_h, bev_w = bev_mask_shape[:2]
     bx, by = project_foot_to_bev(det, H, bev_h=bev_h, bev_w=bev_w)
     forward_m = max(0.3, (bev_h - 1 - by) / max(1.0, float(bev_h - 1)) * NAV_BEV_FORWARD_M)
-    lateral_m = (bx / max(1.0, float(bev_w - 1)) - 0.5) * NAV_BEV_LATERAL_M
+    ego_x = bev_ego_x_px(bev_w)
+    lateral_m = ((bx - ego_x) / max(1.0, float(bev_w - 1))) * NAV_BEV_LATERAL_M
     return float(forward_m), float(lateral_m)
 
 

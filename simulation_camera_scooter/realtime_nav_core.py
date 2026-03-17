@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from config import BEV_OBSTACLE_PENALTY_WEIGHT, PATH_SMOOTH_ENABLED
+from config import BEV_OBSTACLE_PENALTY_WEIGHT, PATH_SMOOTH_ENABLED, DT_CORRIDOR_ENABLED, bev_ego_x_px
 from template_path_planner import (
     CorridorConfig,
     TemplateApprovalResult,
@@ -36,6 +36,13 @@ try:
 except ImportError:
     _HAS_PATH_SMOOTHER = False
     _PathTemporalSmoother = None  # type: ignore[assignment,misc]
+
+try:
+    from safe_corridor import get_default_dt_corridor
+    _HAS_DT_CORRIDOR = True
+except ImportError:
+    _HAS_DT_CORRIDOR = False
+    get_default_dt_corridor = None  # type: ignore[assignment,misc]
 
 
 def _odd(v: int) -> int:
@@ -344,6 +351,7 @@ class BEVPathExtractor:
         self._path_smoother: Optional[object] = (
             _PathTemporalSmoother() if _HAS_PATH_SMOOTHER and PATH_SMOOTH_ENABLED else None
         )
+        self._dt_corridor = get_default_dt_corridor() if (_HAS_DT_CORRIDOR and DT_CORRIDOR_ENABLED) else None
 
     def _make_template_planner_cfg(self) -> TemplatePlannerConfig:
         base = self.cfg.template_planner_cfg
@@ -379,9 +387,28 @@ class BEVPathExtractor:
         path_source: str,
         mask_occ_ratio: float,
         template_approval: Optional[TemplateApprovalResult] = None,
+        corridor_confidence: float = 0.0,
+        corridor_valid_ratio: float = 0.0,
+        corridor_forward_span_m: float = 0.0,
+        corridor_width_cv: float = 0.0,
     ) -> PathPlanResult:
         orig_h, orig_w = orig_shape_hw
-        cand_paths_px = [self._pixel_from_metric(p, (orig_h, orig_w)) for p in cand_paths_m]
+        final_best_idx = int(best_idx)
+        final_cand_paths_m = [p.astype(np.float32) for p in cand_paths_m]
+        final_cand_lens_m = [float(v) for v in cand_lens_m]
+        if best_path_m is not None and len(best_path_m) >= 2:
+            same_as_selected = False
+            if 0 <= final_best_idx < len(final_cand_paths_m) and len(final_cand_paths_m[final_best_idx]) >= 2:
+                cand_sel = final_cand_paths_m[final_best_idx]
+                end_gap = float(np.linalg.norm(cand_sel[-1] - best_path_m[-1]))
+                len_gap = abs(float(_polyline_length_m(cand_sel)) - float(_polyline_length_m(best_path_m)))
+                same_as_selected = end_gap <= 0.20 and len_gap <= 0.35
+            if not same_as_selected:
+                final_cand_paths_m = [best_path_m.astype(np.float32)] + final_cand_paths_m
+                final_cand_lens_m = [float(_polyline_length_m(best_path_m))] + final_cand_lens_m
+                final_best_idx = 0
+
+        cand_paths_px = [self._pixel_from_metric(p, (orig_h, orig_w)) for p in final_cand_paths_m]
         best_path_px = (
             self._pixel_from_metric(best_path_m, (orig_h, orig_w))
             if best_path_m is not None and len(best_path_m) >= 2
@@ -410,20 +437,20 @@ class BEVPathExtractor:
             slowdown = 0.0
             template_id = ""
             template_family = ""
-            corridor_conf = 0.0
-            corridor_valid_ratio = 0.0
-            corridor_forward_span = 0.0
-            corridor_width_cv = 0.0
+            corridor_conf = float(corridor_confidence)
+            corridor_valid_ratio = float(corridor_valid_ratio)
+            corridor_forward_span = float(corridor_forward_span_m)
+            corridor_width_cv = float(corridor_width_cv)
 
         return PathPlanResult(
             has_path=bool(path_model is not None and best_path_m is not None and len(best_path_m) >= 2),
             path_model=path_model,
             best_path_m=best_path_m.astype(np.float32) if best_path_m is not None else np.zeros((0, 2), dtype=np.float32),
             best_path_px=best_path_px.astype(np.int32),
-            candidate_paths_m=[p.astype(np.float32) for p in cand_paths_m],
+            candidate_paths_m=[p.astype(np.float32) for p in final_cand_paths_m],
             candidate_paths_px=[p.astype(np.int32) for p in cand_paths_px],
-            candidate_lengths_m=[float(v) for v in cand_lens_m],
-            best_idx=int(best_idx),
+            candidate_lengths_m=[float(v) for v in final_cand_lens_m],
+            best_idx=int(final_best_idx),
             skeleton_px=skel_px.astype(np.uint8),
             graph_nodes=int(graph_nodes),
             graph_edges=int(graph_edges),
@@ -454,7 +481,8 @@ class BEVPathExtractor:
         u = pts_px[:, 0].astype(np.float32)
         v = pts_px[:, 1].astype(np.float32)
         forward = (float(h - 1) - v) / max(1.0, float(h - 1)) * self.cfg.bev_forward_m
-        lateral = (u / max(1.0, float(w - 1)) - 0.5) * self.cfg.bev_lateral_m
+        ego_x = bev_ego_x_px(w)
+        lateral = ((u - ego_x) / max(1.0, float(w - 1))) * self.cfg.bev_lateral_m
         return np.stack([forward, lateral], axis=1).astype(np.float32)
 
     def _pixel_from_metric(self, pts_m: np.ndarray, shape_hw: Tuple[int, int]) -> np.ndarray:
@@ -463,8 +491,9 @@ class BEVPathExtractor:
         if pts_m is None or len(pts_m) == 0:
             return np.zeros((0, 2), dtype=np.int32)
         f = np.clip(pts_m[:, 0], 0.0, self.cfg.bev_forward_m)
-        l = np.clip(pts_m[:, 1], -self.cfg.bev_lateral_m / 2.0, self.cfg.bev_lateral_m / 2.0)
-        u = ((l / self.cfg.bev_lateral_m) + 0.5) * max(1.0, float(w - 1))
+        l = pts_m[:, 1].astype(np.float64)
+        ego_x = bev_ego_x_px(w)
+        u = ego_x + (l / self.cfg.bev_lateral_m) * max(1.0, float(w - 1))
         v = (1.0 - f / self.cfg.bev_forward_m) * max(1.0, float(h - 1))
         out = np.stack([u, v], axis=1)
         out[:, 0] = np.clip(out[:, 0], 0.0, float(w - 1))
@@ -522,8 +551,9 @@ class BEVPathExtractor:
             keep = np.zeros_like(mask, dtype=np.uint8)
             min_area_px = int(round(self.cfg.min_component_area_m2 / max(1e-9, m_per_px * m_per_px)))
             band_y0 = max(0, work_h - max(8, work_h // 8))
-            band_x0 = max(0, work_w // 2 - max(8, work_w // 8))
-            band_x1 = min(work_w, work_w // 2 + max(8, work_w // 8))
+            ego_x = int(round(bev_ego_x_px(work_w)))
+            band_x0 = max(0, ego_x - max(8, work_w // 8))
+            band_x1 = min(work_w, ego_x + max(8, work_w // 8))
             ego_ids = set(np.unique(labels[band_y0:work_h, band_x0:band_x1]).tolist())
             ego_ids.discard(0)
             for idx in range(1, num):
@@ -573,7 +603,50 @@ class BEVPathExtractor:
         dist_m = dist_px * m_per_px
         skel = self._thin(mask_255)
         skel[(dist_m < self.cfg.radius_floor_m)] = 0
+        skel = self._connect_skeleton_to_ego(skel)
         return (skel > 0).astype(np.uint8), dist_m.astype(np.float32)
+
+    def _connect_skeleton_to_ego(
+        self,
+        skel_255: np.ndarray,
+        search_half_width_px: int = 28,
+        search_up_px: int = 90,
+        max_bridge_px: int = 85,
+        bridge_thickness_px: int = 2,
+        center_bias_px: float = 1.25,
+    ) -> np.ndarray:
+        """Ensure the extracted skeleton reaches the calibrated ego start point."""
+        if skel_255 is None or skel_255.size == 0:
+            return np.zeros((0, 0), dtype=np.uint8)
+
+        out = (skel_255 > 0).astype(np.uint8) * 255
+        h, w = out.shape
+        ego_x = int(round(bev_ego_x_px(w)))
+        ego_y = int(h - 1)
+
+        if out[ego_y, ego_x] > 0:
+            return out
+
+        x0 = max(0, ego_x - int(search_half_width_px))
+        x1 = min(w, ego_x + int(search_half_width_px) + 1)
+        y0 = max(0, ego_y - int(search_up_px))
+        roi = out[y0:ego_y + 1, x0:x1]
+        ys, xs = np.where(roi > 0)
+        if len(ys) == 0:
+            return out
+
+        pts_y = ys + y0
+        pts_x = xs + x0
+        d2 = (pts_x - ego_x) ** 2 + (pts_y - ego_y) ** 2
+        score = d2 + float(center_bias_px) * ((pts_x - ego_x) ** 2)
+        idx = int(np.argmin(score))
+        if float(np.sqrt(d2[idx])) > float(max_bridge_px):
+            return out
+
+        tx = int(pts_x[idx])
+        ty = int(pts_y[idx])
+        cv2.line(out, (ego_x, ego_y), (tx, ty), 255, int(max(1, bridge_thickness_px)))
+        return out
 
     # -------------------------------------------------------------------------
     # Graph construction from skeleton pixels
@@ -1118,6 +1191,65 @@ class BEVPathExtractor:
         cands.sort(key=lambda c: c.cost)
         return cands
 
+    def _apply_intent_bias(
+        self,
+        cands: List[PathCandidate],
+        gps_intent_family: str | None,
+    ) -> List[PathCandidate]:
+        """Bias graph/endpoint candidate selection toward a persistent manual intent."""
+        if not cands:
+            return cands
+
+        intent = str(gps_intent_family or "").strip().lower()
+        if intent not in {"left", "right", "straight"}:
+            return cands
+
+        match_strength: dict[int, float] = {}
+        for idx, cand in enumerate(cands):
+            end_lat = float(cand.points_m[-1, 1]) if len(cand.points_m) else 0.0
+            end_heading_deg = math.degrees(float(cand.heading_end_rad))
+            abs_lat = abs(end_lat)
+            abs_head = abs(end_heading_deg)
+
+            if intent == "left":
+                matches = (end_lat <= -0.10) or (end_heading_deg <= -6.0)
+                strength = max(1.6 * abs(min(end_lat, 0.0)), abs(min(end_heading_deg, 0.0)) / 20.0)
+            elif intent == "right":
+                matches = (end_lat >= 0.10) or (end_heading_deg >= 6.0)
+                strength = max(1.6 * max(end_lat, 0.0), max(end_heading_deg, 0.0) / 20.0)
+            else:
+                matches = abs_lat <= 0.45 and abs_head <= 15.0
+                strength = 1.0 - min(1.0, 0.9 * abs_lat + abs_head / 18.0)
+
+            if matches:
+                match_strength[idx] = float(max(0.0, strength))
+
+        if not match_strength:
+            return cands
+
+        if intent in {"left", "right"}:
+            best_strength = max(match_strength.values())
+            keep_floor = max(0.18, 0.75 * best_strength)
+            mismatch_penalty = 20.0
+            for idx, cand in enumerate(cands):
+                if idx not in match_strength:
+                    cand.cost += mismatch_penalty
+                    continue
+                strength = float(match_strength[idx])
+                cand.cost -= min(3.0, 1.2 * strength)
+                if strength < keep_floor:
+                    cand.cost += 12.0 + 8.0 * (keep_floor - strength)
+        else:
+            mismatch_penalty = 8.0
+            for idx, cand in enumerate(cands):
+                if idx in match_strength:
+                    cand.cost -= min(1.2, 0.45 * match_strength[idx])
+                else:
+                    cand.cost += mismatch_penalty
+
+        cands.sort(key=lambda c: c.cost)
+        return cands
+
     def _obstacle_penalty(self, path_pts_m: np.ndarray) -> float:
         """Sum obstacle zone overlap along candidate path. Returns [0, +inf)."""
         if not self.obstacle_zones:
@@ -1363,7 +1495,7 @@ class BEVPathExtractor:
         )
         row_step = max(1, int(self.cfg.fallback_row_step_px))
         dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5).astype(np.float32)
-        center_x = 0.5 * float(w - 1)
+        center_x = bev_ego_x_px(w)
         points_px: List[Tuple[float, float]] = []
 
         for y in range(h - 1, -1, -row_step):
@@ -1456,7 +1588,7 @@ class BEVPathExtractor:
             return np.zeros((0, 2), dtype=np.float32)
 
         h, w = skel_bin.shape
-        center_x = 0.5 * float(w - 1)
+        center_x = bev_ego_x_px(w)
         pix_set = set((int(x), int(y)) for x, y in zip(xs, ys))
         y_max = max(y for _, y in pix_set)
         start_pool = [(x, y) for (x, y) in pix_set if y >= (y_max - 8)]
@@ -1568,6 +1700,129 @@ class BEVPathExtractor:
         y = (a2 * x * x + a3 * x * x * x).astype(np.float32)
         pts = np.stack([x, y], axis=1)
         return _resample_polyline(pts, ds)
+
+    def _path_matches_intent(self, pts_m: np.ndarray, gps_intent_family: str | None) -> bool:
+        if pts_m is None or len(pts_m) < 2:
+            return False
+        intent = str(gps_intent_family or "").strip().lower()
+        if intent not in {"left", "right", "straight"}:
+            return True
+        end_lat = float(pts_m[-1, 1])
+        end_heading_deg = math.degrees(float(_polyline_end_heading(pts_m)))
+        abs_lat = abs(end_lat)
+        abs_head = abs(end_heading_deg)
+        if intent == "left":
+            return (end_lat <= -0.10) or (end_heading_deg <= -6.0)
+        if intent == "right":
+            return (end_lat >= 0.10) or (end_heading_deg >= 6.0)
+        return abs_lat <= 0.45 and abs_head <= 15.0
+
+    def _corridor_matches_reference(
+        self,
+        corridor_path_m: np.ndarray,
+        ref_path_m: np.ndarray,
+        gps_intent_family: str | None,
+    ) -> bool:
+        if corridor_path_m is None or len(corridor_path_m) < 4:
+            return False
+        if not self._path_matches_intent(corridor_path_m, gps_intent_family):
+            return False
+        if ref_path_m is None or len(ref_path_m) < 2:
+            return True
+
+        ref_end_lat = float(ref_path_m[-1, 1])
+        cor_end_lat = float(corridor_path_m[-1, 1])
+        if abs(ref_end_lat) >= 0.20 and (ref_end_lat * cor_end_lat) < -0.03:
+            return False
+
+        ref_head = float(_polyline_end_heading(ref_path_m))
+        cor_head = float(_polyline_end_heading(corridor_path_m))
+        if abs(math.degrees(ref_head)) >= 8.0 and (ref_head * cor_head) < 0.0:
+            return False
+
+        x_probe = min(
+            2.0,
+            float(np.max(ref_path_m[:, 0])) if len(ref_path_m) else 0.0,
+            float(np.max(corridor_path_m[:, 0])) if len(corridor_path_m) else 0.0,
+        )
+        if x_probe >= 0.5:
+            y_ref = self._path_lateral_at_x(ref_path_m, x_probe)
+            y_cor = self._path_lateral_at_x(corridor_path_m, x_probe)
+            if abs(y_cor - y_ref) > min(0.90, 0.45 * self.cfg.bev_lateral_m):
+                return False
+        return True
+
+    def _blend_path_near_reference(
+        self,
+        path_m: np.ndarray,
+        ref_path_m: np.ndarray,
+        blend_span_m: float = 1.6,
+        ref_weight_near: float = 0.40,
+    ) -> np.ndarray:
+        if path_m is None or len(path_m) < 2 or ref_path_m is None or len(ref_path_m) < 2:
+            return path_m.astype(np.float32) if path_m is not None else np.zeros((0, 2), dtype=np.float32)
+        pts = path_m.astype(np.float32).copy()
+        span = float(max(0.4, blend_span_m))
+        near_w = float(np.clip(ref_weight_near, 0.0, 0.75))
+        use = pts[:, 0] <= span
+        if not np.any(use):
+            return pts
+        x_use = pts[use, 0].astype(np.float32)
+        ref_y = np.array([self._path_lateral_at_x(ref_path_m, float(xq)) for xq in x_use], dtype=np.float32)
+        taper = (1.0 - np.clip(x_use / span, 0.0, 1.0)).astype(np.float32)
+        blend = near_w * taper
+        pts[use, 1] = (1.0 - blend) * pts[use, 1] + blend * ref_y
+        return pts
+
+    def _extract_corridor_centerline(
+        self,
+        mask_255: np.ndarray,
+        ref_path_m: np.ndarray,
+        gps_intent_family: str | None,
+    ) -> Tuple[np.ndarray, float, float, float, float]:
+        if self._dt_corridor is None:
+            return np.zeros((0, 2), dtype=np.float32), 0.0, 0.0, 0.0, 0.0
+        try:
+            result = self._dt_corridor.extract(mask_255)
+        except Exception:
+            return np.zeros((0, 2), dtype=np.float32), 0.0, 0.0, 0.0, 0.0
+
+        pts_m = result.centerline_m.astype(np.float32) if result.centerline_m is not None else np.zeros((0, 2), dtype=np.float32)
+        if len(pts_m) < 4:
+            return np.zeros((0, 2), dtype=np.float32), 0.0, 0.0, 0.0, 0.0
+
+        pts_m = _resample_polyline(pts_m, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
+        pts_m = self._anchor_path_to_ego(pts_m)
+        if len(pts_m) < 4:
+            return np.zeros((0, 2), dtype=np.float32), 0.0, 0.0, 0.0, 0.0
+
+        span = float(np.max(pts_m[:, 0]) - np.min(pts_m[:, 0]))
+        width_m = result.width_m_per_point.astype(np.float32) if result.width_m_per_point is not None else np.zeros(0, dtype=np.float32)
+        width_mean = float(np.mean(width_m)) if len(width_m) else 0.0
+        width_cv = float(np.std(width_m) / max(1e-6, width_mean)) if len(width_m) else 1.0
+        valid_ratio = float(len(result.centerline_px)) / max(1.0, float(mask_255.shape[0]))
+        confidence = float(result.confidence)
+        if span < float(self.cfg.min_forward_span_m):
+            return np.zeros((0, 2), dtype=np.float32), 0.0, 0.0, 0.0, 0.0
+
+        strong_corridor = (
+            confidence >= 0.45
+            and valid_ratio >= 0.40
+            and span >= max(1.2, float(self.cfg.min_forward_span_m))
+            and width_mean >= 0.55
+            and width_cv <= 0.85
+        )
+        matches_reference = self._corridor_matches_reference(pts_m, ref_path_m, gps_intent_family)
+        if not matches_reference and not strong_corridor:
+            return np.zeros((0, 2), dtype=np.float32), 0.0, 0.0, 0.0, 0.0
+        if ref_path_m is not None and len(ref_path_m) >= 2:
+            pts_m = self._blend_path_near_reference(
+                pts_m,
+                ref_path_m,
+                blend_span_m=1.4 if strong_corridor else 1.8,
+                ref_weight_near=0.22 if strong_corridor else 0.40,
+            )
+        return pts_m.astype(np.float32), confidence, valid_ratio, span, width_cv
 
     def _commit_selected_path(self, best_path_m: np.ndarray, path_source: str, template_family: str = "") -> None:
         if best_path_m is None or len(best_path_m) < 2:
@@ -1738,6 +1993,7 @@ class BEVPathExtractor:
                 )
             )
         candidates = self._score_candidates(candidates)
+        candidates = self._apply_intent_bias(candidates, gps_intent_family)
         best_idx = self._apply_hysteresis(candidates)
 
         # If graph picks a short near-ego side branch while a centered skeleton
@@ -1793,26 +2049,60 @@ class BEVPathExtractor:
             graph_has_choice = False
         if selected_is_skel_fallback_cand:
             graph_has_choice = False
-        # Endpoint arc: replace raw skeleton polyline with a smooth cubic anchored at detected endpoint.
+        corridor_confidence = 0.0
+        corridor_valid_ratio = 0.0
+        corridor_forward_span_m = 0.0
+        corridor_width_cv = 0.0
+        dt_corridor_applied = False
         endpoint_arc_applied = False
-        if graph_has_choice and bool(getattr(self.cfg, "endpoint_arc_enabled", True)) and len(best_path_m) >= 2:
-            arc = self._smooth_endpoint_arc(
-                float(best_path_m[-1, 0]),
-                float(best_path_m[-1, 1]),
-                _polyline_end_heading(best_path_m),
+        if graph_has_choice and len(best_path_m) >= 2:
+            dt_path_m, corridor_confidence, corridor_valid_ratio, corridor_forward_span_m, corridor_width_cv = (
+                self._extract_corridor_centerline(mask, best_path_m, gps_intent_family)
             )
-            if len(arc) >= 2:
-                best_path_m = arc
-                endpoint_arc_applied = True
+            if len(dt_path_m) >= 2:
+                best_path_m = dt_path_m
+                dt_corridor_applied = True
+            elif bool(getattr(self.cfg, "endpoint_arc_enabled", True)):
+                arc = self._smooth_endpoint_arc(
+                    float(best_path_m[-1, 0]),
+                    float(best_path_m[-1, 1]),
+                    _polyline_end_heading(best_path_m),
+                )
+                if len(arc) >= 2:
+                    best_path_m = arc
+                    endpoint_arc_applied = True
         path_model = self._fit_regularized_cubic(best_path_m) if len(best_path_m) >= 2 else None
         if path_model is not None and selected_is_fallback_cand:
             path_source = "fallback_centerline"
         elif path_model is not None and selected_is_skel_fallback_cand:
             path_source = "fallback_skeleton"
+        elif path_model is not None and dt_corridor_applied:
+            path_source = "dt_corridor"
         elif path_model is not None and endpoint_arc_applied:
             path_source = "endpoint_arc"
         else:
             path_source = "graph" if path_model is not None and graph_has_choice else "none"
+
+        if path_model is None:
+            corridor_ref_path = (
+                best_path_m
+                if best_path_m is not None and len(best_path_m) >= 2
+                else (self.prev_best_path_m if self.prev_best_path_m is not None else np.zeros((0, 2), dtype=np.float32))
+            )
+            dt_fb_path, fb_corr_conf, fb_corr_valid_ratio, fb_corr_span, fb_corr_width_cv = (
+                self._extract_corridor_centerline(mask, corridor_ref_path, gps_intent_family)
+            )
+            if len(dt_fb_path) >= 2:
+                dt_fb_model = self._fit_regularized_cubic(dt_fb_path)
+                if dt_fb_model is not None:
+                    best_path_m = dt_fb_path
+                    path_model = dt_fb_model
+                    graph_has_choice = False
+                    path_source = "dt_corridor"
+                    corridor_confidence = fb_corr_conf
+                    corridor_valid_ratio = fb_corr_valid_ratio
+                    corridor_forward_span_m = fb_corr_span
+                    corridor_width_cv = fb_corr_width_cv
 
         # Fallback 1: centerline recovery from sparse/noisy mask.
         fallback_selected = False
@@ -1911,6 +2201,10 @@ class BEVPathExtractor:
             path_source=path_source if has_path else "none",
             mask_occ_ratio=float(mask_occ_ratio),
             template_approval=template_approval,
+            corridor_confidence=corridor_confidence,
+            corridor_valid_ratio=corridor_valid_ratio,
+            corridor_forward_span_m=corridor_forward_span_m,
+            corridor_width_cv=corridor_width_cv,
         )
 
 

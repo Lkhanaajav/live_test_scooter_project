@@ -21,6 +21,7 @@ from config import (
     MORPH_GAUSS_SIGMA_PX,
     MORPH_GAUSS_THRESH,
     MORPH_EGO_BAND_FRAC,
+    bev_ego_x_px,
 )
 
 
@@ -91,7 +92,7 @@ def select_main_component(mask_255, bottom_band_px=45, center_weight=0.35):
     H, W = mask_255.shape
     bottom_band_px = int(max(1, min(H, bottom_band_px)))
     bottom_slice = labels[max(0, H - bottom_band_px):, :]
-    center_x = W / 2.0
+    center_x = bev_ego_x_px(W)
     best_label, best_score = None, -1.0
     for idx in range(1, num):
         area = float(stats[idx, cv2.CC_STAT_AREA])
@@ -289,7 +290,7 @@ def anchor_ego_to_mask(
     search_half_width_px=70,
     search_up_px=90,
     max_bridge_px=75,
-    bridge_thickness_px=1,
+    bridge_thickness_px=3,
     center_bias_px=1.35,
 ):
     """[TIER2] Add a thin ego bridge to nearest nearby mask pixel.
@@ -298,7 +299,7 @@ def anchor_ego_to_mask(
     "wings" and fake curvature near the start of the path.
     """
     bev_w, bev_h = bev_size
-    ego_x = int(bev_w // 2)
+    ego_x = int(round(bev_ego_x_px(bev_w)))
     ego_y = int(bev_h - 1)
     mask = (bev_mask_255 > 0)
 
@@ -336,7 +337,7 @@ def ego_connected_mask(bev_mask_255, bev_size=(600, 500), dilation_k=15):
     fall back to the original BEV mask to avoid collapsing path extraction.
     """
     bev_w, bev_h = bev_size
-    ego_x, ego_y = bev_w // 2, bev_h - 1   # (300, 499)
+    ego_x, ego_y = int(round(bev_ego_x_px(bev_w))), bev_h - 1
     k = np.ones((dilation_k, dilation_k), np.uint8)
     dilated = cv2.dilate(bev_mask_255, k, iterations=1)
     if dilated[ego_y, ego_x] == 0:
