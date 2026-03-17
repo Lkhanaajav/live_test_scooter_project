@@ -172,3 +172,35 @@ PREDICT_CURVATURE_STRAIGHT = 0.10  # kappa threshold for "straight" (m^-1)
 PREDICT_CURVATURE_SHARP = 0.30     # kappa threshold for "sharp turn" (m^-1)
 PREDICT_BLEND_ALPHA = 0.75        # real vs predicted blend weight on compute frames
 PREDICT_CONFIDENCE_FLOOR = 0.50   # below this IoU confidence, stop skipping
+
+# =============================================================================
+# Research impl: Enhanced Morphological BEV Mask Pipeline (Idea 1)
+# Papers: Road Seg ADAS (arXiv:2505.12206), Skelite (arXiv:2503.07369)
+# =============================================================================
+MORPH_ENHANCED = True                  # enable enhanced mask cleaning pipeline
+MORPH_HOLE_FILL_MAX_M2 = 5.0          # max enclosed hole area to flood-fill (m^2)
+MORPH_GAUSS_SIGMA_PX = 1.2            # Gaussian sigma (px) applied before re-binarize
+MORPH_GAUSS_THRESH = 0.35             # threshold for re-binarize after Gaussian
+MORPH_EGO_BAND_FRAC = 0.20            # bottom fraction of BEV used for ego-clearance scoring
+
+# =============================================================================
+# Research impl: Distance Transform Safe Corridor (Idea 2)
+# Papers: Dual-BEV Nav (arXiv:2501.18351), ESDF corridor planning
+# =============================================================================
+DT_CORRIDOR_ENABLED = True            # enable DT-based safe corridor extraction
+DT_CORRIDOR_COST_EXPONENT = 1.5       # cost = 1/(dt+eps)^exponent  (higher = stronger clearance preference)
+DT_CORRIDOR_LATERAL_DRIFT_PX = 30     # max lateral step per row in Dijkstra search
+DT_CORRIDOR_SG_WINDOW = 9             # Savitzky-Golay smoothing window (must be odd)
+DT_CORRIDOR_CONFIDENCE_NORM_M = 1.5   # clearance (m) that maps to confidence=1.0
+
+# =============================================================================
+# Research impl: Temporal Path Smoother (Idea 3)
+# Papers: Trajectory Prediction Survey (arXiv:2503.03262), Regulated PP (arXiv:2305.20026)
+# =============================================================================
+PATH_SMOOTH_ENABLED = True            # enable EMA smoothing on cubic path coefficients
+PATH_SMOOTH_MIN_ALPHA = 0.35          # minimum EMA alpha (heavy smoothing, low confidence)
+PATH_SMOOTH_MAX_ALPHA = 0.85          # maximum EMA alpha (fast tracking, high confidence)
+PATH_SMOOTH_RESET_THRESH = 2.0        # max coefficient jump before reset (per coefficient)
+HEADING_SMOOTH_ENABLED = True         # enable circular EMA on heading angle
+HEADING_SMOOTH_ALPHA = 0.50           # EMA alpha for heading filter
+HEADING_SMOOTH_RESET_DEG = 45.0       # heading delta (deg) that triggers filter reset

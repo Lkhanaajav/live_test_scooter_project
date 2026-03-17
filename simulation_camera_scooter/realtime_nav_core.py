@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from config import BEV_OBSTACLE_PENALTY_WEIGHT
+from config import BEV_OBSTACLE_PENALTY_WEIGHT, PATH_SMOOTH_ENABLED
 from template_path_planner import (
     CorridorConfig,
     TemplateApprovalResult,
@@ -27,6 +27,15 @@ from template_path_planner import (
     approve_template_bank,
     corridor_from_mask,
 )
+
+# Research impl: Temporal Path Smoother (Idea 3)
+# Papers: Trajectory Prediction Survey (arXiv:2503.03262), Regulated PP (arXiv:2305.20026)
+try:
+    from path_smoother import PathTemporalSmoother as _PathTemporalSmoother
+    _HAS_PATH_SMOOTHER = True
+except ImportError:
+    _HAS_PATH_SMOOTHER = False
+    _PathTemporalSmoother = None  # type: ignore[assignment,misc]
 
 
 def _odd(v: int) -> int:
@@ -331,6 +340,10 @@ class BEVPathExtractor:
         self.no_path_counter: int = 0
         self.prev_mask_occ_ratio: float = 0.0
         self.obstacle_zones: list = []  # OBS Phase 03.1: [(fwd_m, lat_m, rad_m), ...]
+        # Research impl: Temporal Path Smoother (Idea 3)
+        self._path_smoother: Optional[object] = (
+            _PathTemporalSmoother() if _HAS_PATH_SMOOTHER and PATH_SMOOTH_ENABLED else None
+        )
 
     def _make_template_planner_cfg(self) -> TemplatePlannerConfig:
         base = self.cfg.template_planner_cfg
@@ -1206,6 +1219,55 @@ class BEVPathExtractor:
             return None
         return CubicPathModel(coeff=coeff, x_grid=xg, y_grid=yg, s_grid=sg, kappa_grid=kappa)
 
+    def _apply_path_smoothing(
+        self,
+        path_model: "CubicPathModel",
+        confidence: float,
+        path_source: str,
+    ) -> "CubicPathModel":
+        """
+        Research impl: Apply temporal EMA smoothing to cubic path coefficients.
+
+        When PATH_SMOOTH_ENABLED is True and the smoother is available, the raw
+        cubic coefficients [a0,a1,a2,a3] are blended with the previous frame's
+        smoothed coefficients using confidence-adaptive alpha.
+
+        The smoothed CubicPathModel is rebuilt by re-evaluating the (unchanged)
+        grid using the new smoothed coefficients. Curvature is re-checked and
+        the model is clipped if kappa_max is exceeded.
+
+        Papers: Trajectory Prediction Survey (arXiv:2503.03262)
+        """
+        if self._path_smoother is None or path_model is None:
+            return path_model
+        try:
+            smoother = self._path_smoother  # type: ignore[attr-defined]
+            raw_coeff = path_model.coeff.copy()
+            smoothed_coeff = smoother.smooth(raw_coeff, confidence, path_source)
+            if smoothed_coeff is None or len(smoothed_coeff) < 4:
+                return path_model
+            # Rebuild CubicPathModel with smoothed coefficients on the same x_grid
+            xg = path_model.x_grid
+            a0, a1, a2, a3 = smoothed_coeff
+            yg = a0 + a1 * xg + a2 * xg ** 2 + a3 * xg ** 3
+            dy = a1 + 2.0 * a2 * xg + 3.0 * a3 * xg ** 2
+            ddy = 2.0 * a2 + 6.0 * a3 * xg
+            kappa = ddy / np.maximum(1e-6, (1.0 + dy ** 2) ** 1.5)
+            # Curvature guard: fall back to raw model if smoothed exceeds kappa_max
+            if float(np.max(np.abs(kappa))) > self.cfg.spline_kappa_max_m_inv * 1.05:
+                return path_model
+            ds_arr = np.sqrt(np.diff(xg) ** 2 + np.diff(yg) ** 2)
+            sg = np.concatenate(([0.0], np.cumsum(ds_arr)))
+            return CubicPathModel(
+                coeff=smoothed_coeff,
+                x_grid=xg,
+                y_grid=yg,
+                s_grid=sg,
+                kappa_grid=kappa,
+            )
+        except Exception:
+            return path_model
+
     def _path_lateral_at_x(self, pts_m: np.ndarray, x_q: float) -> float:
         if pts_m is None or len(pts_m) < 2:
             return 0.0
@@ -1564,6 +1626,12 @@ class BEVPathExtractor:
                 )
                 path_model = self._fit_regularized_cubic(best_path_m)
                 if path_model is not None:
+                    # Research impl: temporal path smoothing on cubic coefficients (Idea 3)
+                    path_model = self._apply_path_smoothing(
+                        path_model,
+                        float(template_approval.confidence),
+                        "template",
+                    )
                     self._commit_selected_path(
                         best_path_m,
                         path_source="template",
@@ -1794,6 +1862,9 @@ class BEVPathExtractor:
 
         has_path = path_model is not None and len(best_path_m) >= 2
         if has_path:
+            # Research impl: temporal path smoothing on cubic coefficients (Idea 3)
+            _graph_conf = float(getattr(template_approval, "confidence", 0.5)) if template_approval is not None else 0.5
+            path_model = self._apply_path_smoothing(path_model, _graph_conf, path_source)
             self._commit_selected_path(best_path_m, path_source=path_source)
         else:
             self.no_path_counter = min(1000, self.no_path_counter + 1)

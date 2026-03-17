@@ -2,6 +2,11 @@
 heading.py
 ==========
 Heading computation, command classification, and speed profiling.
+
+Research impl: Temporal heading filter (Idea 3).
+  compute_heading_smooth() wraps compute_heading() with a circular EMA filter
+  to prevent single-frame heading spikes from flipping command classification.
+  Papers: Regulated Pure Pursuit (arXiv:2305.20026)
 """
 
 import math
@@ -20,7 +25,27 @@ from config import (
     COLOR_LEFT,
     COLOR_RIGHT,
     COLOR_SHARP,
+    HEADING_SMOOTH_ENABLED,
 )
+
+# Research impl: lazy import to avoid circular dependency
+try:
+    from path_smoother import HeadingTemporalFilter as _HeadingTemporalFilter
+    _HAS_HEADING_FILTER = True
+except ImportError:
+    _HAS_HEADING_FILTER = False
+    _HeadingTemporalFilter = None  # type: ignore[assignment,misc]
+
+# Module-level heading filter instance (shared across calls)
+_heading_filter = None  # type: ignore[assignment]
+
+
+def _get_heading_filter():
+    """Lazy-init the module-level heading filter."""
+    global _heading_filter
+    if _heading_filter is None and _HAS_HEADING_FILTER and HEADING_SMOOTH_ENABLED:
+        _heading_filter = _HeadingTemporalFilter()
+    return _heading_filter
 
 
 def compute_heading(path_pts):
@@ -39,6 +64,42 @@ def compute_heading(path_pts):
         return 0.0
     angle_rad = math.atan2(dx, dy)
     return math.degrees(angle_rad)
+
+
+def compute_heading_smooth(path_pts, confidence: float = 1.0) -> float:
+    """
+    Research impl: Heading with temporal circular EMA filter.
+
+    Computes raw heading via compute_heading() then applies the module-level
+    HeadingTemporalFilter. Returns the smoothed heading in degrees.
+
+    If HEADING_SMOOTH_ENABLED=False or path_smoother not available, falls
+    back to raw compute_heading() (fully backward compatible).
+
+    Parameters
+    ----------
+    path_pts : sequence of (x, y)
+        BEV path points (same format as compute_heading).
+    confidence : float
+        Path confidence [0,1] to modulate filter alpha.
+
+    Returns
+    -------
+    float
+        Smoothed heading angle in degrees.
+    """
+    raw = compute_heading(path_pts)
+    filt = _get_heading_filter()
+    if filt is None:
+        return raw
+    return filt.update(raw, confidence)
+
+
+def reset_heading_filter() -> None:
+    """Reset the module-level heading temporal filter (call on scene restart)."""
+    filt = _get_heading_filter()
+    if filt is not None:
+        filt.reset()
 
 
 def heading_to_command(angle_deg):

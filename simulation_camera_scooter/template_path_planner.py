@@ -2,15 +2,28 @@
 template_path_planner.py
 ========================
 Lightweight corridor extraction and ego-anchored template approval for BEV masks.
+
+Research impl: DT Safe Corridor integration (Idea 2).
+  CorridorWithDt wraps an existing Corridor alongside an optional DtCorridorResult
+  so callers can access both without changing any existing function signatures.
+  Papers: Dual-BEV Nav (arXiv:2501.18351), ESDF corridor planning
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Iterable, Sequence
+from typing import Iterable, Optional, Sequence
 
 import numpy as np
+
+# Research impl: optional DT corridor — import lazily to avoid circular deps
+try:
+    from safe_corridor import DtCorridorResult as _DtCorridorResult
+    _HAS_DT_CORRIDOR = True
+except ImportError:
+    _HAS_DT_CORRIDOR = False
+    _DtCorridorResult = None  # type: ignore[assignment,misc]
 
 
 def _clip(v: float, lo: float, hi: float) -> float:
@@ -241,6 +254,23 @@ class Corridor:
     forward_span_m: float
     mask_occ_ratio: float
     confidence: float
+
+
+@dataclass
+class CorridorWithDt:
+    """
+    Research impl: Corridor wrapper that optionally carries a DtCorridorResult.
+
+    Backward compatible: all existing code that uses Corridor directly is unaffected.
+    New code that wants the DT-safe centerline can obtain it via .dt_corridor.
+
+    Usage:
+        corridor = corridor_from_mask(mask)
+        dt_result = DtSafeCorridor().extract(mask)
+        enriched = CorridorWithDt(corridor=corridor, dt_corridor=dt_result)
+    """
+    corridor: "Corridor"
+    dt_corridor: Optional[object] = None  # DtCorridorResult | None
 
 
 @dataclass(frozen=True)
