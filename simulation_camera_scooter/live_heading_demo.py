@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import time
 from collections import deque
@@ -69,6 +70,58 @@ from visualization import draw_heading_hud, draw_bev_hud
 from bev_predictor import BEVPredictiveTracker
 
 
+def _load_intent_schedule(schedule_path: str | None) -> list[dict]:
+    """Load an optional frame-range intent schedule from JSON."""
+    if not schedule_path:
+        return []
+    with open(schedule_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict):
+        data = data.get("events", [])
+    if not isinstance(data, list):
+        raise ValueError("Intent schedule must be a JSON list or an object with an 'events' list")
+
+    schedule: list[dict] = []
+    for idx, item in enumerate(data):
+        if not isinstance(item, dict):
+            continue
+        try:
+            start_frame = int(item.get("start_frame"))
+            end_frame = int(item.get("end_frame", start_frame))
+        except Exception as exc:
+            raise ValueError(f"Invalid frame bounds in schedule item {idx}: {item}") from exc
+        if end_frame < start_frame:
+            start_frame, end_frame = end_frame, start_frame
+        intent_raw = item.get("intent", None)
+        intent = None if intent_raw is None else str(intent_raw).strip().lower()
+        if intent in {"", "clear", "none", "null"}:
+            intent = None
+        if intent not in {None, "straight", "left", "right"}:
+            raise ValueError(f"Invalid intent '{intent_raw}' in schedule item {idx}")
+        schedule.append(
+            {
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "intent": intent,
+                "label": str(item.get("label", "")).strip(),
+            }
+        )
+    schedule.sort(key=lambda item: (item["start_frame"], item["end_frame"]))
+    return schedule
+
+
+def _intent_event_for_frame(schedule: list[dict], frame_id: int, start_idx: int = 0) -> tuple[dict | None, int]:
+    """Return the active schedule event for a frame, advancing a rolling index."""
+    idx = max(0, int(start_idx))
+    while idx < len(schedule) and frame_id > int(schedule[idx]["end_frame"]):
+        idx += 1
+    if idx < len(schedule):
+        event = schedule[idx]
+        if int(event["start_frame"]) <= frame_id <= int(event["end_frame"]):
+            return event, idx
+    return None, idx
+
+
 # =============================================================================
 # Main live loop
 # =============================================================================
@@ -81,7 +134,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
              detection_stride=1, enable_predict=PREDICT_ENABLED,
              planner_mode="dijkstra", template_planner_enabled=True,
              max_frames=None, initial_intent=None, bev_clean_mode="auto",
-             model_dir=None, output_video_path=None, seg_conf_thresh=0.5):
+             model_dir=None, output_video_path=None, seg_conf_thresh=0.5,
+             intent_schedule_path=None):
     print("\n=== LIVE HEADING + OBJECT DETECTION + GPS DEMO ===")
     stab_radius = max(1, int(stab_radius))
     stride = max(1, int(stride))
@@ -268,10 +322,15 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     fps_counter = deque(maxlen=30)
     fps = 0.0
     vw = None
+    cached_frame_state = None
 
     gps_intent_family: str | None = str(initial_intent or "").strip().lower() or None
     if gps_intent_family not in {"straight", "left", "right"}:
         gps_intent_family = None
+    base_intent_family = gps_intent_family
+    intent_schedule = _load_intent_schedule(intent_schedule_path)
+    intent_schedule_idx = 0
+    last_schedule_intent = "__unset__"
     turn_lock_family: str | None = None
     turn_lock_frames = 0
     turn_lock_release_streak = 0
@@ -283,6 +342,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     print("Running... Press 'q'/ESC to quit | 's' straight | 'l' left | 'r' right | 'c' clear intent\n")
     if gps_intent_family is not None:
         print(f"[Intent] initial={gps_intent_family}")
+    if intent_schedule:
+        print(f"[IntentSchedule] loaded {len(intent_schedule)} event(s) from {intent_schedule_path}")
     print(f"{'Frame':>6} | {'Command':>12} | {'Steer':>8} | {'Speed':>7} | "
           f"{'Obst':>5} | {'ms':>5} | {'FPS':>5} | {'IoU':>5} | {'Mode':>7}")
     print("-" * 92)
@@ -316,6 +377,22 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             stab_corr_px = 0.0
             stab_corr_deg = 0.0
 
+            scheduled_event, intent_schedule_idx = _intent_event_for_frame(
+                intent_schedule,
+                frame_id,
+                intent_schedule_idx,
+            )
+            if scheduled_event is None:
+                gps_intent_family = base_intent_family
+                schedule_intent = None
+            else:
+                gps_intent_family = scheduled_event["intent"]
+                schedule_intent = gps_intent_family
+            schedule_token = "clear" if schedule_intent is None else schedule_intent
+            if intent_schedule and schedule_token != last_schedule_intent:
+                print(f"[IntentSchedule] frame={frame_id} intent={schedule_token}")
+                last_schedule_intent = schedule_token
+
             # --- 0) Frame stabilization (camera shake compensation) ---
             raw_flow_dy = 0.0
             if stabilizer is not None:
@@ -348,8 +425,48 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             run_net = (not predict_skip) and (frame_id % stride == 0 or last_mask is None)
             if predict_skip:
                 run_net = False
+            hold_cached_frame = bool(
+                video_path
+                and stride > 1
+                and not enable_predict
+                and not run_net
+                and not predict_skip
+                and cached_frame_state is not None
+            )
 
-            if predict_skip:
+            if hold_cached_frame:
+                # Aggressive video playback mode: hold the previous pipeline result
+                # on skipped frames instead of rerunning BEV/path extraction.
+                seg = last_mask
+                if seg is not None:
+                    if seg.ndim == 2 and seg.dtype == np.uint8:
+                        sidewalk_mask = (seg > 0).astype(np.uint8) * 255
+                        road_mask = np.zeros_like(sidewalk_mask)
+                    else:
+                        sidewalk_mask, road_mask = split_masks(seg)
+                else:
+                    sidewalk_mask = np.zeros((frame_h, frame_w), dtype=np.uint8)
+                    road_mask = np.zeros_like(sidewalk_mask)
+
+                detections = last_detections
+                min_obstacle_dist = last_min_obstacle_dist
+                t_seg = 0.0
+                t_det = 0.0
+                t_bev = 0.0
+                t_skel = 0.0
+                t_path = 0.0
+
+                bev_sidewalk = cached_frame_state["bev_sidewalk"]
+                obstacle_zones = cached_frame_state["obstacle_zones"]
+                nav_out = cached_frame_state["nav_out"]
+                skel = cached_frame_state["skel"]
+                paths = cached_frame_state["paths"]
+                best_idx = cached_frame_state["best_idx"]
+                best_path_len = cached_frame_state["best_path_len"]
+                has_model_path = cached_frame_state["has_model_path"]
+                graph_nodes = cached_frame_state["graph_nodes"]
+                graph_edges = cached_frame_state["graph_edges"]
+            elif predict_skip:
                 # --- SKIP FRAME: predict BEV mask + path, no seg/path extraction ---
                 t_seg_start = time.time()
                 # Reuse last seg mask for visualization (no new segmentation)
@@ -539,6 +656,20 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 graph_nodes = nav_out.graph_nodes
                 graph_edges = nav_out.graph_edges
 
+            if not hold_cached_frame:
+                cached_frame_state = {
+                    "bev_sidewalk": bev_sidewalk.copy(),
+                    "obstacle_zones": list(obstacle_zones) if obstacle_zones else [],
+                    "nav_out": nav_out,
+                    "skel": skel.copy() if isinstance(skel, np.ndarray) else skel,
+                    "paths": list(paths),
+                    "best_idx": best_idx,
+                    "best_path_len": best_path_len,
+                    "has_model_path": has_model_path,
+                    "graph_nodes": graph_nodes,
+                    "graph_edges": graph_edges,
+                }
+
             # --- 6) GPS correction ---
             t_gps_start = time.time()
             gps_info = None
@@ -655,6 +786,9 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     heading_raw_deg=round(heading_raw, 3),
                     heading_smoothed_deg=round(heading_smoothed, 3),
                     command=command,
+                    gps_intent_family=gps_intent_family or "",
+                    planner_intent_family=planner_intent_family or "",
+                    turn_lock_family=turn_lock_family or "",
                     speed_raw_mps=round(speed_raw, 3),
                     speed_smoothed_mps=round(speed_smoothed, 3),
                     serial_cmd=serial_str,
@@ -923,6 +1057,8 @@ if __name__ == "__main__":
     parser.add_argument("--intent", type=str, default=None,
                         choices=["straight", "left", "right"],
                         help="Initial persistent manual intent")
+    parser.add_argument("--intent-schedule", type=str, default=None,
+                        help="Optional JSON file with frame-range intent events")
     parser.add_argument("--bev-clean", type=str, default="auto",
                         choices=["auto", "enhanced", "legacy"],
                         help="BEV cleaning mode: auto uses enhanced except in low-power")
@@ -964,6 +1100,7 @@ if __name__ == "__main__":
             model_dir=args.model_dir,
             output_video_path=args.output_video,
             seg_conf_thresh=args.seg_conf_thresh,
+            intent_schedule_path=args.intent_schedule,
         )
 
 

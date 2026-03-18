@@ -26,6 +26,7 @@ class DataLogger:
         "fps",
         # Heading & control
         "heading_raw_deg", "heading_smoothed_deg", "command",
+        "gps_intent_family", "planner_intent_family", "turn_lock_family",
         "speed_raw_mps", "speed_smoothed_mps", "serial_cmd",
         "pp_lookahead_m", "pp_kappa_cmd_m_inv", "pp_target_x_m", "pp_target_y_m",
         "pp_valid_path",
