@@ -120,3 +120,141 @@ python simulation_camera_scooter\scripts\tune_binary_threshold.py
 - `outputs/training/binary_segformer_oneformer_teacher/history.csv`
 - `outputs/training/binary_segformer_oneformer_teacher/summary.json`
 - `outputs/training/binary_segformer_oneformer_teacher/best_checkpoint/`
+
+---
+
+## Session: 2026-03-18 All-Video Pseudo-Label Scale-Up
+
+## Dataset Expansion
+
+### Frame extraction command
+```powershell
+python simulation_camera_scooter\scripts\extract_annotation_frames.py --out-dir outputs\datasets\annotation_frames_all6_t400 --target 400
+```
+
+### Extracted dataset
+- Root: `outputs/datasets/annotation_frames_all6_t400`
+- Total images: `2400`
+- Per-video count:
+  - `IMG_1876`: `400`
+  - `IMG_1877`: `400`
+  - `IMG_1878`: `400`
+  - `IMG_1921`: `400`
+  - `IMG_1922`: `400`
+  - `IMG_1924`: `400`
+
+## Teacher Label Generation
+
+### Teacher command
+```powershell
+python simulation_camera_scooter\scripts\generate_binary_pseudo_labels.py --input-root outputs\datasets\annotation_frames_all6_t400 --output-root outputs\pseudo_labels\all6_t400_oneformer_cityscapes_swin_binary --save-previews
+```
+
+### Teacher output
+- Root: `outputs/pseudo_labels/all6_t400_oneformer_cityscapes_swin_binary`
+- Images processed: `2400`
+- Mean drivable ratio: `0.3391`
+- Mean runtime: `649.7 ms / frame`
+- Total runtime: `1559.4 s`
+- Collapse mapping:
+  - `road`
+  - `sidewalk`
+
+## Student Training Run
+
+### Initialization
+- Init checkpoint: `simulation_camera_scooter/models/my-segformer-road`
+
+### Training command
+```powershell
+python simulation_camera_scooter\scripts\train_binary_segformer.py --images-root outputs\datasets\annotation_frames_all6_t400 --masks-root outputs\pseudo_labels\all6_t400_oneformer_cityscapes_swin_binary\masks --output-dir outputs\training\binary_segformer_all6_t400 --epochs 10 --batch-size 4 --num-workers 2
+```
+
+### Dataset
+- Images root: `outputs/datasets/annotation_frames_all6_t400`
+- Masks root: `outputs/pseudo_labels/all6_t400_oneformer_cityscapes_swin_binary/masks`
+- Total pairs: `2400`
+- Train count: `1920`
+- Validation count: `480`
+- Validation scheme: every 5th frame per source video folder
+
+### Model / Loss / Size
+- Architecture: SegFormer
+- Target size: `640x360`
+- Loss: weighted cross-entropy + Dice
+- Class weights: `[1.0, 1.9456]`
+- LR: `5e-5`
+- Weight decay: `1e-4`
+- Epochs: `10`
+- Batch size: `4`
+
+### Epoch History
+
+| Epoch | Train loss | Val loss | Val IoU | Val Precision | Val Recall |
+|---|---:|---:|---:|---:|---:|
+| 1 | 0.2203 | 0.1376 | 0.9337 | 0.9658 | 0.9656 |
+| 2 | 0.1267 | 0.1045 | 0.9470 | 0.9767 | 0.9689 |
+| 3 | 0.1027 | 0.0901 | 0.9525 | 0.9766 | 0.9748 |
+| 4 | 0.0927 | 0.0900 | 0.9534 | 0.9803 | 0.9720 |
+| 5 | 0.0863 | 0.0827 | 0.9556 | 0.9805 | 0.9741 |
+| 6 | 0.0808 | 0.0776 | 0.9570 | 0.9781 | 0.9780 |
+| 7 | 0.0759 | 0.0762 | 0.9581 | 0.9787 | 0.9785 |
+| 8 | 0.0730 | 0.0748 | 0.9585 | 0.9791 | 0.9785 |
+| 9 | 0.0716 | 0.0745 | 0.9588 | 0.9793 | 0.9786 |
+| 10 | 0.0700 | 0.0744 | 0.9584 | 0.9777 | 0.9798 |
+
+### Best checkpoint
+- Epoch: `9`
+- Val IoU: `0.9588`
+- Path: `outputs/training/binary_segformer_all6_t400/best_checkpoint`
+
+### Last checkpoint
+- Path: `outputs/training/binary_segformer_all6_t400/last_checkpoint`
+
+### Training runtime
+- `950.9 s`
+
+## Threshold Tuning
+
+### Command
+```powershell
+python simulation_camera_scooter\scripts\tune_binary_threshold.py --images-root outputs\datasets\annotation_frames_all6_t400 --masks-root outputs\pseudo_labels\all6_t400_oneformer_cityscapes_swin_binary\masks --model-dir outputs\training\binary_segformer_all6_t400\best_checkpoint
+```
+
+### Selected runtime threshold
+- `0.60`
+
+### Validation note
+- Best pseudo-label validation IoU at the chosen threshold: `0.9594`
+
+## Replay Artifacts
+
+### Replay command
+```powershell
+python simulation_camera_scooter\scripts\replay_model_on_videos.py --model-dir outputs\training\binary_segformer_all6_t400\best_checkpoint --label all6_t400 --seg-conf-thresh 0.6 --output-root outputs\replays\binary_segformer_all6_t400
+```
+
+### Replay outputs
+- Root: `outputs/replays/binary_segformer_all6_t400`
+- Summary: `outputs/replays/binary_segformer_all6_t400/summary.json`
+- Comparison strips vs shipped baseline: `outputs/comparisons/binary_segformer_all6_t400`
+
+## Session: 2026-03-18 Stage-2 Fine-Tune From 400-Frame Student
+
+### Motivation
+- The 2400-frame student improved over the shipped baseline but did not obviously surpass the earlier 400-frame student in downstream replay metrics.
+- I tested a staged fine-tune starting from the stronger 400-frame checkpoint rather than from `my-segformer-road`.
+
+### Training command
+```powershell
+python simulation_camera_scooter\scripts\train_binary_segformer.py --images-root outputs\datasets\annotation_frames_all6_t400 --masks-root outputs\pseudo_labels\all6_t400_oneformer_cityscapes_swin_binary\masks --init-model outputs\training\binary_segformer_oneformer_teacher\best_checkpoint --output-dir outputs\training\binary_segformer_all6_t400_stage2 --epochs 6 --batch-size 4 --num-workers 2 --lr 2e-5
+```
+
+### Result
+- Best validation IoU: `0.9546`
+- Best epoch: `4`
+- Output: `outputs/training/binary_segformer_all6_t400_stage2/best_checkpoint`
+
+### Decision
+- Not promoted.
+- It underperformed the direct 2400-frame run on pseudo-label validation (`0.9546` vs `0.9588`), so it was not replayed across all videos.

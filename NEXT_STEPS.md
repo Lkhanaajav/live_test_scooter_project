@@ -1,6 +1,14 @@
 # Next Steps
 
 ## Highest-Value Follow-Up
+- Stop scaling pseudo-label volume blindly.
+  - The 2400-frame all-video student still beat the shipped baseline, but it did not beat the earlier 400-frame student.
+  - More same-teacher labels alone are no longer the highest-value lever.
+
+- Add confidence filtering or teacher-quality triage before the next large pseudo-label round.
+  - The bigger dataset likely diluted quality with redundant or weaker labels.
+  - Keep the best teacher masks, not just more masks.
+
 - Manually correct a focused subset of pseudo-labels from the two unseen-style videos.
   - The current checkpoint clearly improved segmentation stability, but unseen-video path dynamics are still mixed.
   - The most direct next step is to add hand-corrected supervision from scenes like `IMG_1876` and `IMG_1877`.
@@ -34,6 +42,10 @@
 ## Remaining Bottlenecks
 - Teacher quality is still pseudo-label quality.
   - The Swin-L teacher is usable and productive, but it is not perfect supervision for scooter-specific scenes.
+
+- There is now no clean held-out video for the 2400-frame all-video experiment.
+  - That replay is useful for fit-to-domain checks only.
+  - Any further training on those same videos needs a new external validation source or a reserved labeled subset.
 
 - `IMG_1921.MOV` remains codec-limited.
   - OpenCV only decodes 6,727 frames consistently even though metadata reports 9,176.

@@ -22,6 +22,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-root", default=str(DEFAULT_EVAL_ROOT))
     parser.add_argument("--baseline-label", default="baseline_current")
     parser.add_argument("--candidate-label", default="candidate_binary")
+    parser.add_argument("--baseline-root", default=None, help="Optional explicit baseline case directory")
+    parser.add_argument("--candidate-root", default=None, help="Optional explicit candidate case directory")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     return parser.parse_args()
 
@@ -57,8 +59,8 @@ def main() -> int:
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    baseline_root = eval_root / args.baseline_label
-    candidate_root = eval_root / args.candidate_label
+    baseline_root = Path(args.baseline_root).resolve() if args.baseline_root else (eval_root / args.baseline_label)
+    candidate_root = Path(args.candidate_root).resolve() if args.candidate_root else (eval_root / args.candidate_label)
     video_labels = sorted(set(p.name for p in baseline_root.iterdir() if p.is_dir()) & set(p.name for p in candidate_root.iterdir() if p.is_dir()))
 
     sample_fracs = (0.2, 0.5, 0.8)

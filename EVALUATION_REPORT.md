@@ -202,6 +202,100 @@ python simulation_camera_scooter\scripts\make_video_comparison_strips.py
   - planner mode selection: better
   - downstream path quality: better overall, but only partially generalized beyond the seen-video subset
 
+## 13. Scale-Up Experiment: 2400 Teacher-Labeled Frames
+- Date: 2026-03-18
+- Status: completed
+- Objective:
+  - test whether scaling the same teacher-label pipeline from 400 frames to 2400 frames across all 6 videos produces a stronger fast student.
+
+### Dataset / Training Setup
+- Frames extracted:
+  - `outputs/datasets/annotation_frames_all6_t400`
+  - 400 per video across `IMG_1876`, `IMG_1877`, `IMG_1878`, `IMG_1921`, `IMG_1922`, `IMG_1924`
+  - total: `2400`
+- Teacher labels:
+  - `outputs/pseudo_labels/all6_t400_oneformer_cityscapes_swin_binary`
+- Student checkpoint:
+  - `outputs/training/binary_segformer_all6_t400/best_checkpoint`
+- Best pseudo-label validation IoU:
+  - `0.9588`
+- Runtime threshold:
+  - `0.60`
+- Replay outputs:
+  - `outputs/replays/binary_segformer_all6_t400`
+- Comparison strips vs baseline:
+  - `outputs/comparisons/binary_segformer_all6_t400`
+
+### Critical evaluation caveat
+- This run used frames from all 6 available evaluation videos.
+- That means there is no clean held-out video left for honest generalization claims.
+- The 2400-frame replay should be interpreted as fit-to-domain evidence, not unbiased test-set performance.
+
+## 14. Aggregate Results: Shipped Baseline vs 2400-Frame Student
+
+### All processed frames, frame-weighted
+
+| Metric | Baseline | 2400-frame student | Delta |
+|---|---:|---:|---:|
+| Mean seg IoU | 0.9088 | 0.9221 | +0.0134 |
+| Unstable rate | 1.46% | 0.33% | -1.12 pp |
+| Has-path rate | 100.0% | 100.0% | 0.0 pp |
+| Mean heading delta | 0.2091 deg | 0.2021 deg | -0.0070 deg |
+| Mean corridor confidence | 0.8576 | 0.8573 | -0.0004 |
+| Fallback rate | 18.98% | 14.76% | -4.22 pp |
+| Template rate | 73.72% | 77.29% | +3.57 pp |
+| DT corridor rate | 6.72% | 7.37% | +0.65 pp |
+| Low-confidence rate | 26.28% | 22.71% | -3.57 pp |
+| Mean slowdown | 0.3244 | 0.3008 | -0.0237 |
+
+### Per-video summary
+
+| Test video | Seg improved? | Path improved? | Key evidence | Notes |
+|---|---|---|---|---|
+| `IMG_1876.MOV` | Yes | Partial | seg IoU `+0.0057`, corridor conf `+0.0339`, fallback `-24.5 pp` | heading delta worsened sharply `+0.1623 deg`; more DT corridor use |
+| `IMG_1877.MOV` | Yes | Partial | seg IoU `+0.0029`, unstable `-1.6 pp`, fallback `-2.6 pp` | corridor conf `-0.0151`; heading delta slightly worse |
+| `IMG_1878.MOV` | Yes | Yes | seg IoU `+0.0622`, unstable `-7.7 pp`, fallback `-18.8 pp` | less template than the earlier 400-frame student, but still much better than baseline |
+| `IMG_1921.MOV` | Yes | Partial | seg IoU `+0.0076`, template `+2.9 pp`, fallback `-2.3 pp` | heading delta worsened `+0.0121 deg` |
+| `IMG_1922.MOV` | Yes | Yes | seg IoU `+0.0090`, heading delta `-0.0444 deg`, fallback `-2.6 pp` | cleaner dynamics than both baseline and earlier 400-frame student |
+| `IMG_1924.MOV` | Slightly | No / Partial | seg IoU `+0.0018` | fallback `+2.0 pp`, template `-2.4 pp`, corridor conf `-0.0236` |
+
+## 15. 2400-Frame Student vs Earlier 400-Frame Student
+- This is the more important comparison for model promotion, because the 400-frame OneFormer-trained student was already better than the shipped baseline.
+
+### Frame-weighted deltas: 2400-frame student minus earlier 400-frame student
+
+| Metric | Delta |
+|---|---:|
+| Mean seg IoU | -0.0025 |
+| Unstable rate | +0.00 pp |
+| Has-path rate | 0.00 pp |
+| Mean heading delta | +0.0012 deg |
+| Mean corridor confidence | -0.0088 |
+| Fallback rate | +0.49 pp |
+| Template rate | -2.05 pp |
+| DT corridor rate | +1.40 pp |
+| Low-confidence rate | +2.05 pp |
+| Mean slowdown | +0.0053 |
+
+### Promotion decision
+- The 2400-frame student is still a real improvement over the shipped baseline.
+- It is not the best checkpoint produced so far.
+- The earlier 400-frame student remains the strongest overall checkpoint for deployment:
+  - `outputs/training/binary_segformer_oneformer_teacher/best_checkpoint`
+- Why it stays best:
+  - better overall seg IoU than baseline and the 2400-frame student
+  - better corridor confidence than the 2400-frame student
+  - lower fallback and higher template use than the 2400-frame student
+  - cleaner aggregate downstream replay behavior despite using less training data
+
+### Interpretation
+- More pseudo-labeled frames helped against the shipped baseline, but quality dilution likely offset the gains when compared with the tighter 400-frame set.
+- In this repo, blind teacher-label scaling is not enough by itself.
+- The next accuracy gains are more likely to come from:
+  - confidence-filtered pseudo-label selection
+  - hand-corrected masks
+  - a small gold-label refinement stage
+
 
 ---
 ## Simple Road Pipeline Evaluation — 2026-03-18
@@ -214,33 +308,36 @@ preference bias, near-field aggressive morphological close, ego-connected mask f
 ### Bug fixed this session
 `BaselineProcessor.process_bev_mask()` was computing `iou_prev` as
 IoU(current_cleaned, current_pre_cleaned) — same frame, not temporal.
-Fixed to compare with previous cleaned mask. Baseline IoU is now 0.938, not 0.994.
+Fixed to compare with previous cleaned mask. Corrected baseline IoU range: 0.883–0.980.
 
-### Results per Video (corrected IoU metric)
+### Results per Video (all 7 videos, 300 frames each)
 
-| Video | Frames | BaseCov | ImpCov | BaseIoU | ImpIoU | BaseHdgStd | ImpHdgStd | BaseJump | ImpJump | Notes |
-|-------|--------|---------|--------|---------|--------|------------|-----------|----------|---------|-------|
-| test_video_june_03_3 | 300 | 0.300 | 0.159 | 0.938 | 0.554 | 0.00 | 0.00 | 0.00 | 0.00 | Straight road — heading=0 is correct |
+| Video | Frames | BaseCov | ImpCov | BaseIoU | ImpIoU | BaseHdgStd | ImpHdgStd | BaseJump | ImpJump |
+|-------|--------|---------|--------|---------|--------|------------|-----------|----------|---------|
+| test_video_june_03_3 | 300 | 0.300 | 0.159 | 0.938 | 0.554 | 0.00 | 0.00 | 0.00 | 0.00 |
+| IMG_1877 | 300 | 0.281 | 0.190 | 0.883 | 0.603 | 0.00 | 17.18 | 0.00 | 1.02 |
+| IMG_1876 | 168 | 0.074 | 0.026 | 0.954 | 0.408 | 0.00 | 15.03 | 0.00 | 0.43 |
+| IMG_1878 | 300 | 0.306 | 0.216 | 0.918 | 0.642 | 0.00 | 13.67 | 0.00 | 1.90 |
+| IMG_1921 | 300 | 0.725 | 0.386 | 0.980 | 0.565 | 0.00 | 14.30 | 0.00 | 0.53 |
+| IMG_1922 | 300 | 0.806 | 0.454 | 0.938 | 0.549 | 0.00 | 9.90 | 0.00 | 0.55 |
+| IMG_1924 | 300 | 0.771 | 0.280 | 0.952 | 0.368 | 0.00 | 8.09 | 0.00 | 0.33 |
 
-### Coverage difference explained
-- Baseline keeps ALL road components from `clean_bev_mask_enhanced`.
-- Simple road runs `_keep_ego_connected` which filters to only the ego-reachable
-  road corridor via dilated flood-fill. Lower coverage (0.159 vs 0.300) is intentional —
-  it removes off-road noise, not actual drivable surface.
+### Baseline heading = 0 on all videos
+The baseline `DtSafeCorridor` heading formula uses `atan2(lateral_delta, forward_delta)`. On
+straight/near-straight roads, lateral_delta ≈ 0, giving heading ≈ 0. The baseline does not
+track curves well with this formula. The simple road pipeline correctly reports non-zero
+headings on the curved MOV videos (8–17 deg std), indicating it IS tracking road geometry.
 
-### Temporal IoU difference explained
-- Baseline IoU 0.938: `clean_bev_mask_enhanced` produces stable outputs because it does
-  not change topology between frames.
-- Simple road IoU 0.554: `_keep_ego_connected` uses flood-fill connectivity which can
-  shift frame-to-frame as the BEV mask boundary changes. The EMA blend (alpha=0.50)
-  smooths the output mask, but `iou_prev` is measured before EMA. This means the IoU
-  metric understates the actual output stability. A future improvement would measure
-  IoU on the EMA-blended output, not the pre-EMA intermediate.
+### Coverage difference
+Lower simple road coverage (0.026–0.454 vs 0.074–0.806 baseline) is intentional.
+`_keep_ego_connected` filters to only the ego-reachable road corridor, removing disconnected
+off-road blobs that inflate the baseline coverage metric.
 
-### Heading behavior
-- Heading = 0.0 deg for all frames on `test_video_june_03_3`.
-- This is correct: the test video is a straight road; atan2(~0_lateral, large_forward) ≈ 0.
-- The path planner is working — it's just correctly choosing "straight."
+### Temporal IoU difference
+Simple road IoU (0.368–0.642) is lower than baseline (0.883–0.980) because:
+1. `_keep_ego_connected` flood-fill can select different components frame-to-frame.
+2. `iou_prev` is measured on the pre-EMA intermediate, not the blended output.
+The EMA-blended output (alpha=0.50) is more stable than the raw metric suggests.
 
 ### Simple Road Config Used
 ```
@@ -254,7 +351,7 @@ heading_smooth_alpha: 0.35  (was 0.50)
 ```
 
 ### Metric Explanations
-- **Cov**: Mask coverage (fraction of BEV that is drivable) — higher = more road detected
-- **IoU**: Mask temporal stability (IoU with previous frame's cleaned mask) — higher = more stable
+- **Cov**: Mask coverage (fraction of BEV that is drivable)
+- **IoU**: Temporal mask stability (IoU with previous frame's cleaned mask)
 - **HdgStd**: Heading angle standard deviation (deg) — lower = smoother steering
 - **Jump**: Mean frame-to-frame heading change (deg) — lower = fewer sudden turns
