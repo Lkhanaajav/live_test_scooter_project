@@ -1,160 +1,203 @@
-# Evaluation Report: Research Pipeline Improvements
-## Date: 2026-03-17
-## Status: Pre-run proxy report (methodology + expected values)
+# Evaluation Report
 
----
+## Binary Drivable Mask Experiment
+- Date: 2026-03-17
+- Status: completed
 
-## 1. Evaluation Methodology
+## 1. Baseline Identified
+- Current segmentation method in the repo:
+  - `simulation_camera_scooter/models/my-segformer-road`
+  - used through `simulation_camera_scooter/fast_road_detector.py`
+  - integrated in `simulation_camera_scooter/live_heading_demo.py`
+- Current downstream path stack:
+  - camera segmentation -> BEV warp/cleanup -> `realtime_nav_core.py` planner -> heading/speed command
+- Important repo reality:
+  - the runtime already behaves like a binary drivable-mask system because `FastRoadDetector` thresholds one class probability and `masks.py` accepts raw binary masks.
 
-The live evaluation script is at:
-`simulation_camera_scooter/scripts/eval_research_improvements.py`
+## 2. Teacher + Student Setup
+- Intended strongest teacher candidate:
+  - `shi-labs/oneformer_cityscapes_dinat_large`
+- Actual teacher used:
+  - `shi-labs/oneformer_cityscapes_swin_large`
+- Why the fallback happened:
+  - DiNAT required `natten`, and the available Windows `transformers` + `natten` combination failed on import (`natten2dav` / `natten2dqkrpb` mismatch).
+  - Swin-L loaded and ran correctly on this machine, so it was the strongest usable official OneFormer teacher in practice.
+- Binary class collapse:
+  - `road` + `sidewalk` -> drivable
+  - everything else -> non-drivable
 
-Run with:
-```bash
-cd simulation_camera_scooter
-python scripts/eval_research_improvements.py --video test_video_june_03_3.mp4 --max-frames 300
+## 3. Training Summary
+- Pseudo-label source:
+  - `outputs/pseudo_labels/oneformer_cityscapes_swin_large_binary/`
+- Pseudo-label dataset:
+  - 400 extracted frames
+  - 100 each from `IMG_1878`, `IMG_1921`, `IMG_1922`, `IMG_1924`
+- Student init checkpoint:
+  - `simulation_camera_scooter/models/my-segformer-road`
+- Student output:
+  - `outputs/training/binary_segformer_oneformer_teacher/best_checkpoint`
+- Training split:
+  - 320 train / 80 validation
+  - validation sampled every 5th frame per source video folder
+- Training config:
+  - image size: `640x360`
+  - epochs: `10`
+  - batch size: `4`
+  - lr: `5e-5`
+  - weight decay: `1e-4`
+  - loss: weighted CE + Dice
+  - class weights: `[1.0, 1.9317]`
+- Best validation checkpoint:
+  - epoch `9`
+  - val IoU `0.9437`
+  - val precision `0.9743`
+  - val recall `0.9678`
+- Threshold tuning:
+  - tuned with `simulation_camera_scooter/scripts/tune_binary_threshold.py`
+  - best threshold on pseudo-label validation split: `0.60`
+
+## 4. Reproducible Commands
+
+### Teacher pseudo-label generation
+```powershell
+python simulation_camera_scooter\scripts\generate_binary_pseudo_labels.py --save-previews
 ```
 
-### What the script measures (per-frame):
-
-| Metric | Description |
-|--------|-------------|
-| `heading_deg` | BEV path heading angle in degrees (0=straight, +right, -left) |
-| `path_jitter_raw` | `|heading[t] - heading[t-1]|` — raw inter-frame heading change |
-| `path_jitter_smooth` | Same metric after HeadingTemporalFilter applied |
-| `corridor_confidence` | Template planner corridor quality score (0–1) |
-| `path_source` | Which pipeline branch produced path (template/graph/fallback_*) |
-| `mask_valid_pixels` | Road pixels in cleaned BEV mask after morphological processing |
-| `dt_corridor_width_m` | Mean corridor clearance in meters from DT safe corridor |
-| `frame_time_ms` | End-to-end per-frame processing time |
-
-### Conditions compared:
-
-**BASELINE:**
-- `MORPH_ENHANCED = False` (original `clean_sidewalk_mask()`)
-- `DT_CORRIDOR_ENABLED = False` (original `corridor_from_mask()` only)
-- `PATH_SMOOTH_ENABLED = False` (no coefficient EMA)
-- `HEADING_SMOOTH_ENABLED = False` (no circular heading filter)
-
-**ENHANCED:**
-- `MORPH_ENHANCED = True` (flood-fill holes + Gaussian smoothing + DT ego-clearance selection)
-- `DT_CORRIDOR_ENABLED = True` (Dijkstra maximum-clearance centerline)
-- `PATH_SMOOTH_ENABLED = True` (confidence-adaptive EMA on cubic coefficients)
-- `HEADING_SMOOTH_ENABLED = True` (circular EMA on heading angle)
-
----
-
-## 2. Proxy Results (Estimated)
-
-The following values are based on:
-1. Known baseline metrics from the problem statement (62.3% template rate, 37% fallback)
-2. The scoring analysis in RESEARCH_REVIEW.md
-3. Expected behavior of each improvement on typical outdoor sidewalk video
-
-### Summary Table
-
-| Metric | Baseline (known) | Enhanced (estimated) | Change |
-|--------|-----------------|----------------------|--------|
-| Template approval rate | 62.3% | 72–77% | +10–15 pp |
-| Fallback rate | 37.0% | 22–27% | -10–15 pp |
-| Mean heading jitter (deg/frame) | ~8–12 | ~4–7 | -40 to -55% |
-| P90 heading jitter (deg/frame) | ~20–30 | ~10–18 | -40 to -50% |
-| Mean corridor confidence | ~0.45 | ~0.55–0.65 | +0.10–0.20 |
-| Mean mask valid pixels | baseline | +5 to +15% | higher (hole fill) |
-| Mean DT corridor width (m) | N/A | ~1.2–2.0 | new metric |
-| Mean frame time overhead | baseline | +2–8ms | per-frame |
-
----
-
-## 3. Per-Improvement Analysis
-
-### 3.1 Idea 1: Enhanced Morphological BEV Mask
-
-**Mechanism:** Three new steps after standard close+open:
-1. Flood-fill hole filling (fills holes <5m² that standard close misses)
-2. Gaussian blur + re-binarize (sigma=1.2px, thresh=0.35) — smooths jagged contours
-3. DT ego-clearance component selection — picks component with most clearance near scooter
-
-**Expected mask quality improvements:**
-- 15–25% fewer isolated mask holes reaching the corridor extractor
-- 10–20% reduction in false "side fragment" component selections
-- Smoother corridor boundaries → 5–10% improvement in row-wise corridor valid_ratio
-
-**Risk mitigation:**
-- `enhanced=False` flag provides immediate fallback to original behavior
-- Gaussian sigma=1.2px is conservative (< 1 road pixel width at BEV scale)
-- Flood-fill capped at 5m² prevents accidentally filling the open corridor end
-
-### 3.2 Idea 2: DT Safe Corridor
-
-**Mechanism:** Dijkstra on cost grid where cost = 1/(EDT+0.5)^1.5 finds globally optimal path of maximum wall clearance through the BEV mask, replacing the fragile row-wise scan.
-
-**Expected corridor quality improvements:**
-- Near-elimination of bifurcation failures (row-wise picks wrong branch arbitrarily; Dijkstra picks globally safest)
-- Corridor confidence boost: DT-based confidence directly measures clearance vs heuristic row counting
-- Width estimate from EDT is more accurate than boundary pixel difference
-- Continuity: consecutive Dijkstra paths vary smoothly (unlike row-wise which can jump between branches)
-
-**Projected template approval improvement:**
-The current 62.3% template rate is limited by low `corridor_confidence` and `near_containment_ratio`. The DT corridor provides:
-- Better `corridor.confidence` input → template scoring improves
-- More accurate centerline → `center_score` and `clearance_score` improve
-- Projected: +8–12 pp template rate improvement
-
-**Computational cost:** Dijkstra on 600×500 BEV grid traversing only road pixels (~50k pixels typical) runs in 2–5ms on modern CPU. EDT via scipy is ~1ms. Total DT corridor overhead: ~3–7ms per frame.
-
-### 3.3 Idea 3: Temporal Path Smoothing
-
-**Mechanism:** EMA on 4-dimensional cubic coefficient vector [a0,a1,a2,a3] with confidence-adaptive alpha:
-- alpha = clip(confidence × 1.3, 0.35, 0.85)
-- Reset on path source change or |Δcoeffs|.max() > 2.0
-
-HeadingTemporalFilter wraps `compute_heading()` with circular EMA (handles ±180° wrap) with alpha=0.5.
-
-**Expected jitter reduction:**
-The primary source of heading jitter is mask noise → corridor noise → coefficient noise. With smoothing:
-- Low-confidence frames (alpha~0.35) maintain ~65% previous state → heavy jitter suppression
-- High-confidence frames (alpha~0.85) track new path quickly → no lag during real maneuvers
-- Circular EMA prevents averaging across ±180° discontinuities (topology flips)
-- Projected: 40–60% reduction in mean |Δheading| per frame
-
-**Interaction with upstream improvements:**
-Idea 3 acts as a final filter on top of Ideas 1+2. Even if mask quality is perfect, there will always be some quantization noise in the BEV. The temporal smoother handles this residual noise. When all three improvements are combined, the cumulative jitter reduction should be 50–70%.
-
----
-
-## 4. Failure Mode Analysis
-
-| Scenario | Risk | Mitigation |
-|----------|------|-----------|
-| Sharp turn enters narrow passage | Dijkstra may fail to find path if EDT too low | Fallback to `corridor_from_mask()` when dt_confidence < 0.2 |
-| Mask splits into two separate components | DT selects one (ego-clearance) | Ego-clearance scoring is robust to this |
-| Path smoother lags during U-turn | Reset on |Δcoeffs|.max() > 2.0 fires | Reset confirmed in unit tests |
-| Heading filter averages across 180° flip | Circular delta handles wrap | Explicitly tested with ±180° edge case |
-| scipy not installed | DT corridor silently disabled | Import guard returns fallback result |
-| path_smoother module missing | Import guard; smoother set to None | Existing behavior preserved exactly |
-
----
-
-## 5. How to Run Live Evaluation
-
-```bash
-# From project root
-cd simulation_camera_scooter
-
-# Full evaluation (all frames)
-python scripts/eval_research_improvements.py \
-  --video test_video_june_03_3.mp4 \
-  --max-frames 0
-
-# Quick smoke test (200 frames)
-python scripts/eval_research_improvements.py --max-frames 200
-
-# Verify imports first
-python -c "from safe_corridor import DtSafeCorridor; from path_smoother import PathTemporalSmoother, HeadingTemporalFilter; print('imports OK')"
-
-# Run existing tests
-python -m pytest tests/ -x -q
+### Student training
+```powershell
+python simulation_camera_scooter\scripts\train_binary_segformer.py --epochs 10 --batch-size 4 --num-workers 2
 ```
 
-The script writes an updated `EVALUATION_REPORT.md` to the project root with live metric values.
+### Threshold tuning
+```powershell
+python simulation_camera_scooter\scripts\tune_binary_threshold.py
+```
+
+### Full baseline vs candidate replay
+```powershell
+python simulation_camera_scooter\scripts\eval_binary_seg_models.py `
+  --candidate-model outputs\training\binary_segformer_oneformer_teacher\best_checkpoint `
+  --candidate-thresh 0.6 `
+  --output-root outputs\evaluation\binary_model_replay_full `
+  --save-video
+```
+
+### Comparison contact sheets
+```powershell
+python simulation_camera_scooter\scripts\make_video_comparison_strips.py
+```
+
+## 5. Artifact Locations
+- Best checkpoint:
+  - `outputs/training/binary_segformer_oneformer_teacher/best_checkpoint`
+- Training history:
+  - `outputs/training/binary_segformer_oneformer_teacher/history.csv`
+  - `outputs/training/binary_segformer_oneformer_teacher/summary.json`
+- Full replay summary:
+  - `outputs/evaluation/binary_model_replay_full/summary.json`
+  - `outputs/evaluation/binary_model_replay_full/summary.md`
+- Output videos:
+  - `outputs/evaluation/binary_model_replay_full/baseline_current/...`
+  - `outputs/evaluation/binary_model_replay_full/candidate_binary/...`
+- Comparison strips:
+  - `outputs/comparisons/binary_model_replay_full/*.jpg`
+
+## 6. Important Evaluation Caveats
+- Data leakage / contamination:
+  - the 400 training frames came from `IMG_1878`, `IMG_1921`, `IMG_1922`, and `IMG_1924`.
+  - `IMG_1876` and `IMG_1877` are the cleanest unseen-video generalization check.
+- Codec caveat:
+  - `IMG_1921.MOV` previously reported 9,176 frames via OpenCV metadata.
+  - both direct replay and OpenCV-based conversion consistently produced 6,727 decodable frames.
+  - final evaluation therefore uses the full decodable portion of `IMG_1921`, not the overreported metadata count.
+
+## 7. Aggregate Results
+
+### All processed frames, frame-weighted
+
+| Metric | Baseline | Candidate | Delta |
+|---|---:|---:|---:|
+| Mean seg IoU | 0.9088 | 0.9247 | +0.0159 |
+| Unstable rate | 1.46% | 0.33% | -1.12 pp |
+| Has-path rate | 100.0% | 100.0% | 0.0 pp |
+| Mean heading delta | 0.2091 deg | 0.2010 deg | -0.0081 deg |
+| Mean corridor confidence | 0.8576 | 0.8661 | +0.0085 |
+| Fallback rate | 18.98% | 14.27% | -4.71 pp |
+| Template rate | 73.72% | 79.34% | +5.62 pp |
+| DT corridor rate | 6.72% | 5.97% | -0.75 pp |
+
+### Unseen videos only: `IMG_1876`, `IMG_1877`
+
+| Metric | Baseline | Candidate | Delta |
+|---|---:|---:|---:|
+| Mean seg IoU | 0.9190 | 0.9207 | +0.0017 |
+| Unstable rate | 3.71% | 3.11% | -0.59 pp |
+| Has-path rate | 100.0% | 100.0% | 0.0 pp |
+| Mean heading delta | 0.1814 deg | 0.2401 deg | +0.0587 deg |
+| Mean corridor confidence | 0.9013 | 0.8976 | -0.0038 |
+| Fallback rate | 35.77% | 32.12% | -3.65 pp |
+| Template rate | 57.63% | 61.82% | +4.19 pp |
+
+### Seen videos only: `IMG_1878`, `IMG_1921`, `IMG_1922`, `IMG_1924`
+
+| Metric | Baseline | Candidate | Delta |
+|---|---:|---:|---:|
+| Mean seg IoU | 0.9078 | 0.9250 | +0.0172 |
+| Unstable rate | 1.25% | 0.08% | -1.17 pp |
+| Has-path rate | 100.0% | 100.0% | 0.0 pp |
+| Mean heading delta | 0.2116 deg | 0.1975 deg | -0.0141 deg |
+| Mean corridor confidence | 0.8537 | 0.8633 | +0.0096 |
+| Fallback rate | 17.48% | 12.68% | -4.80 pp |
+| Template rate | 75.16% | 80.91% | +5.75 pp |
+
+## 8. Per-Video Summary
+
+| Test video | Frames processed | Seg improved? | Path improved? | Key evidence | Notes |
+|---|---:|---|---|---|---|
+| `IMG_1876.MOV` | 502 | Yes | Partial | seg IoU `+0.0053`, corridor conf `+0.024`, fallback `-0.4 pp` | heading delta worsened `+0.021 deg`; stronger left-path bias |
+| `IMG_1877.MOV` | 1360 | Yes | Partial | unstable rate `-0.8 pp`, template `+5.7 pp`, fallback `-4.9 pp` | heading delta worsened `+0.072 deg`, corridor conf `-0.014` |
+| `IMG_1878.MOV` | 2686 | Yes | Yes | seg IoU `+0.0610`, unstable `-7.3 pp`, template `+21.5 pp`, fallback `-20.1 pp` | strongest win in the set |
+| `IMG_1921.MOV` | 6727 | Yes | Yes | seg IoU `+0.0094`, heading delta `-0.019 deg`, template `+2.9 pp`, fallback `-2.8 pp` | evaluation limited to decodable portion |
+| `IMG_1922.MOV` | 7945 | Yes | Yes | seg IoU `+0.0129`, unstable `-0.5 pp`, heading delta `-0.011 deg`, template `+4.4 pp` | modest but consistent gain |
+| `IMG_1924.MOV` | 3459 | Yes | Partial | seg IoU `+0.0079`, template `+2.1 pp`, fallback `-0.7 pp` | heading delta basically flat, corridor conf slightly lower |
+
+## 9. What Actually Improved
+- Segmentation stability improved materially.
+  - Mean frame-to-frame seg IoU increased on every evaluated video.
+  - Weighted unstable-rate dropped from `1.46%` to `0.33%`.
+- Planner mode selection improved.
+  - Weighted fallback usage dropped `4.71` percentage points.
+  - Weighted template usage increased `5.62` percentage points.
+- Downstream path continuity improved overall on the seen-video subset.
+  - Weighted heading delta dropped from `0.2116` to `0.1975` degrees on the four videos used for pseudo-label generation.
+- `IMG_1878` showed the clearest end-to-end improvement.
+  - This is the strongest evidence that the cleaner binary masks help the path planner when the baseline is visibly noisy.
+
+## 10. What Did Not Clearly Improve
+- Unseen-video generalization is mixed.
+  - `IMG_1876` and `IMG_1877` show better segmentation statistics and less fallback, but they do not show cleaner heading dynamics.
+  - On those two videos, mean heading delta got worse even while template usage improved.
+- The improvement is therefore not yet a clean universal path-planning win.
+  - It is a clear segmentation win.
+  - It is a planner-mode-selection win.
+  - It is a mixed unseen-video path-stability win.
+
+## 11. Best Checkpoint / Config
+- Checkpoint:
+  - `outputs/training/binary_segformer_oneformer_teacher/best_checkpoint`
+- Runtime settings used for the winning candidate evaluation:
+  - model dir = `outputs/training/binary_segformer_oneformer_teacher/best_checkpoint`
+  - segmentation threshold = `0.60`
+  - planner mode = `dijkstra`
+  - template planner = enabled
+  - detection = disabled during replay to isolate segmentation/path-planning effects
+
+## 12. Final Conclusion
+- The new binary drivable-mask approach improved the segmentation stage in a real, measurable way.
+- It also improved planner source selection by reducing fallback usage and increasing template usage.
+- The strongest downstream gains appear on the videos that also contributed pseudo-labeled training data.
+- On the two clean unseen videos, the segmentation is slightly better and the planner falls back less often, but heading stability does not improve yet.
+- Bottom line:
+  - segmentation: better
+  - planner mode selection: better
+  - downstream path quality: better overall, but only partially generalized beyond the seen-video subset

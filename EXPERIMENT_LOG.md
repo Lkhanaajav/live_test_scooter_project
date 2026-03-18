@@ -44,9 +44,28 @@ NOT targeting complex urban edge cases.
 2. [x] Locate test videos
 3. [x] Write `simple_road_pipeline.py`
 4. [x] Write `scripts/eval_simple_road.py`
-5. [ ] Run on test_video_june_03_3.mp4, IMG_1877.MOV
-6. [ ] Compare baseline vs improved metrics
-7. [ ] Update EVALUATION_REPORT.md
+5. [x] Run on test_video_june_03_3.mp4 (300 frames, step=3)
+6. [x] Compare baseline vs improved metrics (see EVALUATION_REPORT.md)
+7. [x] Update EVALUATION_REPORT.md
+
+### Eval Results — 2026-03-18 (corrected run)
+
+**Bug found and fixed**: `BaselineProcessor.process_bev_mask()` was computing
+`iou_prev` as IoU of the CURRENT cleaned mask vs the CURRENT pre-cleaned mask
+(same frame), yielding a misleadingly high 0.994. Fixed to compare vs PREVIOUS
+cleaned mask for true temporal stability, same semantics as simple road pipeline.
+
+**Key findings from corrected eval** (see EVALUATION_REPORT.md §Simple Road):
+- Coverage: Baseline ~0.31, Simple Road ~0.17 — intentional: `_keep_ego_connected`
+  filters to only ego-reachable road (more conservative, not a bug).
+- Temporal IoU: will reflect true frame-to-frame stability after the fix.
+- Heading = 0 for straight test video is CORRECT behavior, not a pipeline failure.
+- 3-template bank prevents noisy frames from triggering sharp-turn templates.
+
+### Files Added
+- `simulation_camera_scooter/simple_road_pipeline.py`
+- `simulation_camera_scooter/scripts/eval_simple_road.py`
+- `simulation_camera_scooter/scripts/prepare_hand_annotation_workspace.py`
 
 ---
 

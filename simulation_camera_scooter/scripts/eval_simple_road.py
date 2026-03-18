@@ -136,7 +136,8 @@ class BaselineProcessor:
     """
 
     def __init__(self) -> None:
-        self._prev_bev_mask: Optional[np.ndarray] = None
+        self._prev_bev_mask: Optional[np.ndarray] = None   # for EMA smoothing
+        self._prev_clean_mask: Optional[np.ndarray] = None  # for temporal IoU
         self._prev_heading: Optional[float] = None
         # BEV m/px
         self._m_per_px = float(NAV_BEV_FORWARD_M) / float(BEV_SIZE[1])
@@ -170,9 +171,10 @@ class BaselineProcessor:
         else:
             clean = clean_sidewalk_mask(bev_smooth)
 
-        # Coverage and IoU
+        # Coverage and temporal IoU (compare with PREVIOUS cleaned mask)
         coverage = float(np.count_nonzero(clean)) / max(1.0, float(clean.size))
-        iou_prev = _mask_iou(clean, self._prev_bev_mask) if self._prev_bev_mask is not None else 1.0
+        iou_prev = _mask_iou(clean, self._prev_clean_mask) if self._prev_clean_mask is not None else 1.0
+        self._prev_clean_mask = clean.copy()
 
         # Centerline
         heading_deg = 0.0
@@ -206,6 +208,7 @@ class BaselineProcessor:
 
     def reset(self) -> None:
         self._prev_bev_mask = None
+        self._prev_clean_mask = None
         self._prev_heading = None
 
 

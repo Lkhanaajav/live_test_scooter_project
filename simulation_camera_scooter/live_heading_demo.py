@@ -20,6 +20,7 @@ Usage:
 """
 
 import argparse
+import os
 import time
 from collections import deque
 
@@ -79,7 +80,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
              low_power=False, seg_input_res=SEG_INPUT_RES, path_scale=1.0,
              detection_stride=1, enable_predict=PREDICT_ENABLED,
              planner_mode="dijkstra", template_planner_enabled=True,
-             max_frames=None, initial_intent=None, bev_clean_mode="auto"):
+             max_frames=None, initial_intent=None, bev_clean_mode="auto",
+             model_dir=None, output_video_path=None, seg_conf_thresh=0.5):
     print("\n=== LIVE HEADING + OBJECT DETECTION + GPS DEMO ===")
     stab_radius = max(1, int(stab_radius))
     stride = max(1, int(stride))
@@ -119,6 +121,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         planner_mode = "dijkstra"
     print(f"[Planner] mode={planner_mode}")
     print(f"[Planner] template_planner={'on' if template_planner_enabled else 'off'}")
+    effective_model_dir = str(model_dir).strip() if model_dir else MODEL_DIR
 
     # Initialize data logger
     logger = None
@@ -131,13 +134,16 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     # Initialize segmentation model
     print("Loading SegFormer model...")
     cfg = Config(
-        model_dir=MODEL_DIR,
-        conf_thresh=0.5,
+        model_dir=effective_model_dir,
+        conf_thresh=float(seg_conf_thresh),
         road_id=ROAD_ID,
         inference_resize=seg_input_res,
+        enable_logging=False,
     )
     seg_model = FastRoadDetector(cfg)
     print("SegFormer ready.")
+    print(f"[Seg] model_dir={effective_model_dir}")
+    print(f"[Seg] conf_thresh={float(seg_conf_thresh):.3f}")
 
     # Initialize object detector (YOLOv8-nano)
     obj_detector = None
@@ -749,8 +755,13 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     # Use actual processing FPS (estimate ~5) so playback matches real speed
                     actual_fps = fps if fps > 1 else 5.0
                     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                    vw = cv2.VideoWriter("heading_demo_output.mp4", fourcc, actual_fps,
+                    video_out = output_video_path or "heading_demo_output.mp4"
+                    out_dir = os.path.dirname(video_out)
+                    if out_dir:
+                        os.makedirs(out_dir, exist_ok=True)
+                    vw = cv2.VideoWriter(video_out, fourcc, actual_fps,
                                          (combined.shape[1], combined.shape[0]))
+                    print(f"Saving output to {video_out}")
                 if vw:
                     vw.write(combined)
 
@@ -808,7 +819,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 detection_stride=detection_stride,
                 gps_device=gps_device, gps_waypoints=gps_waypoints,
                 serial_port=serial_port, total_frames=frame_id,
-                model_dir=MODEL_DIR, seg_resolution=seg_input_res,
+                model_dir=effective_model_dir, seg_resolution=seg_input_res,
+                seg_conf_thresh=float(seg_conf_thresh),
                 low_power=low_power, path_scale=path_scale,
                 nav_work_grid=work_grid,
                 nav_bev_forward_m=NAV_BEV_FORWARD_M,
@@ -817,6 +829,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 template_planner_enabled=bool(template_planner_enabled),
                 max_frames=int(max_frames) if max_frames is not None else None,
                 yolo_model=YOLO_MODEL_NAME if enable_detection else "disabled",
+                output_video_path=output_video_path if save_video else None,
             )
             logger.close()
         # Cleanup
@@ -850,8 +863,14 @@ if __name__ == "__main__":
                         help="Process every Nth frame (1=all)")
     parser.add_argument("--save", action="store_true",
                         help="Save output video")
+    parser.add_argument("--output-video", type=str, default=None,
+                        help="Optional explicit path for saved output video")
     parser.add_argument("--low-power", action="store_true",
                         help="Enable small-computer profile (lower load, higher FPS)")
+    parser.add_argument("--model-dir", type=str, default=None,
+                        help="Optional segmentation checkpoint directory or Hugging Face model id")
+    parser.add_argument("--seg-conf-thresh", type=float, default=0.5,
+                        help="Segmentation probability threshold for the drivable class")
     parser.add_argument("--seg-width", type=int, default=SEG_INPUT_RES[0],
                         help="Segmentation input width")
     parser.add_argument("--seg-height", type=int, default=SEG_INPUT_RES[1],
@@ -942,6 +961,9 @@ if __name__ == "__main__":
             max_frames=args.max_frames,
             initial_intent=args.intent,
             bev_clean_mode=args.bev_clean,
+            model_dir=args.model_dir,
+            output_video_path=args.output_video,
+            seg_conf_thresh=args.seg_conf_thresh,
         )
 
 
