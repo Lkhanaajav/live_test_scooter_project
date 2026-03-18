@@ -571,9 +571,26 @@ def write_evaluation_report(all_results: List[Dict], output_dir: str) -> None:
         "EVALUATION_REPORT.md"
     )
 
+    import datetime as _dt
+    date_str = _dt.date.today().isoformat()
+    section_header = f"## Simple Road Pipeline Evaluation — {date_str}"
+
+    # Read existing report to avoid duplicate section on re-runs
+    existing = ""
+    if os.path.exists(report_path):
+        with open(report_path, "r", encoding="utf-8") as f:
+            existing = f.read()
+    if section_header in existing:
+        # Remove previous run's section before re-writing
+        idx = existing.find(section_header)
+        # Find the preceding separator ("---") and trim from there
+        sep_idx = existing.rfind("\n---\n", 0, idx)
+        if sep_idx >= 0:
+            existing = existing[:sep_idx]
+
     lines = [
         "\n\n---\n",
-        "## Simple Road Pipeline Evaluation — 2026-03-18\n\n",
+        f"## Simple Road Pipeline Evaluation — {date_str}\n\n",
         "**Branch**: `simplify-pipeline-simple-roads`  \n",
         "**Approach**: Post-processing improvements only (no model retraining)  \n",
         "**Key changes**: 3-template bank, stronger temporal inertia, longer SG centerline, ",
@@ -631,12 +648,6 @@ def write_evaluation_report(all_results: List[Dict], output_dir: str) -> None:
         "heading_smooth_alpha: 0.35  (was 0.50)\n",
         "```\n",
     ]
-
-    # Read existing report
-    existing = ""
-    if os.path.exists(report_path):
-        with open(report_path, "r", encoding="utf-8") as f:
-            existing = f.read()
 
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(existing + "".join(lines))
