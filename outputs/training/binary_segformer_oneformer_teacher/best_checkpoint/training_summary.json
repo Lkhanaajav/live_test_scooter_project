@@ -1,0 +1,119 @@
+{
+  "metrics": {
+    "loss": 0.11040238328278065,
+    "iou": 0.9436575348129136,
+    "precision": 0.9742776526653052,
+    "recall": 0.967768451905351,
+    "accuracy": 0.9799629448784722
+  },
+  "train_count": 320,
+  "val_count": 80,
+  "args": {
+    "images_root": "C:\\Users\\lhana\\OneDrive\\Desktop\\scootedr\\live_test_scooter_project\\simulation_camera_scooter\\annotation_frames",
+    "masks_root": "C:\\Users\\lhana\\OneDrive\\Desktop\\scootedr\\live_test_scooter_project\\outputs\\pseudo_labels\\oneformer_cityscapes_swin_large_binary\\masks",
+    "init_model": "C:\\Users\\lhana\\OneDrive\\Desktop\\scootedr\\live_test_scooter_project\\simulation_camera_scooter\\models\\my-segformer-road",
+    "output_dir": "C:\\Users\\lhana\\OneDrive\\Desktop\\scootedr\\live_test_scooter_project\\outputs\\training\\binary_segformer_oneformer_teacher",
+    "epochs": 10,
+    "batch_size": 4,
+    "lr": 5e-05,
+    "weight_decay": 0.0001,
+    "image_width": 640,
+    "image_height": 360,
+    "val_every": 5,
+    "num_workers": 2,
+    "seed": 1337,
+    "device": null
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.278089901432395,
+      "val_loss": 0.184414966031909,
+      "val_iou": 0.9123215959759704,
+      "val_precision": 0.9638897478826314,
+      "val_recall": 0.9446066958849638,
+      "val_accuracy": 0.9685198567708333,
+      "lr": 5e-05
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.18338428512215615,
+      "val_loss": 0.15188974738121033,
+      "val_iou": 0.9305801685213211,
+      "val_precision": 0.9834565528218958,
+      "val_recall": 0.9453791090479354,
+      "val_accuracy": 0.9755444878472223,
+      "lr": 4.849231551964771e-05
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.15269438978284597,
+      "val_loss": 0.13137675262987614,
+      "val_iou": 0.9389981118793407,
+      "val_precision": 0.9731654993746819,
+      "val_recall": 0.9639572336250208,
+      "val_accuracy": 0.9782841254340278,
+      "lr": 4.415111107797445e-05
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.13302059890702367,
+      "val_loss": 0.12436113748699426,
+      "val_iou": 0.9426264155530568,
+      "val_precision": 0.980265223419838,
+      "val_recall": 0.9608606969992288,
+      "val_accuracy": 0.9797197265625,
+      "lr": 3.7500000000000003e-05
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.1260005128569901,
+      "val_loss": 0.11513487845659257,
+      "val_iou": 0.9431751040083359,
+      "val_precision": 0.9740076281293254,
+      "val_recall": 0.9675273563647111,
+      "val_accuracy": 0.9797860785590278,
+      "lr": 2.9341204441673266e-05
+    },
+    {
+      "epoch": 6,
+      "train_loss": 0.11515974989160896,
+      "val_loss": 0.1104023341089487,
+      "val_iou": 0.9406637645778848,
+      "val_precision": 0.9714089750234032,
+      "val_recall": 0.9674486600266566,
+      "val_accuracy": 0.9788381076388889,
+      "lr": 2.0658795558326743e-05
+    },
+    {
+      "epoch": 7,
+      "train_loss": 0.10890296124853194,
+      "val_loss": 0.11046898532658815,
+      "val_iou": 0.9421865702137278,
+      "val_precision": 0.9726370631068266,
+      "val_recall": 0.9678404207234524,
+      "val_accuracy": 0.9794061957465278,
+      "lr": 1.2500000000000006e-05
+    },
+    {
+      "epoch": 8,
+      "train_loss": 0.10447723316028715,
+      "val_loss": 0.11080667432397603,
+      "val_iou": 0.9436463776000635,
+      "val_precision": 0.9759856849500408,
+      "val_recall": 0.9660773411339187,
+      "val_accuracy": 0.9799937608506945,
+      "lr": 5.848888922025553e-06
+    },
+    {
+      "epoch": 9,
+      "train_loss": 0.10395083650946617,
+      "val_loss": 0.11040238328278065,
+      "val_iou": 0.9436575348129136,
+      "val_precision": 0.9742776526653052,
+      "val_recall": 0.967768451905351,
+      "val_accuracy": 0.9799629448784722,
+      "lr": 5e-06
+    }
+  ]
+}
