@@ -1,0 +1,69 @@
+{
+  "metrics": {
+    "loss": 0.08612107750959694,
+    "iou": 0.9545771618208072,
+    "precision": 0.97963079644878,
+    "recall": 0.9739075416285271,
+    "accuracy": 0.9841983326099537
+  },
+  "train_count": 1920,
+  "val_count": 480,
+  "args": {
+    "images_root": "outputs\\datasets\\annotation_frames_all6_t400",
+    "masks_root": "outputs\\pseudo_labels\\all6_t400_oneformer_cityscapes_swin_binary\\masks",
+    "init_model": "outputs\\training\\binary_segformer_oneformer_teacher\\best_checkpoint",
+    "output_dir": "outputs\\training\\binary_segformer_all6_t400_stage2",
+    "epochs": 6,
+    "batch_size": 4,
+    "lr": 2e-05,
+    "weight_decay": 0.0001,
+    "image_width": 640,
+    "image_height": 360,
+    "val_every": 5,
+    "num_workers": 2,
+    "seed": 1337,
+    "device": null
+  },
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.11921406162437051,
+      "val_loss": 0.10161918550729751,
+      "val_iou": 0.9466061587919927,
+      "val_precision": 0.9703791310298001,
+      "val_recall": 0.9747724001690098,
+      "val_accuracy": 0.981252341941551,
+      "lr": 1.973044870579824e-05
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.10404910361394286,
+      "val_loss": 0.09255264567521711,
+      "val_iou": 0.9507070360623469,
+      "val_precision": 0.9744646485635768,
+      "val_recall": 0.9749969350864436,
+      "val_accuracy": 0.9827629304108796,
+      "lr": 1.686241637868734e-05
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.09454866396263242,
+      "val_loss": 0.0876711991460373,
+      "val_iou": 0.9526549965223403,
+      "val_precision": 0.97527403719065,
+      "val_recall": 0.9762334815214286,
+      "val_accuracy": 0.9834570041232639,
+      "lr": 1.1736481776669307e-05
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.09110887716524303,
+      "val_loss": 0.08612107750959694,
+      "val_iou": 0.9545771618208072,
+      "val_precision": 0.97963079644878,
+      "val_recall": 0.9739075416285271,
+      "val_accuracy": 0.9841983326099537,
+      "lr": 6.039202339608432e-06
+    }
+  ]
+}
