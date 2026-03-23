@@ -456,3 +456,250 @@ class TestContainmentGating:
         # Path should span some forward distance
         fwd_span = float(result.path_m[-1, 0] - result.path_m[0, 0])
         assert fwd_span > 0.5, f"Path forward span too short: {fwd_span}"
+
+
+# ===========================================================================
+# Wave 4 tests: replay evaluator summary parsing, metrics, mode dispatch
+# ===========================================================================
+
+
+class TestReplayManifestParsing:
+    """The replay manifest should be parseable and list valid paths."""
+
+    def test_replay_set_file_can_be_loaded(self):
+        """The fixed replay manifest can be loaded and parsed by the evaluator."""
+        from scripts.eval_waypoint_turn_planner import load_replay_set
+        import os
+
+        manifest_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            ".planning",
+            "phases",
+            "11.1-gps-intent-corridor-waypoint-turn-planner",
+            "11.1-REPLAY_SET.txt",
+        )
+        videos = load_replay_set(manifest_path)
+        assert isinstance(videos, list)
+        assert len(videos) > 0
+        # All entries should end with a video extension
+        for v in videos:
+            assert v.endswith(".mp4") or v.endswith(".mov") or v.endswith(".MOV"), (
+                f"Unexpected video path: {v}"
+            )
+
+    def test_replay_set_skips_comments_and_blanks(self):
+        """Comments and blank lines in the manifest are ignored."""
+        from scripts.eval_waypoint_turn_planner import load_replay_set
+        import tempfile, os
+
+        content = "# comment line\n\ntest_videos/a.mp4\n# another comment\ntest_videos/b.mp4\n"
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(content)
+            tmp_path = f.name
+        try:
+            videos = load_replay_set(tmp_path)
+            assert videos == ["test_videos/a.mp4", "test_videos/b.mp4"]
+        finally:
+            os.unlink(tmp_path)
+
+
+class TestReplaySummaryMetrics:
+    """Replay summaries must include waypoint-turn-specific metrics."""
+
+    def test_summarize_log_includes_waypoint_turn_rate(self):
+        """summarize_log must report waypoint_turn_rate when path_source column exists."""
+        from scripts.eval_waypoint_turn_planner import summarize_log
+        import tempfile, os, csv
+
+        rows = [
+            {"path_source": "waypoint_turn", "selected_template_family": "left"},
+            {"path_source": "waypoint_turn", "selected_template_family": "left"},
+            {"path_source": "template", "selected_template_family": "straight"},
+            {"path_source": "dt_corridor", "selected_template_family": "straight"},
+        ]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline="", encoding="utf-8"
+        ) as f:
+            writer = csv.DictWriter(f, fieldnames=["path_source", "selected_template_family"])
+            writer.writeheader()
+            writer.writerows(rows)
+            tmp_path = f.name
+        try:
+            summary = summarize_log(tmp_path)
+            assert "waypoint_turn_rate" in summary
+            assert abs(summary["waypoint_turn_rate"] - 0.5) < 0.01
+        finally:
+            os.unlink(tmp_path)
+
+    def test_summarize_log_includes_hold_rate(self):
+        """summarize_log must report waypoint_turn_hold_rate."""
+        from scripts.eval_waypoint_turn_planner import summarize_log
+        import tempfile, os, csv
+
+        rows = [
+            {"path_source": "waypoint_turn_hold"},
+            {"path_source": "waypoint_turn"},
+            {"path_source": "template"},
+            {"path_source": "dt_corridor"},
+        ]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline="", encoding="utf-8"
+        ) as f:
+            writer = csv.DictWriter(f, fieldnames=["path_source"])
+            writer.writeheader()
+            writer.writerows(rows)
+            tmp_path = f.name
+        try:
+            summary = summarize_log(tmp_path)
+            assert "waypoint_turn_hold_rate" in summary
+            assert abs(summary["waypoint_turn_hold_rate"] - 0.25) < 0.01
+        finally:
+            os.unlink(tmp_path)
+
+    def test_summarize_log_includes_family_switch_count(self):
+        """summarize_log must count template_family switches."""
+        from scripts.eval_waypoint_turn_planner import summarize_log
+        import tempfile, os, csv
+
+        rows = [
+            {"path_source": "waypoint_turn", "selected_template_family": "left"},
+            {"path_source": "waypoint_turn", "selected_template_family": "left"},
+            {"path_source": "waypoint_turn", "selected_template_family": "right"},
+            {"path_source": "template", "selected_template_family": "straight"},
+        ]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline="", encoding="utf-8"
+        ) as f:
+            writer = csv.DictWriter(f, fieldnames=["path_source", "selected_template_family"])
+            writer.writeheader()
+            writer.writerows(rows)
+            tmp_path = f.name
+        try:
+            summary = summarize_log(tmp_path)
+            assert "maneuver_family_switches" in summary
+            assert summary["maneuver_family_switches"] >= 2
+        finally:
+            os.unlink(tmp_path)
+
+    def test_summarize_log_robust_when_no_waypoint_fields(self):
+        """summarize_log stays robust when path_source has no waypoint_turn entries."""
+        from scripts.eval_waypoint_turn_planner import summarize_log
+        import tempfile, os, csv
+
+        rows = [
+            {"path_source": "template", "selected_template_family": "straight"},
+            {"path_source": "dt_corridor", "selected_template_family": "straight"},
+        ]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline="", encoding="utf-8"
+        ) as f:
+            writer = csv.DictWriter(f, fieldnames=["path_source", "selected_template_family"])
+            writer.writeheader()
+            writer.writerows(rows)
+            tmp_path = f.name
+        try:
+            summary = summarize_log(tmp_path)
+            assert summary.get("waypoint_turn_rate", 0.0) == 0.0
+            assert summary.get("waypoint_turn_hold_rate", 0.0) == 0.0
+        finally:
+            os.unlink(tmp_path)
+
+    def test_summarize_log_includes_heading_stats(self):
+        """summarize_log must include mean and p95 heading magnitude."""
+        from scripts.eval_waypoint_turn_planner import summarize_log
+        import tempfile, os, csv
+
+        rows = [
+            {"path_source": "waypoint_turn", "heading_smoothed_deg": "5.0"},
+            {"path_source": "waypoint_turn", "heading_smoothed_deg": "-10.0"},
+            {"path_source": "template", "heading_smoothed_deg": "3.0"},
+        ]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline="", encoding="utf-8"
+        ) as f:
+            writer = csv.DictWriter(f, fieldnames=["path_source", "heading_smoothed_deg"])
+            writer.writeheader()
+            writer.writerows(rows)
+            tmp_path = f.name
+        try:
+            summary = summarize_log(tmp_path)
+            assert "mean_abs_heading_deg" in summary
+            assert "p95_abs_heading_deg" in summary
+            assert summary["mean_abs_heading_deg"] > 0
+        finally:
+            os.unlink(tmp_path)
+
+    def test_summarize_log_includes_low_confidence_rate(self):
+        """summarize_log must report low_confidence_rate."""
+        from scripts.eval_waypoint_turn_planner import summarize_log
+        import tempfile, os, csv
+
+        rows = [
+            {"path_source": "waypoint_turn", "planner_low_confidence": "1"},
+            {"path_source": "waypoint_turn", "planner_low_confidence": "0"},
+            {"path_source": "template", "planner_low_confidence": "0"},
+            {"path_source": "dt_corridor", "planner_low_confidence": "0"},
+        ]
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", delete=False, newline="", encoding="utf-8"
+        ) as f:
+            writer = csv.DictWriter(f, fieldnames=["path_source", "planner_low_confidence"])
+            writer.writeheader()
+            writer.writerows(rows)
+            tmp_path = f.name
+        try:
+            summary = summarize_log(tmp_path)
+            assert "low_confidence_rate" in summary
+            assert abs(summary["low_confidence_rate"] - 0.25) < 0.01
+        finally:
+            os.unlink(tmp_path)
+
+
+class TestModeDispatch:
+    """The evaluator exercises distinct planner modes (baseline/template/waypoint_turn)."""
+
+    def test_mode_config_produces_distinct_settings(self):
+        """Each mode name maps to different run_live kwargs."""
+        from scripts.eval_waypoint_turn_planner import mode_to_run_kwargs
+
+        baseline_kw = mode_to_run_kwargs("baseline")
+        template_kw = mode_to_run_kwargs("template")
+        waypoint_kw = mode_to_run_kwargs("waypoint_turn")
+
+        # Baseline should disable template planner
+        assert baseline_kw["template_planner_enabled"] is False
+
+        # Template mode should enable template planner but disable waypoint turn
+        assert template_kw["template_planner_enabled"] is True
+
+        # Waypoint-turn mode should enable waypoint turn
+        assert waypoint_kw.get("initial_intent") is not None or waypoint_kw.get("template_planner_enabled") is True
+
+    def test_all_three_modes_are_valid(self):
+        """The evaluator recognises baseline, template, and waypoint_turn as valid modes."""
+        from scripts.eval_waypoint_turn_planner import VALID_MODES
+
+        assert "baseline" in VALID_MODES
+        assert "template" in VALID_MODES
+        assert "waypoint_turn" in VALID_MODES
+
+
+class TestComparisonArtifact:
+    """A combined comparison artifact (JSON or MD) is produced from multi-mode results."""
+
+    def test_build_comparison_produces_markdown(self):
+        """build_comparison_report creates valid markdown from multi-mode summaries."""
+        from scripts.eval_waypoint_turn_planner import build_comparison_report
+
+        summaries = [
+            {"mode": "baseline", "video_label": "vid017", "frames": 100, "waypoint_turn_rate": 0.0},
+            {"mode": "template", "video_label": "vid017", "frames": 100, "waypoint_turn_rate": 0.0},
+            {"mode": "waypoint_turn", "video_label": "vid017", "frames": 100, "waypoint_turn_rate": 0.6},
+        ]
+        md = build_comparison_report("Test Report", summaries)
+        assert isinstance(md, str)
+        assert "baseline" in md.lower()
+        assert "waypoint_turn" in md.lower() or "waypoint" in md.lower()
+        assert len(md) > 100

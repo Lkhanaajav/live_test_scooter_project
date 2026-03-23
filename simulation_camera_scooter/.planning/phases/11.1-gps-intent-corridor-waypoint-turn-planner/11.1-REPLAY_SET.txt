@@ -1,0 +1,9 @@
+# Phase 11.1 Fixed Replay Set
+# Used for acceptance evaluation of waypoint-turn planner vs baseline/template modes.
+# Paths relative to simulation_camera_scooter/
+#
+# Primary test video: campus sidewalk with turns, 1920x1080
+test_videos/VID_20260319_155939_00_017.mp4
+# Secondary: additional campus sidewalk clips for coverage
+test_videos/VID_20260319_160039_00_018.mp4
+test_videos/VID_20260319_160240_00_020.mp4
