@@ -3,11 +3,27 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
+stopped_at: Completed 11.1-01-PLAN.md (Wave 0 baseline + waypoint-turn contract stub)
+last_updated: "2026-03-23T23:06:03.140Z"
+last_activity: 2026-03-12 — added Phase 7 metric path decoder and control-facing confidence outputs on top of the boundary-net baseline
+progress:
+  total_phases: 13
+  completed_phases: 3
+  total_plans: 19
+  completed_plans: 9
+  percent: 47
+---
+
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: executing
 stopped_at: Phase 2 formalized complete; Phase 3 is next execution target
 last_updated: "2026-03-12T00:00:00.000Z"
 last_activity: "2026-03-12 — Phase 2 formalized complete from validated calibration/log evidence; reusable SOP + validator added"
 progress:
-  total_phases: 11
+  [█████░░░░░] 47%
   completed_phases: 3
   total_plans: 10
   completed_plans: 8
@@ -118,6 +134,7 @@ Progress: 3 completed phases (01, 02, 03.1); Phase 7 foundation underway under 0
 | Phase 03.1 P03.1-02 | 7 | 2 tasks | 3 files |
 | Phase 03.1 P03.1-03 | 20 | 2 tasks | 3 files |
 | Phase 03.1 P03.1-04 | 15 | 2 tasks | 2 files |
+| Phase 11.1 P01 | 5 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -144,6 +161,8 @@ Recent decisions affecting current work:
 - [Phase 03.1]: _obstacle_penalty skipped when len(cands) < 2 to avoid penalizing the only viable path (Pitfall 5 from RESEARCH.md)
 - [Phase 03.1-04]: obstacle_zones_m=None default keeps headless callers unaffected; color threshold tied to BEV_HARD_BLOCK_DIST_M so visualization matches planner logic exactly
 - [Phase 03.1-04]: Phase 03.1 COMPLETE — OBS-01 through OBS-09 all satisfied, human verified 2026-03-09
+- [Phase 11.1]: Fix test expectations not production code: test_metric_conversion used stale config assumptions
+- [Phase 11.1]: waypoint_turn_planner.py is purely additive: no runtime integration in Wave 0
 
 ### Roadmap Evolution
 
@@ -172,8 +191,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-12T00:00:00.000Z
-Stopped at: Phase 2 formalized complete; next step is Phase 3 planning/execution
+Last session: 2026-03-23T23:06:03.136Z
+Stopped at: Completed 11.1-01-PLAN.md (Wave 0 baseline + waypoint-turn contract stub)
 
 ## Work Log
 

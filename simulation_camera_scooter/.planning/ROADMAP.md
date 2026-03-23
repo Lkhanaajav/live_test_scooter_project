@@ -131,7 +131,7 @@ Phases execute in numeric order, with Phase 3 as the next mainline target. Phase
 | 9. Shared-Backbone Multitask Perception | 0/0 | Not planned | - |
 | 10. Tiny Image-to-Waypoints Student | 0/0 | Not planned | - |
 | 11. Template Path Approval Scoring | 0/4 | Planned | - |
-| 11.1 GPS-Intent Corridor Waypoint Turn Planner | 0/0 | Not planned | - |
+| 11.1 GPS-Intent Corridor Waypoint Turn Planner | 1/4 | In Progress|  |
 
 ### Phase 6: Path quality improvements: post-selection smoothing, BEV mask morphological closing, stronger temporal continuity weight, and draw fitted cubic on overlay
 
@@ -215,7 +215,7 @@ Plans:
 **Goal:** Add a research-backed, GPS-intent-conditioned turn mode that chooses a corridor-supported waypoint target on the commanded side and fits a smooth controller-ready path to that target, avoiding skeleton-first turn selection
 **Requirements**: WPT-01, WPT-02, WPT-03, WPT-04
 **Depends on:** Phase 11
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 **Success Criteria** (what must be TRUE):
   1. With `left` or `right` intent active, the planner chooses a commanded-side waypoint target from the visible corridor instead of selecting a skeleton branch as the primary turn source
