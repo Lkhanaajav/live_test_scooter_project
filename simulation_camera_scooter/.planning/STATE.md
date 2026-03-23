@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 11.1-01-PLAN.md (Wave 0 baseline + waypoint-turn contract stub)
-last_updated: "2026-03-23T23:06:03.140Z"
-last_activity: 2026-03-12 — added Phase 7 metric path decoder and control-facing confidence outputs on top of the boundary-net baseline
+stopped_at: Completed 11.1-02-PLAN.md (Waypoint-turn core with dual-gate approval)
+last_updated: "2026-03-23T23:17:00.000Z"
+last_activity: 2026-03-23 — implemented waypoint-turn planner core with BEV mask-scanned target selection and Hermite path fitting
 progress:
   total_phases: 13
   completed_phases: 3
   total_plans: 19
-  completed_plans: 9
-  percent: 47
+  completed_plans: 10
+  percent: 53
 ---
 
 ---
@@ -135,6 +135,7 @@ Progress: 3 completed phases (01, 02, 03.1); Phase 7 foundation underway under 0
 | Phase 03.1 P03.1-03 | 20 | 2 tasks | 3 files |
 | Phase 03.1 P03.1-04 | 15 | 2 tasks | 2 files |
 | Phase 11.1 P01 | 5 | 2 tasks | 4 files |
+| Phase 11.1 P02 | 10 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -163,6 +164,10 @@ Recent decisions affecting current work:
 - [Phase 03.1-04]: Phase 03.1 COMPLETE — OBS-01 through OBS-09 all satisfied, human verified 2026-03-09
 - [Phase 11.1]: Fix test expectations not production code: test_metric_conversion used stale config assumptions
 - [Phase 11.1]: waypoint_turn_planner.py is purely additive: no runtime integration in Wave 0
+- [Phase 11.1-02]: Scan raw BEV mask pixels instead of corridor abstraction for support detection (corridor_from_mask merges runs)
+- [Phase 11.1-02]: Asymmetric pixel count as commanded-side support metric avoids false positives on narrow centered corridors
+- [Phase 11.1-02]: Decision band widened to 2.0-7.0m to match real BEV turn opening visibility
+- [Phase 11.1-02]: Cubic Hermite smoothstep for path fitting avoids polynomial overshoot
 
 ### Roadmap Evolution
 
@@ -191,8 +196,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-23T23:06:03.136Z
-Stopped at: Completed 11.1-01-PLAN.md (Wave 0 baseline + waypoint-turn contract stub)
+Last session: 2026-03-23T23:17:00.000Z
+Stopped at: Completed 11.1-02-PLAN.md (Waypoint-turn core with dual-gate approval)
 
 ## Work Log
 
