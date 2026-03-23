@@ -70,6 +70,12 @@ from visualization import draw_heading_hud, draw_bev_hud
 from bev_predictor import BEVPredictiveTracker
 
 
+KEY_LEFT = {81, 2424832}
+KEY_UP = {82, 2490368}
+KEY_RIGHT = {83, 2555904}
+KEY_DOWN = {84, 2621440}
+
+
 def _load_intent_schedule(schedule_path: str | None) -> list[dict]:
     """Load an optional frame-range intent schedule from JSON."""
     if not schedule_path:
@@ -135,6 +141,10 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
              planner_mode="dijkstra", template_planner_enabled=True,
              max_frames=None, initial_intent=None, bev_clean_mode="auto",
              model_dir=None, output_video_path=None, seg_conf_thresh=0.5,
+             enable_stabilization=STABILIZATION_ENABLED,
+             enable_seg_smoothing=True,
+             enable_bev_smoothing=True, enable_ego_anchor=True,
+             enable_ego_connected=True,
              intent_schedule_path=None):
     print("\n=== LIVE HEADING + OBJECT DETECTION + GPS DEMO ===")
     stab_radius = max(1, int(stab_radius))
@@ -147,6 +157,11 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         max(192, int(seg_input_res[0])),
         max(128, int(seg_input_res[1])),
     )
+    enable_stabilization = bool(enable_stabilization)
+    enable_seg_smoothing = bool(enable_seg_smoothing)
+    enable_bev_smoothing = bool(enable_bev_smoothing)
+    enable_ego_anchor = bool(enable_ego_anchor)
+    enable_ego_connected = bool(enable_ego_connected)
 
     if low_power:
         stride = max(stride, LOW_POWER_STRIDE)
@@ -181,9 +196,6 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     logger = None
     if enable_logging:
         logger = DataLogger(log_dir=log_dir)
-
-    # Load BEV calibration
-    H_mat, Hinv, src_pts = load_bev_params()
 
     # Initialize segmentation model
     print("Loading SegFormer model...")
@@ -221,9 +233,11 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
 
     # Initialize frame stabilizer (camera shake compensation)
     stabilizer = None
-    if STABILIZATION_ENABLED:
+    if enable_stabilization:
         stabilizer = FrameStabilizer(smoothing_radius=stab_radius)
         print(f"Frame stabilization ENABLED (radius={stab_radius}).")
+    else:
+        print("Frame stabilization DISABLED.")
 
     # Initialize temporal mask smoothers
     seg_smoother = TemporalMaskSmoother(
@@ -235,6 +249,14 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         consistency_thresh=0.35,
     )
     print(f"Temporal mask smoothing ENABLED (seg={mask_alpha:.2f}, bev={bev_alpha:.2f}).")
+    if not enable_seg_smoothing:
+        print("Segmentation temporal smoothing DISABLED.")
+    if not enable_bev_smoothing:
+        print("BEV temporal smoothing DISABLED.")
+    if not enable_ego_anchor:
+        print("BEV ego anchor DISABLED.")
+    if not enable_ego_connected:
+        print("BEV ego-connected mask DISABLED.")
 
     # Initialize real-time BEV navigation stack
     work_grid = max(120, int(round(NAV_WORK_GRID_BASE * path_scale)))
@@ -309,6 +331,14 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         print("ERROR: Cannot open camera/video.")
         return
 
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    if frame_w > 0 and frame_h > 0:
+        print(f"[Video] frame_size={frame_w}x{frame_h}")
+
+    # Load BEV calibration after capture open so it can scale to the active frame size.
+    H_mat, Hinv, src_pts = load_bev_params(frame_size=(frame_w, frame_h))
+
     # Control smoothing buffers
     heading_buffer = deque(maxlen=3)
     speed_buffer = deque(maxlen=8)
@@ -324,10 +354,11 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     vw = None
     cached_frame_state = None
 
-    gps_intent_family: str | None = str(initial_intent or "").strip().lower() or None
-    if gps_intent_family not in {"straight", "left", "right"}:
-        gps_intent_family = None
-    base_intent_family = gps_intent_family
+    scheduled_intent_family: str | None = str(initial_intent or "").strip().lower() or None
+    if scheduled_intent_family not in {"straight", "left", "right"}:
+        scheduled_intent_family = None
+    base_intent_family = scheduled_intent_family
+    manual_intent_family: str | None = None
     intent_schedule = _load_intent_schedule(intent_schedule_path)
     intent_schedule_idx = 0
     last_schedule_intent = "__unset__"
@@ -339,9 +370,9 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     TURN_LOCK_MIN_FRAMES = 6
     TURN_LOCK_MAX_FRAMES = 22
     TURN_LOCK_RELEASE_STREAK = 2
-    print("Running... Press 'q'/ESC to quit | 's' straight | 'l' left | 'r' right | 'c' clear intent\n")
-    if gps_intent_family is not None:
-        print(f"[Intent] initial={gps_intent_family}")
+    print("Running... Press q/ESC to quit | up=straight | left=left | right=right | down=clear intent\n")
+    if scheduled_intent_family is not None:
+        print(f"[Intent] initial={scheduled_intent_family}")
     if intent_schedule:
         print(f"[IntentSchedule] loaded {len(intent_schedule)} event(s) from {intent_schedule_path}")
     print(f"{'Frame':>6} | {'Command':>12} | {'Steer':>8} | {'Speed':>7} | "
@@ -383,11 +414,11 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 intent_schedule_idx,
             )
             if scheduled_event is None:
-                gps_intent_family = base_intent_family
+                scheduled_intent_family = base_intent_family
                 schedule_intent = None
             else:
-                gps_intent_family = scheduled_event["intent"]
-                schedule_intent = gps_intent_family
+                scheduled_intent_family = scheduled_event["intent"]
+                schedule_intent = scheduled_intent_family
             schedule_token = "clear" if schedule_intent is None else schedule_intent
             if intent_schedule and schedule_token != last_schedule_intent:
                 print(f"[IntentSchedule] frame={frame_id} intent={schedule_token}")
@@ -406,7 +437,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             speed_est = speed_buffer[-1] if speed_buffer else 0.0
             heading_est = heading_buffer[-1] if heading_buffer else 0.0
             obstacle_zones: list = []  # populated in compute branch; empty on skip frames
-            planner_intent_family = turn_lock_family if turn_lock_family in {"left", "right"} else gps_intent_family
+            active_intent_family = manual_intent_family if manual_intent_family in {"straight", "left", "right"} else scheduled_intent_family
+            planner_intent_family = turn_lock_family if turn_lock_family in {"left", "right"} else active_intent_family
             turn_lock_active = bool(
                 turn_lock_family in {"left", "right"}
                 and predictor is not None
@@ -503,7 +535,10 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     speed=speed_est, dt=dt_frame, steer_deg=heading_est
                 )
                 bev_shift = speed_est * dt_frame * BEV_PIXELS_PER_METER_FORWARD
-                bev_sidewalk = bev_smoother.smooth(predicted_mask_255, flow_dy=bev_shift)
+                if enable_bev_smoothing:
+                    bev_sidewalk = bev_smoother.smooth(predicted_mask_255, flow_dy=bev_shift)
+                else:
+                    bev_sidewalk = predicted_mask_255
                 t_bev = (time.time() - t_bev_start) * 1000
 
                 # IMPORTANT: run graph planner on predicted BEV too, so Dijkstra/DFS
@@ -512,6 +547,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     bev_sidewalk,
                     obstacle_zones_m=obstacle_zones if obstacle_zones else None,
                     gps_intent_family=planner_intent_family,
+                    manual_intent_override=manual_intent_family in {"straight", "left", "right"},
                 )
                 t_skel = nav_out.t_skeleton_ms
                 t_path = nav_out.t_path_ms
@@ -555,7 +591,10 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 else:
                     sidewalk_mask, road_mask = split_masks(seg)
                 sidewalk_mask = suppress_grass_in_mask(frame, sidewalk_mask)
-                sidewalk_mask, seg_iou = seg_smoother.smooth(sidewalk_mask, return_iou=True)
+                if enable_seg_smoothing:
+                    sidewalk_mask, seg_iou = seg_smoother.smooth(sidewalk_mask, return_iou=True)
+                else:
+                    seg_iou = 1.0
                 if seg_iou < SEG_IOU_FAIL:
                     seg_unstable_frames += 1
                 elif seg_iou < SEG_IOU_WARN:
@@ -601,8 +640,10 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     )
                 else:
                     bev_sidewalk = clean_sidewalk_mask(bev_sidewalk, DT_CORE_THRESH)
-                bev_sidewalk = anchor_ego_to_mask(bev_sidewalk, bev_size=BEV_SIZE)
-                bev_sidewalk = ego_connected_mask(bev_sidewalk, bev_size=BEV_SIZE)
+                if enable_ego_anchor:
+                    bev_sidewalk = anchor_ego_to_mask(bev_sidewalk, bev_size=BEV_SIZE)
+                if enable_ego_connected:
+                    bev_sidewalk = ego_connected_mask(bev_sidewalk, bev_size=BEV_SIZE)
 
                 # Predictor: blend predicted + real on compute frames
                 if predictor is not None:
@@ -610,7 +651,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     pass  # predictor blend happens after path extraction
 
                 bev_shift = speed_est * dt_frame * BEV_PIXELS_PER_METER_FORWARD
-                bev_sidewalk = bev_smoother.smooth(bev_sidewalk, flow_dy=bev_shift)
+                if enable_bev_smoothing:
+                    bev_sidewalk = bev_smoother.smooth(bev_sidewalk, flow_dy=bev_shift)
                 t_bev = (time.time() - t_bev_start) * 1000
 
                 # --- 4) Path extraction (medial axis + graph + spline) ---
@@ -629,6 +671,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     bev_sidewalk,
                     obstacle_zones_m=obstacle_zones if obstacle_zones else None,
                     gps_intent_family=planner_intent_family,
+                    manual_intent_override=manual_intent_family in {"straight", "left", "right"},
                 )
                 t_skel = nav_out.t_skeleton_ms
                 t_path = nav_out.t_path_ms
@@ -692,9 +735,15 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             # --- 7) Adaptive pure pursuit + speed ---
             t_cmd_start = time.time()
             speed_for_control = speed_buffer[-1] if speed_buffer else SPEED_TURN
+            manual_control_active = manual_intent_family in {"straight", "left", "right"}
+            manual_lookahead_scale = 1.0
+            if manual_control_active:
+                manual_lookahead_scale = 0.58 if manual_intent_family in {"left", "right"} else 0.75
             ctrl_out = pp_controller.update(
                 nav_out.path_model if nav_out.has_path else None,
                 speed_for_control,
+                lookahead_scale=manual_lookahead_scale,
+                disable_discont_hold=manual_control_active,
             )
 
             heading_raw = ctrl_out.steer_deg
@@ -725,10 +774,10 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     turn_lock_family = None
                     turn_lock_frames = 0
                     turn_lock_release_streak = 0
-            elif gps_intent_family in {"left", "right"} and nav_out.has_path:
-                desired_sign = -1.0 if gps_intent_family == "left" else 1.0
+            elif active_intent_family in {"left", "right"} and nav_out.has_path:
+                desired_sign = -1.0 if active_intent_family == "left" else 1.0
                 if desired_sign * heading_smoothed >= TURN_LOCK_ENTRY_DEG:
-                    turn_lock_family = gps_intent_family
+                    turn_lock_family = active_intent_family
                     turn_lock_frames = 0
                     turn_lock_release_streak = 0
                     print(f"[TurnLock] engaged={turn_lock_family}")
@@ -786,7 +835,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     heading_raw_deg=round(heading_raw, 3),
                     heading_smoothed_deg=round(heading_smoothed, 3),
                     command=command,
-                    gps_intent_family=gps_intent_family or "",
+                    gps_intent_family=scheduled_intent_family or "",
                     planner_intent_family=planner_intent_family or "",
                     turn_lock_family=turn_lock_family or "",
                     speed_raw_mps=round(speed_raw, 3),
@@ -863,7 +912,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
 
                 cam_vis = draw_heading_hud(cam_vis, command, heading_smoothed, speed_smoothed,
                                            cmd_color, fps, t_total,
-                                           detections=detections, gps_info=gps_info)
+                                           detections=detections, gps_info=gps_info,
+                                           active_intent=planner_intent_family)
 
                 bev_vis = draw_bev_hud(None, paths, best_idx, skel, bev_sidewalk,
                                        command, heading_smoothed, speed_smoothed,
@@ -872,7 +922,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                                        approval_confidence=getattr(nav_out, "approval_confidence", None),
                                        selected_template_family=getattr(nav_out, "selected_template_family", None),
                                        suggested_slowdown=getattr(nav_out, "suggested_slowdown", None),
-                                       obstacle_zones_m=obstacle_zones if obstacle_zones else None)
+                                       obstacle_zones_m=obstacle_zones if obstacle_zones else None,
+                                       active_intent=planner_intent_family)
 
                 display_h = 540
                 cam_display = cv2.resize(cam_vis,
@@ -908,32 +959,32 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                       flush=True)
 
             if not headless:
-                key = cv2.waitKey(1) & 0xFF
+                key = cv2.waitKeyEx(1)
                 if key == ord('q') or key == 27:
                     break
-                elif key == ord('s'):
-                    gps_intent_family = 'straight'
+                elif key in KEY_UP:
+                    manual_intent_family = 'straight'
                     if turn_lock_family is not None:
                         turn_lock_family = None
                         turn_lock_frames = 0
                         turn_lock_release_streak = 0
                     print(f"[Intent] straight")
-                elif key == ord('l'):
-                    gps_intent_family = 'left'
+                elif key in KEY_LEFT:
+                    manual_intent_family = 'left'
                     if turn_lock_family not in {None, 'left'}:
                         turn_lock_family = None
                         turn_lock_frames = 0
                         turn_lock_release_streak = 0
                     print(f"[Intent] left")
-                elif key == ord('r'):
-                    gps_intent_family = 'right'
+                elif key in KEY_RIGHT:
+                    manual_intent_family = 'right'
                     if turn_lock_family not in {None, 'right'}:
                         turn_lock_family = None
                         turn_lock_frames = 0
                         turn_lock_release_streak = 0
                     print(f"[Intent] right")
-                elif key == ord('c'):
-                    gps_intent_family = None
+                elif key in KEY_DOWN:
+                    manual_intent_family = None
                     if turn_lock_family is not None:
                         turn_lock_family = None
                         turn_lock_frames = 0
@@ -1015,6 +1066,16 @@ if __name__ == "__main__":
                         help="Run object detection every N processed frames")
     parser.add_argument("--stab-radius", type=int, default=STAB_SMOOTHING_RADIUS,
                         help="Frame stabilizer smoothing radius (higher = smoother, slower response)")
+    parser.add_argument("--no-stabilization", action="store_true",
+                        help="Disable frame stabilization")
+    parser.add_argument("--no-seg-smoothing", action="store_true",
+                        help="Disable segmentation temporal smoothing")
+    parser.add_argument("--no-bev-smoothing", action="store_true",
+                        help="Disable BEV temporal smoothing")
+    parser.add_argument("--no-ego-anchor", action="store_true",
+                        help="Disable thin ego-to-mask bridge in BEV")
+    parser.add_argument("--no-ego-connected", action="store_true",
+                        help="Disable keeping only the ego-connected BEV component")
     parser.add_argument("--mask-alpha", type=float, default=MASK_SMOOTH_ALPHA,
                         help="Segmentation temporal EMA alpha (0-1)")
     parser.add_argument("--bev-alpha", type=float, default=BEV_SMOOTH_ALPHA,
@@ -1100,6 +1161,11 @@ if __name__ == "__main__":
             model_dir=args.model_dir,
             output_video_path=args.output_video,
             seg_conf_thresh=args.seg_conf_thresh,
+            enable_stabilization=not args.no_stabilization,
+            enable_seg_smoothing=not args.no_seg_smoothing,
+            enable_bev_smoothing=not args.no_bev_smoothing,
+            enable_ego_anchor=not args.no_ego_anchor,
+            enable_ego_connected=not args.no_ego_connected,
             intent_schedule_path=args.intent_schedule,
         )
 

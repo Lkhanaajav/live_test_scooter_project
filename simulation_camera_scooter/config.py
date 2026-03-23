@@ -34,15 +34,15 @@ DEFAULT_SRC_POINTS = np.array(
 
 DEFAULT_DST_POINTS = np.array(
     [
-        [100, 576],  # bottom-left
-        [500, 576],  # bottom-right
-        [400, 120],  # top-right
-        [200, 120],  # top-left
+        [60, 638],  # bottom-left
+        [300, 638],  # bottom-right
+        [240, 132],  # top-right
+        [120, 132],  # top-left
     ],
     dtype=np.float32,
 )
 
-BEV_SIZE = (600, 600)
+BEV_SIZE = (360, 660)
 TRIM_BOTTOM = 0           # was 20 — tier1 tuning: keep near-field BEV pixels
 CALIBRATION_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -178,14 +178,14 @@ LOW_POWER_PATH_SCALE = 0.65
 # =============================================================================
 # Real-time BEV navigation module (medial-axis + adaptive pure pursuit)
 # =============================================================================
-NAV_BEV_FORWARD_M = 10.0
-NAV_BEV_LATERAL_M = 10.0
+NAV_BEV_FORWARD_M = 11.0
+NAV_BEV_LATERAL_M = 6.0
 NAV_WORK_GRID_BASE = 220
 
 # BEV motion compensation: forward pixel displacement per meter of travel
-# BEV_SIZE[1]=600 px covers NAV_BEV_FORWARD_M=10 m → 60 px/m
+# BEV_SIZE[1]=540 px covers NAV_BEV_FORWARD_M=9 m → 60 px/m
 BEV_PIXELS_PER_METER_FORWARD = BEV_SIZE[1] / NAV_BEV_FORWARD_M
-# BEV_SIZE[0]=600 px covers NAV_BEV_LATERAL_M=10 m → 60 px/m
+# BEV_SIZE[0]=360 px covers NAV_BEV_LATERAL_M=6 m → 60 px/m
 BEV_PIXELS_PER_METER_LATERAL = BEV_SIZE[0] / NAV_BEV_LATERAL_M
 
 # =============================================================================

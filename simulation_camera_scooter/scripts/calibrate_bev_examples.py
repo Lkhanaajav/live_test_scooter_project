@@ -232,6 +232,9 @@ def main() -> int:
                 "source_width": int(raw.shape[1]),
                 "source_height": int(raw.shape[0]),
                 "source_frame_id": int(example.frame_id),
+                "bev_width": int(BEV_SIZE[0]),
+                "bev_height": int(BEV_SIZE[1]),
+                "dst_points": DEFAULT_DST_POINTS.astype(float).tolist(),
             }
             Path(CALIBRATION_META_FILE).write_text(json.dumps(meta, indent=2), encoding="utf-8")
             ratio = _width_ratio(src)

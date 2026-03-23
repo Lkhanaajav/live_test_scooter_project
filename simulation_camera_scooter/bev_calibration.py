@@ -144,9 +144,21 @@ def run_calibration(camera_id=0, video_path=None, start_frame=0):
             np.save("bev_Hinv.npy", Hinv)
             print(f"  Also saved bev_H.npy and bev_Hinv.npy")
             ego_x_frac = float(np.clip(float(ego_x_px[0]) / max(1.0, float(BEV_SIZE[0] - 1)), 0.05, 0.95))
+            calib_h, calib_w = frame_holder[0].shape[:2]
             with open(CALIBRATION_META_FILE, "w", encoding="utf-8") as f:
-                json.dump({"ego_x_frac": ego_x_frac}, f, indent=2)
-            print(f"  Saved ego anchor to {CALIBRATION_META_FILE} (ego_x_frac={ego_x_frac:.4f})")
+                json.dump(
+                    {
+                        "ego_x_frac": ego_x_frac,
+                        "source_width": int(calib_w),
+                        "source_height": int(calib_h),
+                    },
+                    f,
+                    indent=2,
+                )
+            print(
+                f"  Saved ego anchor to {CALIBRATION_META_FILE} "
+                f"(ego_x_frac={ego_x_frac:.4f}, source={calib_w}x{calib_h})"
+            )
             break
         elif key == ord('q') or key == 27:
             print("  Calibration cancelled.")
@@ -156,7 +168,7 @@ def run_calibration(camera_id=0, video_path=None, start_frame=0):
     cv2.destroyAllWindows()
 
 
-def load_bev_params():
+def load_bev_params(frame_size=None):
     """Load calibration or use defaults. Returns (H, Hinv, src_points)."""
     if os.path.exists(CALIBRATION_FILE):
         src = np.load(CALIBRATION_FILE).astype(np.float32)
@@ -164,7 +176,46 @@ def load_bev_params():
     else:
         src = DEFAULT_SRC_POINTS
         print("Using default BEV calibration (scooter camera). Run --calibrate for iPhone.")
+
+    if frame_size is not None and len(frame_size) == 2:
+        frame_w = max(1.0, float(frame_size[0]))
+        frame_h = max(1.0, float(frame_size[1]))
+        source_w = None
+        source_h = None
+        if os.path.exists(CALIBRATION_META_FILE):
+            try:
+                with open(CALIBRATION_META_FILE, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                source_w = float(meta.get("source_width") or 0.0) or None
+                source_h = float(meta.get("source_height") or 0.0) or None
+            except Exception:
+                source_w = None
+                source_h = None
+
+        if source_w and source_h and (abs(source_w - frame_w) > 1 or abs(source_h - frame_h) > 1):
+            sx = frame_w / source_w
+            sy = frame_h / source_h
+            src = src.copy()
+            src[:, 0] *= sx
+            src[:, 1] *= sy
+            print(
+                f"[BEV] Scaled calibration points from {int(source_w)}x{int(source_h)} "
+                f"to {int(frame_w)}x{int(frame_h)}"
+            )
     dst = DEFAULT_DST_POINTS
+    if os.path.exists(CALIBRATION_META_FILE):
+        try:
+            with open(CALIBRATION_META_FILE, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            meta_bev_w = int(meta.get("bev_width") or 0)
+            meta_bev_h = int(meta.get("bev_height") or 0)
+            if meta_bev_w and meta_bev_h and (meta_bev_w != int(BEV_SIZE[0]) or meta_bev_h != int(BEV_SIZE[1])):
+                print(
+                    f"[BEV] WARNING: Calibration was created with BEV_SIZE={meta_bev_w}x{meta_bev_h} "
+                    f"but runtime is using {int(BEV_SIZE[0])}x{int(BEV_SIZE[1])}."
+                )
+        except Exception:
+            pass
     H = cv2.getPerspectiveTransform(src, dst)
     # Validate homography is numerically stable
     det = np.linalg.det(H)

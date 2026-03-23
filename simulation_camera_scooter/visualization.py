@@ -19,13 +19,14 @@ from config import (
 
 
 def draw_heading_hud(img, command, angle_deg, speed_mps, color, fps, pipeline_ms,
-                     detections=None, gps_info=None):
+                     detections=None, gps_info=None, active_intent=None):
     """Draw heading, speed, obstacles, and GPS on the camera view."""
     h, w = img.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
+    intent_text = str(active_intent or "clear").strip().lower() or "clear"
 
     # ---- Large command text at top center ----
-    text = command
+    text = f"{command} [{intent_text.upper()}]"
     (tw, th), baseline = cv2.getTextSize(text, font, 1.8, 4)
     tx = (w - tw) // 2
     ty = 60
@@ -79,6 +80,12 @@ def draw_heading_hud(img, command, angle_deg, speed_mps, color, fps, pipeline_ms
             cv2.putText(img, line, (w - 350, 30 + i * 22),
                         font, 0.5, (0, 200, 255), 1, cv2.LINE_AA)
 
+    intent_text = str(active_intent or "clear").strip().lower() or "clear"
+    intent_line = f"Intent: {intent_text.upper()}"
+    (iw, ih), ib = cv2.getTextSize(intent_line, font, 0.95, 3)
+    cv2.rectangle(img, (8, 8), (24 + iw, 24 + ih + ib), (0, 0, 0), -1)
+    cv2.putText(img, intent_line, (16, 16 + ih), font, 0.95, (0, 255, 255), 3, cv2.LINE_AA)
+
     # ---- FPS / latency at bottom left ----
     info_lines = [
         f"FPS: {fps:.1f}",
@@ -106,6 +113,7 @@ def draw_bev_hud(
     selected_template_family=None,
     suggested_slowdown=None,
     obstacle_zones_m=None,
+    active_intent=None,
 ):
     """Draw BEV visualization with paths, heading, and speed."""
     h_bev, w_bev = bev_sidewalk.shape
@@ -144,7 +152,8 @@ def draw_bev_hud(
     cv2.rectangle(vis, (0, 0), (w_bev, 110), (0, 0, 0), -1)
 
     # Command + speed text
-    cv2.putText(vis, f"{command} ({angle_deg:+.1f} deg)", (10, 25),
+    intent_text = str(active_intent or "clear").strip().lower() or "clear"
+    cv2.putText(vis, f"{command} [{intent_text.upper()}] ({angle_deg:+.1f} deg)", (10, 25),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     cv2.putText(vis, f"Speed: {speed_mps:.2f} m/s", (10, 52),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
@@ -159,6 +168,14 @@ def draw_bev_hud(
         stxt = f"{float(suggested_slowdown):.2f}" if suggested_slowdown is not None else "-"
         cv2.putText(vis, f"Tpl: {ttxt} | Conf: {ctxt} | Slow: {stxt}", (10, 100),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 215, 120), 1, cv2.LINE_AA)
+    intent_text = str(active_intent or "clear").strip().lower() or "clear"
+    intent_line = f"Intent: {intent_text.upper()}"
+    (iw, ih), ib = cv2.getTextSize(intent_line, cv2.FONT_HERSHEY_SIMPLEX, 0.60, 2)
+    x0 = max(6, w_bev - iw - 24)
+    y0 = 6
+    cv2.rectangle(vis, (x0, y0), (x0 + iw + 16, y0 + ih + ib + 12), (0, 0, 0), -1)
+    cv2.putText(vis, intent_line, (x0 + 8, y0 + ih + 4),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.60, (0, 255, 255), 2, cv2.LINE_AA)
 
     # Obstacle exclusion zone circles (Phase 03.1) -- only drawn when provided
     if obstacle_zones_m:
