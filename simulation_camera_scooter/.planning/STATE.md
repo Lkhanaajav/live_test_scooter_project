@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 11.1-02-PLAN.md (Waypoint-turn core with dual-gate approval)
-last_updated: "2026-03-23T23:17:00.000Z"
-last_activity: 2026-03-23 — implemented waypoint-turn planner core with BEV mask-scanned target selection and Hermite path fitting
+stopped_at: Completed 11.1-03-PLAN.md (Waypoint-turn runtime integration with lock state and speed gating)
+last_updated: "2026-03-23T23:29:17.000Z"
+last_activity: 2026-03-23 — wired waypoint-turn planner into BEVPathExtractor.process() with maneuver lock and low-confidence speed gating
 progress:
   total_phases: 13
   completed_phases: 3
   total_plans: 19
-  completed_plans: 10
-  percent: 53
+  completed_plans: 11
+  percent: 58
 ---
 
 ---
@@ -136,6 +136,7 @@ Progress: 3 completed phases (01, 02, 03.1); Phase 7 foundation underway under 0
 | Phase 03.1 P03.1-04 | 15 | 2 tasks | 2 files |
 | Phase 11.1 P01 | 5 | 2 tasks | 4 files |
 | Phase 11.1 P02 | 10 | 2 tasks | 3 files |
+| Phase 11.1 P03 | 8 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -168,6 +169,10 @@ Recent decisions affecting current work:
 - [Phase 11.1-02]: Asymmetric pixel count as commanded-side support metric avoids false positives on narrow centered corridors
 - [Phase 11.1-02]: Decision band widened to 2.0-7.0m to match real BEV turn opening visibility
 - [Phase 11.1-02]: Cubic Hermite smoothstep for path fitting avoids polynomial overshoot
+- [Phase 11.1-03]: Early-return pattern for waypoint-turn: _try_waypoint_turn() returns Optional[PathPlanResult] before template logic, None to fall through
+- [Phase 11.1-03]: Override injection in _build_result: 4 optional override params inject waypoint-turn diagnostics without template_approval
+- [Phase 11.1-03]: Unsupported commanded turns emit is_low_confidence=True with slowdown to reuse existing speed safety infrastructure
+- [Phase 11.1-03]: Maneuver lock uses frame counters (not timers) for deterministic testability
 
 ### Roadmap Evolution
 
@@ -196,8 +201,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-23T23:17:00.000Z
-Stopped at: Completed 11.1-02-PLAN.md (Waypoint-turn core with dual-gate approval)
+Last session: 2026-03-23T23:29:17.000Z
+Stopped at: Completed 11.1-03-PLAN.md (Waypoint-turn runtime integration with lock state and speed gating)
 
 ## Work Log
 
