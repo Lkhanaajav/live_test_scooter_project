@@ -13,7 +13,17 @@ import pytest
 # Ensure the project root is on the path so modules can be imported.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import config
 from realtime_nav_core import BEVPathExtractor, PathExtractorConfig, CubicPathModel
+
+
+@pytest.fixture(autouse=True)
+def _pin_ego_center():
+    """Pin BEV_EGO_X_FRAC to 0.5 so tests don't depend on calibration files."""
+    original = config.BEV_EGO_X_FRAC
+    config.BEV_EGO_X_FRAC = 0.5
+    yield
+    config.BEV_EGO_X_FRAC = original
 
 
 @pytest.fixture
@@ -132,3 +142,65 @@ def mock_detections():
             "distance_m": 0.8,
         },
     ]
+
+
+# ---------------------------------------------------------------------------
+# Phase 11.1: Waypoint-turn planner fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def commanded_left_bev_mask():
+    """220x220 BEV mask: straight corridor + left-side turn opening.
+
+    Forward decision band (rows ~60-120, i.e. ~3-5 m forward) has drivable
+    surface extending to the left, creating a commanded-left support cluster.
+    """
+    mask = np.zeros((220, 220), dtype=np.uint8)
+    # Straight corridor (center)
+    mask[:, 80:140] = 255
+    # Left turn opening in the forward decision band (rows 40-120)
+    mask[40:120, 20:80] = 255
+    return mask
+
+
+@pytest.fixture
+def commanded_right_bev_mask():
+    """220x220 BEV mask: straight corridor + right-side turn opening.
+
+    Forward decision band has drivable surface extending to the right,
+    creating a commanded-right support cluster.
+    """
+    mask = np.zeros((220, 220), dtype=np.uint8)
+    # Straight corridor (center)
+    mask[:, 80:140] = 255
+    # Right turn opening in the forward decision band (rows 40-120)
+    mask[40:120, 140:200] = 255
+    return mask
+
+
+@pytest.fixture
+def unsupported_turn_bev_mask():
+    """220x220 BEV mask with fragmented side support.
+
+    Narrow corridor with small disconnected pockets on both sides --
+    not enough contiguous support for a commanded turn in either direction.
+    """
+    mask = np.zeros((220, 220), dtype=np.uint8)
+    # Narrow center corridor
+    mask[:, 95:125] = 255
+    # Small isolated pockets (too small / disconnected for turn support)
+    mask[80:90, 40:60] = 255
+    mask[100:108, 160:175] = 255
+    return mask
+
+
+@pytest.fixture
+def no_intent_straight_bev_mask():
+    """220x220 BEV mask: clean straight corridor, no turn openings.
+
+    Used for verifying that no-intent and straight-intent leave
+    the commanded-turn module inactive.
+    """
+    mask = np.zeros((220, 220), dtype=np.uint8)
+    mask[:, 75:145] = 255
+    return mask

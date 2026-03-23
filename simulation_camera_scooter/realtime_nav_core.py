@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from config import BEV_OBSTACLE_PENALTY_WEIGHT, PATH_SMOOTH_ENABLED, DT_CORRIDOR_ENABLED, bev_ego_x_px
+from config import BEV_OBSTACLE_PENALTY_WEIGHT, PATH_SMOOTH_ENABLED, DT_CORRIDOR_ENABLED, DT_PLANNER_ENABLED, bev_ego_x_px
 from template_path_planner import (
     CorridorConfig,
     TemplateApprovalResult,
@@ -43,6 +43,14 @@ try:
 except ImportError:
     _HAS_DT_CORRIDOR = False
     get_default_dt_corridor = None  # type: ignore[assignment,misc]
+
+try:
+    from dt_path_planner import DtPathPlanner, DtPlannerConfig
+    _HAS_DT_PLANNER = True
+except ImportError:
+    _HAS_DT_PLANNER = False
+    DtPathPlanner = None  # type: ignore[assignment,misc]
+    DtPlannerConfig = None  # type: ignore[assignment,misc]
 
 
 def _odd(v: int) -> int:
@@ -185,6 +193,7 @@ class PathExtractorConfig:
     template_planner_enabled: bool = True
     template_planner_cfg: TemplatePlannerConfig = field(default_factory=TemplatePlannerConfig)
     endpoint_arc_enabled: bool = True  # replace raw graph polyline with smooth cubic to detected endpoint
+    use_dt_planner: bool = DT_PLANNER_ENABLED  # use clean DT-ridge planner (bypasses all skeleton/template logic)
 
 
 @dataclass
@@ -344,8 +353,6 @@ class BEVPathExtractor:
         self.branch_hold_counter: int = 0
         self.prev_best_path_m: Optional[np.ndarray] = None
         self.prev_template_family: str = ""
-        self.manual_lock_intent: str = ""
-        self.manual_lock_path_m: Optional[np.ndarray] = None
         self.no_path_counter: int = 0
         self.prev_mask_occ_ratio: float = 0.0
         self.obstacle_zones: list = []  # OBS Phase 03.1: [(fwd_m, lat_m, rad_m), ...]
@@ -354,6 +361,23 @@ class BEVPathExtractor:
             _PathTemporalSmoother() if _HAS_PATH_SMOOTHER and PATH_SMOOTH_ENABLED else None
         )
         self._dt_corridor = get_default_dt_corridor() if (_HAS_DT_CORRIDOR and DT_CORRIDOR_ENABLED) else None
+
+        # Clean DT-ridge planner (when enabled, bypasses all skeleton/template logic)
+        self._dt_planner: Optional[object] = None
+        if _HAS_DT_PLANNER and self.cfg.use_dt_planner:
+            from config import DT_PLANNER_HOLD_FRAMES
+            self._dt_planner = DtPathPlanner(DtPlannerConfig(
+                bev_forward_m=self.cfg.bev_forward_m,
+                bev_lateral_m=self.cfg.bev_lateral_m,
+                work_size=self.cfg.work_size,
+                spline_lambda=self.cfg.spline_lambda,
+                spline_kappa_max=self.cfg.spline_kappa_max_m_inv,
+                min_path_len_m=self.cfg.min_path_len_m,
+                hold_frames=DT_PLANNER_HOLD_FRAMES,
+                path_horizon_m=self.cfg.path_horizon_m,
+                path_sample_ds_m=self.cfg.path_sample_ds_m,
+                ego_anchor_blend_dist_m=self.cfg.ego_anchor_blend_dist_m,
+            ))
 
     def _make_template_planner_cfg(self) -> TemplatePlannerConfig:
         base = self.cfg.template_planner_cfg
@@ -1477,91 +1501,6 @@ class BEVPathExtractor:
             pts = np.vstack([pts, np.asarray(ext, dtype=np.float32)])
         return pts
 
-    def _extract_manual_endpoint_path(
-        self,
-        mask_255: np.ndarray,
-        gps_intent_family: str | None,
-    ) -> np.ndarray:
-        """Endpoint-first manual path from BEV mask geometry, without skeleton.
-
-        Manual left/right should behave like a human-chosen turn instruction:
-        find the requested side opening in a forward decision band, take the
-        midpoint of that span as the endpoint, then fit one clean arc to it.
-        """
-        intent = str(gps_intent_family or "").strip().lower()
-        if intent not in {"left", "right", "straight"}:
-            return np.zeros((0, 2), dtype=np.float32)
-
-        mask = (mask_255 > 0).astype(np.uint8)
-        if cv2.countNonZero(mask) == 0:
-            return np.zeros((0, 2), dtype=np.float32)
-
-        h, w = mask.shape
-        row_step = max(2, int(self.cfg.fallback_row_step_px))
-        min_row_pixels = max(int(self.cfg.fallback_min_row_pixels), 10)
-        ego_x = float(bev_ego_x_px(w))
-        decision_center_m = 2.2 if intent in {"left", "right"} else 2.6
-        decision_half_band_m = 0.55
-        y_center = int(round((1.0 - decision_center_m / max(1e-6, self.cfg.bev_forward_m)) * max(1.0, float(h - 1))))
-        half_band_px = max(6, int(round(decision_half_band_m * (h - 1) / max(1e-6, self.cfg.bev_forward_m))))
-        y0 = max(0, y_center - half_band_px)
-        y1 = min(h - 1, y_center + half_band_px)
-
-        endpoint_candidates_px: List[Tuple[float, float]] = []
-
-        for y in range(y1, y0 - 1, -row_step):
-            xs = np.where(mask[y] > 0)[0]
-            if len(xs) < min_row_pixels:
-                continue
-
-            split_idx = np.where(np.diff(xs) > 1)[0]
-            starts = np.r_[0, split_idx + 1]
-            ends = np.r_[split_idx, len(xs) - 1]
-            spans: List[Tuple[int, int]] = []
-            for s, e in zip(starts, ends):
-                left = int(xs[int(s)])
-                right = int(xs[int(e)])
-                if (right - left + 1) >= min_row_pixels:
-                    spans.append((left, right))
-            if not spans:
-                continue
-
-            if intent == "left":
-                left, right = min(spans, key=lambda span: 0.5 * (span[0] + span[1]))
-            elif intent == "right":
-                left, right = max(spans, key=lambda span: 0.5 * (span[0] + span[1]))
-            else:
-                left, right = min(spans, key=lambda span: abs(0.5 * (span[0] + span[1]) - ego_x))
-            x_mid = 0.5 * float(left + right)
-            endpoint_candidates_px.append((x_mid, float(y)))
-
-        if len(endpoint_candidates_px) < 3:
-            return np.zeros((0, 2), dtype=np.float32)
-
-        endpoint_candidates_m = self._metric_from_pixel(np.asarray(endpoint_candidates_px, dtype=np.float32), mask.shape)
-        order = np.argsort(endpoint_candidates_m[:, 0], kind="stable")
-        endpoint_candidates_m = endpoint_candidates_m[order]
-        endpoint_candidates_m[:, 0] = np.maximum.accumulate(endpoint_candidates_m[:, 0])
-
-        end_x = float(np.median(endpoint_candidates_m[:, 0]))
-        end_y = float(np.median(endpoint_candidates_m[:, 1]))
-
-        if intent in {"left", "right"}:
-            sign = -1.0 if intent == "left" else 1.0
-            if sign * end_y < 0.10:
-                return np.zeros((0, 2), dtype=np.float32)
-            end_y = sign * max(0.30, min(0.95, abs(end_y)))
-            end_heading = sign * max(math.radians(10.0), min(math.radians(24.0), math.atan2(abs(end_y), max(0.8, end_x))))
-            end_x = float(np.clip(end_x, 1.4, min(3.2, self.cfg.path_horizon_m)))
-        else:
-            end_y = float(np.clip(end_y, -0.18, 0.18))
-            end_heading = float(np.clip(math.atan2(end_y, max(0.8, end_x)), -math.radians(6.0), math.radians(6.0)))
-
-        arc = self._smooth_endpoint_arc(end_x, end_y, end_heading)
-        if len(arc) < 2 or not self._path_matches_intent(arc, gps_intent_family):
-            return np.zeros((0, 2), dtype=np.float32)
-        return arc.astype(np.float32)
-
     def _fallback_centerline(self, mask_255: np.ndarray) -> np.ndarray:
         if not self.cfg.fallback_enabled:
             return np.zeros((0, 2), dtype=np.float32)
@@ -1760,14 +1699,6 @@ class BEVPathExtractor:
         held[:, 1] = np.clip(held[:, 1], -lat_clip, lat_clip)
         return _resample_polyline(held, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
 
-    def _hold_manual_lock_path(self) -> np.ndarray:
-        if self.manual_lock_path_m is None or len(self.manual_lock_path_m) < 2:
-            return np.zeros((0, 2), dtype=np.float32)
-        held = self.manual_lock_path_m.astype(np.float32).copy()
-        held[:, 0] = np.maximum.accumulate(held[:, 0])
-        held[:, 0] = np.clip(held[:, 0], 0.0, float(self.cfg.path_horizon_m))
-        return _resample_polyline(held, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
-
     def _smooth_endpoint_arc(self, end_x_m: float, end_y_m: float, end_heading_rad: float) -> np.ndarray:
         """Fit a clean cubic from ego (0,0) to a skeleton-detected endpoint.
 
@@ -1795,36 +1726,6 @@ class BEVPathExtractor:
         y = (a2 * x * x + a3 * x * x * x).astype(np.float32)
         pts = np.stack([x, y], axis=1)
         return _resample_polyline(pts, ds)
-
-    def _make_manual_intent_arc(
-        self,
-        ref_path_m: np.ndarray,
-        gps_intent_family: str | None,
-    ) -> np.ndarray:
-        """Build a stronger near-field turn arc for manual override mode.
-
-        This keeps manual left/right commands visually and dynamically obvious
-        near ego, instead of waiting for a far-field path to bend later.
-        """
-        if ref_path_m is None or len(ref_path_m) < 2:
-            return np.zeros((0, 2), dtype=np.float32)
-
-        intent = str(gps_intent_family or "").strip().lower()
-        if intent not in {"left", "right", "straight"}:
-            return np.zeros((0, 2), dtype=np.float32)
-
-        end_x = float(ref_path_m[-1, 0])
-        end_y = float(ref_path_m[-1, 1])
-        end_heading = float(_polyline_end_heading(ref_path_m))
-
-        if intent == "straight":
-            return self._smooth_endpoint_arc(end_x, 0.0, 0.0)
-
-        sign = -1.0 if intent == "left" else 1.0
-        L = float(np.clip(end_x * 0.65, 1.2, min(3.0, max(1.2, self.cfg.path_horizon_m * 0.45))))
-        target_y = sign * max(0.55, abs(end_y) * 1.35)
-        target_heading = sign * max(math.radians(16.0), abs(end_heading))
-        return self._smooth_endpoint_arc(L, target_y, target_heading)
 
     def _path_matches_intent(self, pts_m: np.ndarray, gps_intent_family: str | None) -> bool:
         if pts_m is None or len(pts_m) < 2:
@@ -1899,44 +1800,11 @@ class BEVPathExtractor:
         pts[use, 1] = (1.0 - blend) * pts[use, 1] + blend * ref_y
         return pts
 
-    def _bias_corridor_path_to_intent(
-        self,
-        pts_m: np.ndarray,
-        width_mean_m: float,
-        gps_intent_family: str | None,
-    ) -> np.ndarray:
-        """Shift a smooth corridor centerline toward the requested side.
-
-        This keeps the DT-corridor shape but moves it off the centerline so a
-        manual left/right command can create an actual turn decision.
-        """
-        if pts_m is None or len(pts_m) < 2:
-            return np.zeros((0, 2), dtype=np.float32)
-
-        intent = str(gps_intent_family or "").strip().lower()
-        if intent not in {"left", "right"}:
-            return pts_m.astype(np.float32)
-
-        pts = pts_m.astype(np.float32).copy()
-        sign = -1.0 if intent == "left" else 1.0
-        width_mean_m = float(max(0.30, width_mean_m))
-        max_shift = float(np.clip(0.32 * width_mean_m, 0.18, 0.65))
-        lateral_cap = float(np.clip(0.45 * width_mean_m, 0.22, 0.90))
-
-        # Start centered at ego, then move toward the requested side over the
-        # first ~2 m so control responds early without creating a sideways jump.
-        ramp = np.clip(pts[:, 0] / 1.8, 0.0, 1.0).astype(np.float32)
-        desired = sign * max_shift * ramp
-        pts[:, 1] = np.clip(pts[:, 1] + desired, -lateral_cap, lateral_cap)
-        pts[0, 1] = 0.0
-        return pts
-
     def _extract_corridor_centerline(
         self,
         mask_255: np.ndarray,
         ref_path_m: np.ndarray,
         gps_intent_family: str | None,
-        manual_intent_override: bool = False,
     ) -> Tuple[np.ndarray, float, float, float, float]:
         if self._dt_corridor is None:
             return np.zeros((0, 2), dtype=np.float32), 0.0, 0.0, 0.0, 0.0
@@ -1980,8 +1848,6 @@ class BEVPathExtractor:
                 blend_span_m=1.4 if strong_corridor else 1.8,
                 ref_weight_near=0.22 if strong_corridor else 0.40,
             )
-        if manual_intent_override:
-            pts_m = self._bias_corridor_path_to_intent(pts_m, width_mean, gps_intent_family)
         return pts_m.astype(np.float32), confidence, valid_ratio, span, width_cv
 
     def _commit_selected_path(self, best_path_m: np.ndarray, path_source: str, template_family: str = "") -> None:
@@ -2000,24 +1866,15 @@ class BEVPathExtractor:
     # -------------------------------------------------------------------------
     # Public API
     # -------------------------------------------------------------------------
-    def process(
-        self,
-        bev_mask_255: np.ndarray,
-        obstacle_zones_m=None,
-        gps_intent_family: str | None = None,
-        manual_intent_override: bool = False,
-    ) -> PathPlanResult:
+    def process(self, bev_mask_255: np.ndarray, obstacle_zones_m=None, gps_intent_family: str | None = None) -> PathPlanResult:
+        # DT-ridge planner: bypass all skeleton/template/fallback logic
+        if self._dt_planner is not None:
+            obs = list(obstacle_zones_m) if obstacle_zones_m else None
+            return self._dt_planner.plan(bev_mask_255, obstacle_zones_m=obs)  # type: ignore[attr-defined]
+
         t0 = time.time()
         self.obstacle_zones = list(obstacle_zones_m) if obstacle_zones_m else []
         orig_h, orig_w = bev_mask_255.shape
-        intent = str(gps_intent_family or "").strip().lower()
-        manual_override_active = bool(manual_intent_override) and intent in {"left", "right", "straight"}
-        if not manual_override_active:
-            self.manual_lock_intent = ""
-            self.manual_lock_path_m = None
-        elif self.manual_lock_intent not in {"left", "right", "straight"} or self.manual_lock_intent != intent:
-            self.manual_lock_intent = intent
-            self.manual_lock_path_m = None
 
         mask = self._preprocess(bev_mask_255)
         mask_nonzero = int(cv2.countNonZero(mask))
@@ -2037,57 +1894,9 @@ class BEVPathExtractor:
             or mask_occ_ratio < float(self.cfg.low_evidence_occ_ratio)
             or forward_reach_m < float(self.cfg.low_evidence_min_forward_m)
         )
-
-        if manual_override_active:
-            locked_path = self._hold_manual_lock_path()
-            if len(locked_path) >= 2:
-                locked_model = self._fit_regularized_cubic(locked_path)
-                if locked_model is not None:
-                    return self._build_result(
-                        orig_shape_hw=(orig_h, orig_w),
-                        best_path_m=locked_path,
-                        path_model=locked_model,
-                        cand_paths_m=[locked_path.astype(np.float32)],
-                        cand_lens_m=[float(_polyline_length_m(locked_path))],
-                        best_idx=0,
-                        skel_work=None,
-                        graph_nodes=0,
-                        graph_edges=0,
-                        t_skeleton_ms=0.0,
-                        t_path_ms=0.0,
-                        path_source="manual_locked",
-                        mask_occ_ratio=mask_occ_ratio,
-                    )
-            manual_endpoint_path = self._extract_manual_endpoint_path(mask, gps_intent_family)
-            if len(manual_endpoint_path) >= 2:
-                manual_endpoint_model = self._fit_regularized_cubic(manual_endpoint_path)
-                if manual_endpoint_model is not None:
-                    manual_endpoint_model = self._apply_path_smoothing(
-                        manual_endpoint_model,
-                        0.85,
-                        "manual_endpoint",
-                    )
-                    self.manual_lock_path_m = manual_endpoint_path.astype(np.float32).copy()
-                    self._commit_selected_path(manual_endpoint_path, path_source="manual_endpoint")
-                    return self._build_result(
-                        orig_shape_hw=(orig_h, orig_w),
-                        best_path_m=manual_endpoint_path,
-                        path_model=manual_endpoint_model,
-                        cand_paths_m=[manual_endpoint_path.astype(np.float32)],
-                        cand_lens_m=[float(_polyline_length_m(manual_endpoint_path))],
-                        best_idx=0,
-                        skel_work=None,
-                        graph_nodes=0,
-                        graph_edges=0,
-                        t_skeleton_ms=0.0,
-                        t_path_ms=0.0,
-                        path_source="manual_endpoint",
-                        mask_occ_ratio=mask_occ_ratio,
-                    )
-
         t_pre = time.time()
         template_approval = None
-        if bool(getattr(self.cfg, "template_planner_enabled", True)) and not manual_override_active:
+        if bool(getattr(self.cfg, "template_planner_enabled", True)):
             template_cfg = self._make_template_planner_cfg()
             template_approval = approve_template_bank(
                 corridor_from_mask(mask, template_cfg.corridor_cfg),
@@ -2102,9 +1911,7 @@ class BEVPathExtractor:
                     _resample_polyline(template_approval.selected_path_m, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
                 )
                 path_model = self._fit_regularized_cubic(best_path_m)
-                if path_model is not None and (
-                    not manual_override_active or self._path_matches_intent(best_path_m, gps_intent_family)
-                ):
+                if path_model is not None:
                     # Research impl: temporal path smoothing on cubic coefficients (Idea 3)
                     path_model = self._apply_path_smoothing(
                         path_model,
@@ -2138,7 +1945,7 @@ class BEVPathExtractor:
                         template_approval=template_approval,
                     )
 
-            if template_approval.recommend_hold and not manual_override_active:
+            if template_approval.recommend_hold:
                 best_path_m = np.zeros((0, 2), dtype=np.float32)
                 path_model = None
                 path_source = "none"
@@ -2205,7 +2012,7 @@ class BEVPathExtractor:
                 )
             )
         skel_cand_path = self._fallback_skeleton_geodesic(skel_bin)
-        if (not manual_override_active) and len(candidates) <= 1 and len(skel_cand_path) >= 2:
+        if len(candidates) <= 1 and len(skel_cand_path) >= 2:
             candidates.append(
                 PathCandidate(
                     points_m=skel_cand_path.astype(np.float32),
@@ -2217,52 +2024,34 @@ class BEVPathExtractor:
                 )
             )
         candidates = self._score_candidates(candidates)
-        if manual_override_active:
-            matching_candidates = [
-                cand for cand in candidates
-                if self._path_matches_intent(cand.points_m, gps_intent_family)
-            ]
-            if matching_candidates:
-                matching_candidates.sort(key=lambda cand: cand.cost)
-                candidates = matching_candidates
-                self.prev_first_edge_sig = None
-                self.branch_hold_counter = 0
-                best_idx = 0
-            else:
-                candidates = self._apply_intent_bias(candidates, gps_intent_family)
-                best_idx = 0 if candidates else -1
-                self.prev_first_edge_sig = None
-                self.branch_hold_counter = 0
-        else:
-            candidates = self._apply_intent_bias(candidates, gps_intent_family)
-            best_idx = self._apply_hysteresis(candidates)
+        candidates = self._apply_intent_bias(candidates, gps_intent_family)
+        best_idx = self._apply_hysteresis(candidates)
 
         # If graph picks a short near-ego side branch while a centered skeleton
         # geodesic candidate exists, force skeleton to avoid false early turns.
-        if not manual_override_active:
-            skel_idx = -1
-            for i, c in enumerate(candidates):
-                if tuple(c.first_edge_sig) == self._skeleton_fallback_sig:
-                    skel_idx = i
-                    break
+        skel_idx = -1
+        for i, c in enumerate(candidates):
+            if tuple(c.first_edge_sig) == self._skeleton_fallback_sig:
+                skel_idx = i
+                break
+        if (
+            best_idx >= 0
+            and skel_idx >= 0
+            and best_idx != skel_idx
+            and tuple(candidates[best_idx].first_edge_sig) != self._fallback_sig
+        ):
+            g = candidates[best_idx]
+            s = candidates[skel_idx]
+            g_probe = min(1.2, max(0.4, float(g.progress_m)))
+            s_probe = min(1.2, max(0.4, float(s.progress_m)))
+            g_lat = abs(self._path_lateral_at_x(g.points_m, g_probe))
+            s_lat = abs(self._path_lateral_at_x(s.points_m, s_probe))
             if (
-                best_idx >= 0
-                and skel_idx >= 0
-                and best_idx != skel_idx
-                and tuple(candidates[best_idx].first_edge_sig) != self._fallback_sig
+                float(g.progress_m) < float(self.cfg.skeleton_override_graph_short_progress_m)
+                and g_lat > float(self.cfg.skeleton_override_graph_near_abs_lat_m)
+                and s_lat <= float(self.cfg.skeleton_override_skel_near_abs_lat_m)
             ):
-                g = candidates[best_idx]
-                s = candidates[skel_idx]
-                g_probe = min(1.2, max(0.4, float(g.progress_m)))
-                s_probe = min(1.2, max(0.4, float(s.progress_m)))
-                g_lat = abs(self._path_lateral_at_x(g.points_m, g_probe))
-                s_lat = abs(self._path_lateral_at_x(s.points_m, s_probe))
-                if (
-                    float(g.progress_m) < float(self.cfg.skeleton_override_graph_short_progress_m)
-                    and g_lat > float(self.cfg.skeleton_override_graph_near_abs_lat_m)
-                    and s_lat <= float(self.cfg.skeleton_override_skel_near_abs_lat_m)
-                ):
-                    best_idx = skel_idx
+                best_idx = skel_idx
         t3 = time.time()
 
         graph_has_choice = best_idx >= 0 and best_idx < len(candidates)
@@ -2296,58 +2085,32 @@ class BEVPathExtractor:
         corridor_forward_span_m = 0.0
         corridor_width_cv = 0.0
         dt_corridor_applied = False
-        manual_dt_corridor_applied = False
         endpoint_arc_applied = False
-        manual_arc_applied = False
         if graph_has_choice and len(best_path_m) >= 2:
-            if manual_override_active:
-                dt_path_m, corridor_confidence, corridor_valid_ratio, corridor_forward_span_m, corridor_width_cv = (
-                    self._extract_corridor_centerline(
-                        mask,
-                        best_path_m,
-                        gps_intent_family,
-                        manual_intent_override=True,
-                    )
+            dt_path_m, corridor_confidence, corridor_valid_ratio, corridor_forward_span_m, corridor_width_cv = (
+                self._extract_corridor_centerline(mask, best_path_m, gps_intent_family)
+            )
+            if len(dt_path_m) >= 2:
+                best_path_m = dt_path_m
+                dt_corridor_applied = True
+            elif bool(getattr(self.cfg, "endpoint_arc_enabled", True)):
+                arc = self._smooth_endpoint_arc(
+                    float(best_path_m[-1, 0]),
+                    float(best_path_m[-1, 1]),
+                    _polyline_end_heading(best_path_m),
                 )
-                if len(dt_path_m) >= 2 and self._path_matches_intent(dt_path_m, gps_intent_family):
-                    best_path_m = dt_path_m
-                    manual_dt_corridor_applied = True
-                else:
-                    arc = self._make_manual_intent_arc(best_path_m, gps_intent_family)
-                    if len(arc) >= 2 and self._path_matches_intent(arc, gps_intent_family):
-                        best_path_m = arc
-                        manual_arc_applied = True
-            else:
-                dt_path_m, corridor_confidence, corridor_valid_ratio, corridor_forward_span_m, corridor_width_cv = (
-                    self._extract_corridor_centerline(mask, best_path_m, gps_intent_family)
-                )
-                if len(dt_path_m) >= 2:
-                    best_path_m = dt_path_m
-                    dt_corridor_applied = True
-                elif bool(getattr(self.cfg, "endpoint_arc_enabled", True)):
-                    arc = self._smooth_endpoint_arc(
-                        float(best_path_m[-1, 0]),
-                        float(best_path_m[-1, 1]),
-                        _polyline_end_heading(best_path_m),
-                    )
-                    if len(arc) >= 2:
-                        best_path_m = arc
-                        endpoint_arc_applied = True
+                if len(arc) >= 2:
+                    best_path_m = arc
+                    endpoint_arc_applied = True
         path_model = self._fit_regularized_cubic(best_path_m) if len(best_path_m) >= 2 else None
         if path_model is not None and selected_is_fallback_cand:
             path_source = "fallback_centerline"
         elif path_model is not None and selected_is_skel_fallback_cand:
             path_source = "fallback_skeleton"
-        elif path_model is not None and manual_dt_corridor_applied:
-            path_source = "manual_dt_corridor"
-        elif path_model is not None and manual_arc_applied:
-            path_source = "manual_arc"
         elif path_model is not None and dt_corridor_applied:
             path_source = "dt_corridor"
         elif path_model is not None and endpoint_arc_applied:
             path_source = "endpoint_arc"
-        elif path_model is not None and manual_override_active:
-            path_source = "manual_graph"
         else:
             path_source = "graph" if path_model is not None and graph_has_choice else "none"
 
@@ -2358,12 +2121,7 @@ class BEVPathExtractor:
                 else (self.prev_best_path_m if self.prev_best_path_m is not None else np.zeros((0, 2), dtype=np.float32))
             )
             dt_fb_path, fb_corr_conf, fb_corr_valid_ratio, fb_corr_span, fb_corr_width_cv = (
-                self._extract_corridor_centerline(
-                    mask,
-                    corridor_ref_path,
-                    gps_intent_family,
-                    manual_intent_override=manual_override_active,
-                )
+                self._extract_corridor_centerline(mask, corridor_ref_path, gps_intent_family)
             )
             if len(dt_fb_path) >= 2:
                 dt_fb_model = self._fit_regularized_cubic(dt_fb_path)
@@ -2371,7 +2129,7 @@ class BEVPathExtractor:
                     best_path_m = dt_fb_path
                     path_model = dt_fb_model
                     graph_has_choice = False
-                    path_source = "manual_dt_corridor" if manual_override_active else "dt_corridor"
+                    path_source = "dt_corridor"
                     corridor_confidence = fb_corr_conf
                     corridor_valid_ratio = fb_corr_valid_ratio
                     corridor_forward_span_m = fb_corr_span
@@ -2379,7 +2137,7 @@ class BEVPathExtractor:
 
         # Fallback 1: centerline recovery from sparse/noisy mask.
         fallback_selected = False
-        if path_model is None and not manual_override_active:
+        if path_model is None:
             sk_fb_path = self._fallback_skeleton_geodesic(skel_bin)
             if len(sk_fb_path) >= 2:
                 sk_fb_model = self._fit_regularized_cubic(sk_fb_path)
@@ -2428,9 +2186,6 @@ class BEVPathExtractor:
             # Research impl: temporal path smoothing on cubic coefficients (Idea 3)
             _graph_conf = float(getattr(template_approval, "confidence", 0.5)) if template_approval is not None else 0.5
             path_model = self._apply_path_smoothing(path_model, _graph_conf, path_source)
-            if manual_override_active:
-                self.manual_lock_intent = intent
-                self.manual_lock_path_m = best_path_m.astype(np.float32).copy()
             self._commit_selected_path(best_path_m, path_source=path_source)
         else:
             self.no_path_counter = min(1000, self.no_path_counter + 1)
@@ -2509,21 +2264,14 @@ class AdaptivePurePursuitController:
             return True
         return False
 
-    def update(
-        self,
-        path: Optional[CubicPathModel],
-        speed_mps: float,
-        lookahead_scale: float = 1.0,
-        disable_discont_hold: bool = False,
-    ) -> ControlOutput:
+    def update(self, path: Optional[CubicPathModel], speed_mps: float) -> ControlOutput:
         dt = self.cfg.dt_s
         delta_max = math.radians(self.cfg.delta_max_deg)
         rate_max = math.radians(self.cfg.steer_rate_max_deg_s)
-        lookahead_scale = float(np.clip(lookahead_scale, 0.4, 1.2))
 
         active_path = path
         valid_path = active_path is not None and active_path.length_m > 0.3
-        if valid_path and not disable_discont_hold and self._is_discontinuous(active_path):
+        if valid_path and self._is_discontinuous(active_path):
             self.discont_reject_count += 1
             # Hold previous path briefly for jitter resistance, but force
             # re-acquisition after repeated rejects to avoid stale lock.
@@ -2536,7 +2284,7 @@ class AdaptivePurePursuitController:
             self.discont_reject_count = 0
 
         if valid_path:
-            x_ref = min(max(0.45, 1.2 * lookahead_scale), active_path.x_max_m)
+            x_ref = min(1.2, active_path.x_max_m)
             kappa_ref = active_path.curvature_of_x(x_ref)
             dk = np.clip(kappa_ref - self.prev_kappa_ref, -self.cfg.kappa_step_max_m_inv, self.cfg.kappa_step_max_m_inv)
             kappa_ref = float(self.prev_kappa_ref + dk)
@@ -2544,10 +2292,7 @@ class AdaptivePurePursuitController:
 
             alpha = self.cfg.lookahead_alpha_v0 + self.cfg.lookahead_alpha_v1 * float(np.clip(speed_mps, 1.0, 3.0))
             L = self.cfg.lookahead_min_m + alpha / (abs(kappa_ref) + self.cfg.lookahead_epsilon)
-            L *= lookahead_scale
-            lookahead_min = max(0.45, self.cfg.lookahead_min_m * lookahead_scale)
-            lookahead_max = max(1.0, self.cfg.lookahead_max_m * lookahead_scale)
-            L = _clip(L, lookahead_min, lookahead_max)
+            L = _clip(L, self.cfg.lookahead_min_m, self.cfg.lookahead_max_m)
 
             x_t, y_t, _ = active_path.query_s(min(L, active_path.length_m))
             kappa_cmd = (2.0 * y_t) / max(1e-6, (x_t * x_t + y_t * y_t))

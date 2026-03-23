@@ -41,6 +41,29 @@ Interpretation:
 - `candidate_raw` is the best pure segmentation substitute
 - `candidate_confhold` trades some recall for cleaner topology
 
+### New teacher-student refresh with the four new test videos
+New frames were extracted from:
+- `simulation_camera_scooter/test_videos/VID_20260319_155939_00_017.mp4`
+- `simulation_camera_scooter/test_videos/VID_20260319_160039_00_018.mp4`
+- `simulation_camera_scooter/test_videos/VID_20260319_160139_00_019.mp4`
+- `simulation_camera_scooter/test_videos/VID_20260319_160240_00_020.mp4`
+
+Training set composition:
+- `699` older strong image/mask pairs from the previous mixed dataset
+- `720` new teacher-labeled frames from the four new videos
+- `1419` total image/mask pairs
+
+Training result:
+- new checkpoint: `outputs/training/binary_segformer_old400_img1931_vid017_020/best_checkpoint`
+- initializer: `outputs/training/binary_segformer_old400_plus_img_1931_t300/best_checkpoint`
+- best validation IoU: `0.9602`
+- tuned threshold: `0.60`
+
+Interpretation:
+- the mixed old+new refresh trained cleanly and slightly exceeded the previous initializer on the internal validation split
+- this makes it the freshest runtime candidate for the new videos
+- however, the hand-labeled benchmark above is still the stronger external evidence base, so the new checkpoint should be treated as the next candidate to validate rather than silently declared the new champion
+
 ### Full-video replay summary already in repo
 From `outputs/evaluation/binary_model_replay_full/summary.md`:
 
@@ -125,6 +148,28 @@ Interpretation:
 ## FPS / Runtime Findings
 From `research/artifacts/tables/fps_offenders_summary.csv` and existing profiling reports:
 
+### New model flag sweep on a fresh video
+From `research/artifacts/tables/new_model_flag_sweep_summary.csv` using:
+- video: `simulation_camera_scooter/test_videos/VID_20260319_160139_00_019.mp4`
+- model: `outputs/training/binary_segformer_old400_img1931_vid017_020/best_checkpoint`
+- threshold: `0.60`
+- settings held constant except `--headless` and `--save`
+
+| Case | FPS est | Total ms | Seg ms | BEV ms | Path ms | Other ms |
+|---|---:|---:|---:|---:|---:|---:|
+| `gui_nosave` | 1.65 | 606.1 | 32.9 | 19.5 | 514.6 | 38.8 |
+| `gui_save` | 1.64 | 610.2 | 32.1 | 19.0 | 519.9 | 38.9 |
+| `headless_nosave` | 1.65 | 607.5 | 32.9 | 18.7 | 517.5 | 38.2 |
+| `headless_save` | 1.64 | 608.9 | 32.9 | 18.7 | 518.5 | 38.5 |
+
+Interpretation:
+- `--headless` barely changed throughput in this pipeline
+- `--save` barely changed throughput in this pipeline
+- the dominant cost is the planner itself, not rendering or video writing
+- pathing consumed about `515-520 ms/frame`, dwarfing segmentation at about `32-33 ms/frame`
+- BEV still cost about `19 ms/frame` even before the planner cost is counted
+- the right optimization target is replacing the BEV DT planner, not debating GUI or save flags
+
 ### Clear performance offenders
 - CPU YOLO detection: biggest steady-state penalty
 - disabling predictor: catastrophic FPS drop
@@ -151,6 +196,41 @@ From `research/artifacts/tables/fps_offenders_summary.csv` and existing profilin
 The best overall result from this research pass is not "a slightly better BEV DT planner." It is a stronger architectural conclusion:
 
 - fix segmentation with the better binary checkpoint
+- keep the new mixed-data checkpoint as the freshest candidate for the new videos
 - stop forcing planning through BEV
 - use image-space geometry first
 - keep BEV only where it clearly adds value
+- do not expect `--headless` or `--save` toggles to rescue runtime while BEV DT remains the primary planner
+
+## Four New Videos With Warped-Back Planner Overlays
+Using the mixed-data checkpoint `outputs/training/binary_segformer_old400_img1931_vid017_020/best_checkpoint`, I ran all four March 19 videos through the planner comparison pipeline after patching it to save camera-overlay videos with the planner path warped back onto the source frame.
+
+Run details:
+- output root: `outputs/path_planner_eval_new_model_all4_step3/planner_comparison/`
+- videos: `VID_20260319_155939_00_017`, `VID_20260319_160039_00_018`, `VID_20260319_160139_00_019`, `VID_20260319_160240_00_020`
+- processed sampling: every `3rd` frame
+- saved artifacts per video:
+  - `comparison.mp4`
+  - `camera_overlays/<planner>.mp4`
+  - `bev_overlays/<planner>.mp4`
+
+Aggregate result from `outputs/path_planner_eval_new_model_all4_step3/planner_comparison/PATH_PLANNER_COMPARISON_REPORT.md`:
+
+| Planner | Valid% | Hdg Std | Path Jump | Lat Std | Speed (ms) | Confidence |
+|---|---:|---:|---:|---:|---:|---:|
+| `dt_ridge_baseline` | 100.0% | 0.93d | 0.17d | 1.397m | 1288.2 | 0.96 |
+| `vectorized_dt` | 100.0% | 29.26d | 3.71d | 3.328m | 82.0 | 1.00 |
+| `weighted_centroid` | 100.0% | 14.09d | 2.42d | 1.082m | 2.7 | 0.99 |
+| `potential_field` | 100.0% | 40.03d | 5.77d | 2.104m | 7.0 | 1.00 |
+| `skeleton_hybrid` | 100.0% | 34.66d | 11.29d | 2.314m | 11.6 | 0.79 |
+
+Interpretation:
+- `dt_ridge_baseline` still gives the smoothest and most stable path, but at `~1.29 s/frame` it is only an oracle/reference planner.
+- `weighted_centroid` is still the best fast deployment option across these four videos.
+- `vectorized_dt` is materially faster than full DT but still too unstable to replace the baseline directly.
+- `potential_field` is fast but too jittery on these clips.
+- `skeleton_hybrid` remains visually brittle despite acceptable runtime.
+
+Saved-output note:
+- the full batch produced `44` MP4 files with total size about `3.48 GB`
+- each video directory contains the camera overlays the user asked for, with the path rendered back onto the original camera view

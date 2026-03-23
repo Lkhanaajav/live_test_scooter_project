@@ -1,26 +1,5 @@
 {
-  "ego_x_frac": 0.5425709515859767,
-  "source_width": 1920,
-  "source_height": 1080,
-  "source_frame_id": 900,
-  "bev_width": 360,
-  "bev_height": 660,
-  "dst_points": [
-    [
-      60.0,
-      638.0
-    ],
-    [
-      300.0,
-      638.0
-    ],
-    [
-      240.0,
-      132.0
-    ],
-    [
-      120.0,
-      132.0
-    ]
-  ]
+  "ego_x_frac": 0.5,
+  "source_frame_width": 1024,
+  "source_frame_height": 576
 }

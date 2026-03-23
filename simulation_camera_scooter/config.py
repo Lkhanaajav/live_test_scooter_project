@@ -230,3 +230,41 @@ PATH_SMOOTH_RESET_THRESH = 2.0        # max coefficient jump before reset (per c
 HEADING_SMOOTH_ENABLED = True         # enable circular EMA on heading angle
 HEADING_SMOOTH_ALPHA = 0.50           # EMA alpha for heading filter
 HEADING_SMOOTH_RESET_DEG = 45.0       # heading delta (deg) that triggers filter reset
+
+# =============================================================================
+# DT Ridge Path Planner (replaces template/skeleton fallback chain)
+# =============================================================================
+DT_PLANNER_ENABLED = True             # use clean DT-ridge planner in BEVPathExtractor
+DT_PLANNER_HOLD_FRAMES = 10          # hold previous path for this many frames on extraction failure
+
+# =============================================================================
+# Path Planner Comparison (multi-method evaluation)
+# =============================================================================
+
+# Method 1: Vectorized DT-Ridge
+VDT_COST_EXPONENT = 1.5              # cost = 1/(dt+eps)^exponent
+VDT_LATERAL_DRIFT_PX = 30            # max lateral step per row in DP
+VDT_LATERAL_PENALTY = 0.01           # cost penalty per pixel of lateral drift
+VDT_SG_WINDOW = 9                    # Savitzky-Golay smoothing window (odd)
+VDT_EPS = 0.5                        # epsilon for cost denominator
+
+# Method 2: Weighted Centroid
+WC_WEIGHT_EXPONENT = 2.0             # dt^exp weighting (higher = stronger pull to center)
+WC_SG_WINDOW = 11                    # Savitzky-Golay window (odd)
+WC_MIN_ROAD_PX_PER_ROW = 3           # skip rows with fewer road pixels
+
+# Method 3: Potential Field
+PF_FIELD_EXPONENT = 2.0              # potential = -(dt^exp)
+PF_FORWARD_BIAS = 1.0                # upward pull to ensure forward progress
+PF_STEP_SIZE = 1.0                   # pixels per Euler integration step
+PF_MAX_STEPS = 300                   # max integration steps
+PF_SG_WINDOW = 7                     # Savitzky-Golay window (odd)
+PF_INTENT_LATERAL_BIAS = 0.5         # lateral gradient bias for left/right intent (px/step)
+PF_STRAIGHT_FORWARD_BOOST = 0.5      # extra forward bias for straight intent (px/step)
+
+# Method 4: Skeleton Hybrid
+SH_COARSE_SIZE = (110, 110)          # coarse grid for skeletonization
+SH_PRUNE_MIN_LEN = 8                 # min branch length after pruning
+SH_REFINE_RADIUS_PX = 15             # DT-refinement window radius
+SH_DT_WEIGHT_EXP = 2.0              # DT weighting exponent for refinement
+SH_SG_WINDOW = 9                     # Savitzky-Golay window (odd)

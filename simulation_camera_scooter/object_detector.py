@@ -9,6 +9,19 @@ import math
 from config import OBSTACLE_CLASSES, YOLO_CONF_THRESH, YOLO_MODEL_NAME, OBSTACLE_CLOSE_M
 
 
+def _default_device():
+    """Prefer accelerator backends when available instead of forcing CPU."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda:0"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+    except Exception:
+        pass
+    return "cpu"
+
+
 class TinyObjectDetector:
     """
     Wraps ultralytics YOLOv8-nano for lightweight obstacle detection.
@@ -17,10 +30,10 @@ class TinyObjectDetector:
     """
 
     def __init__(self, model_name=YOLO_MODEL_NAME, conf=YOLO_CONF_THRESH,
-                 classes=None, device="cpu"):
+                 classes=None, device=None):
         self.conf = conf
         self.classes = classes or list(OBSTACLE_CLASSES.keys())
-        self.device = device
+        self.device = device or _default_device()
         self.model = None
         self._load(model_name)
 
@@ -28,7 +41,6 @@ class TinyObjectDetector:
         try:
             from ultralytics import YOLO
             self.model = YOLO(model_name)
-            # Force CPU (tiny model, no GPU needed)
             self.model.to(self.device)
             print(f"[ObjDet] YOLOv8-nano loaded ({model_name}, device={self.device})")
         except ImportError:

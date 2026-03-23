@@ -3,8 +3,9 @@
 ## Recommended Architecture
 
 ### 1. Segmentation
-- Replace the shipped runtime checkpoint with:
-  - `outputs/training/binary_segformer_oneformer_teacher/best_checkpoint`
+- Replace the shipped runtime checkpoint with the best externally validated binary checkpoint.
+- Keep the freshly refreshed mixed-data checkpoint as the first next candidate on new-video-heavy runs:
+  - `outputs/training/binary_segformer_old400_img1931_vid017_020/best_checkpoint`
 - Start from threshold `0.60`
 - Keep binary output only
 - Keep lightweight topology cleanup:
@@ -13,7 +14,8 @@
   - optional confidence hold / hysteresis when runtime flicker is visible
 
 Rationale:
-- best measured mask quality in this repo
+- best measured mask quality in this repo came from the externally validated candidate
+- the new four-video refresh reached `0.9602` validation IoU on its mixed split and is the freshest runtime candidate
 - faster than the current shipped baseline
 - no architecture rewrite required
 
@@ -104,6 +106,8 @@ Based on `research/artifacts/tables/fps_offenders_summary.csv`, the first things
 3. `512x288` segmentation input as a default
 4. always-on BEV warp/cleanup in image-space planning mode
 5. full BEV DT / graph planners as default runtime planners
+
+From `research/artifacts/tables/new_model_flag_sweep_summary.csv`, `--headless` and `--save` are not first-order FPS levers here. The pipeline stayed around `606-610 ms/frame` because pathing alone consumed about `515-520 ms/frame`.
 
 ## Final Answers
 

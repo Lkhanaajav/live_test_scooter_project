@@ -232,6 +232,7 @@ def test_weak_corridor_support_recommends_hold(fragmented_near_field_bev_mask):
 
 def test_process_uses_template_path_when_approved(straight_bev_mask):
     cfg = PathExtractorConfig(
+        use_dt_planner=False,
         template_planner_enabled=True,
         template_planner_cfg=TemplatePlannerConfig(
             bev_forward_m=10.0,
@@ -267,6 +268,7 @@ def test_process_can_disable_template_planner_for_baseline(straight_bev_mask):
 
 def test_process_propagates_low_confidence_template_diagnostics(fragmented_near_field_bev_mask):
     cfg = PathExtractorConfig(
+        use_dt_planner=False,
         template_planner_enabled=True,
         template_planner_cfg=TemplatePlannerConfig(
             bev_forward_m=10.0,

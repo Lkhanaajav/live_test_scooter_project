@@ -2,6 +2,8 @@
 % University of Oklahoma — Master's Thesis
 % Monocular-Camera-Based Autonomous Sidewalk Navigation
 % Author: Lkhanaajav Mijiddorj
+% Updated: 2026-03-20 — Incorporates planner comparison, BEV fragility,
+%          image-space planning, and improved segmentation findings
 % =============================================================================
 \documentclass[12pt,letterpaper,oneside]{report}
 
@@ -26,6 +28,7 @@
 \usepackage{booktabs}
 \usepackage{siunitx}
 \sisetup{detect-all}
+\DeclareSIUnit{\px}{px}
 \usepackage[hidelinks]{hyperref}
 \usepackage{subcaption}
 \usepackage{enumitem}
@@ -36,11 +39,14 @@
 \usepackage{tocloft}
 \usepackage{url}
 \usepackage[numbers,sort&compress]{natbib}
+\usepackage{threeparttable}
+\usepackage{numprint}
+\usepackage{longtable}
 
 % ---------- Captions ----------
 \usepackage[font=small,labelfont=bf]{caption}
 
-% ---------- Page numbering (OU: centered bottom, 0.5" from edge) ----------
+% ---------- Page numbering (OU: centered bottom) ----------
 \usepackage{fancyhdr}
 \pagestyle{fancy}
 \fancyhf{}
@@ -67,13 +73,16 @@
 \renewcommand{\listfigurename}{LIST OF FIGURES}
 
 % ---------- Custom commands ----------
-\newcommand{\thesistitle}{Monocular-Camera-Based Autonomous Sidewalk Navigation Using an Efficient Machine-Learning-Driven Image Segmentation Approach with Closed-Loop Control}
+\newcommand{\thesistitle}{Monocular Camera-Based Autonomous Sidewalk Navigation Using Efficient Machine-Learning-Driven Image Segmentation and Image-Space Path Planning}
 \newcommand{\authorname}{Lkhanaajav Mijiddorj}
 \newcommand{\degreename}{Master of Science}
 \newcommand{\departmentname}{Department of Electrical and Computer Engineering}
 \newcommand{\universityname}{University of Oklahoma}
 \newcommand{\thesisyear}{2026}
 \newcommand{\advisorname}{Dr.\ Binbin Weng}
+
+% Graphics path
+\graphicspath{{figures/}}
 
 % =============================================================================
 \begin{document}
@@ -121,7 +130,7 @@ BY THE COMMITTEE CONSISTING OF\\[3em]
 Dr.\ Bin Xu\\[2em]
 
 \rule{3.5in}{0.4pt}\\
-Dr.\ Committee Member Name\\[2em]
+Dr.\ [Committee Member Name]\\[2em]
 
 \end{center}
 \newpage
@@ -140,11 +149,11 @@ All Rights Reserved.
 \chapter*{ACKNOWLEDGMENTS}
 \addcontentsline{toc}{chapter}{ACKNOWLEDGMENTS}
 
-I would like to express my sincere gratitude to my advisor, \advisorname, for his guidance, support, and encouragement throughout this research. His expertise and patience were invaluable in shaping this work.
+I would like to express my sincere gratitude to my advisor, \advisorname, for his guidance, support, and encouragement throughout this research. His expertise in embedded systems and computer vision was invaluable in shaping this work.
 
 I am grateful to the members of my thesis committee, Dr.\ Bin Xu and Dr.\ [Committee Member], for their insightful feedback and constructive suggestions.
 
-I would also like to thank my collaborators---Tyler Beringer, Bilguunzaya Mijiddorj, Yan Yang, and Alex N.\ Ho---for their contributions to data collection, testing, and many productive discussions.
+I would also like to thank my collaborators---Tyler Beringer, Bilguunzaya Mijiddorj, Yan Yang, and Alex N.\ Ho---for their contributions to data collection, system testing, and many productive discussions that improved the quality of this work.
 
 Finally, I thank my family for their unwavering support and encouragement during my graduate studies at the University of Oklahoma.
 
@@ -168,13 +177,13 @@ Finally, I thank my family for their unwavering support and encouragement during
 \chapter*{ABSTRACT}
 \addcontentsline{toc}{chapter}{ABSTRACT}
 
-Sidewalk-scale autonomy demands perception that runs reliably on compact, low-power hardware in cluttered, map-sparse environments. This thesis presents a complete monocular vision-based navigation system for sidewalk-following micro-mobility platforms, encompassing both an offline perception--planning pipeline and its extension to real-time closed-loop control.
+Sidewalk-scale autonomy demands perception and planning systems that run reliably on compact, low-power hardware in cluttered, map-sparse environments. This thesis presents a monocular vision pipeline for sidewalk-following micro-mobility that progresses through three design iterations---from a skeleton-graph baseline through distance-transform corridor planning to a lightweight image-space architecture---and provides a systematic comparison of five path-planning methods across both bird's-eye view (BEV) and image-space domains.
 
-The core pipeline consists of a lightweight SegFormer-B0 model that segments traversable sidewalk pixels from RGB video, a fixed planar homography that projects the segmentation mask into a metric Bird's-Eye View (BEV) frame, and a Guo--Hall skeletonization algorithm that exposes the sidewalk centerline and junction topology as a compact pixel graph. A geometric cost function scores candidate branches, and the lowest-cost route is smoothed into a continuous waypoint path. The teacher--student segmentation model is trained with 300 hand-labeled frames plus thousands of pseudo-labeled frames, using boundary-aware loss terms to sharpen mask edges. SegFormer-B0 runs in \SI{46}{ms} per frame at $640\times360$ on CPU, and the full pipeline runs at approximately \SI{9.1}{FPS}.
+A compact SegFormer-B0 student model (3.7M parameters), trained with a semi-supervised teacher--student framework using OneFormer Swin-L pseudo-labels, achieves a hand-annotated intersection-over-union (IoU) of 0.946 at \SI{11.7}{ms} per frame, improving over the baseline checkpoint (IoU 0.758, \SI{18.9}{ms}). In a controlled planner comparison on 32 hand-labeled frames from University of Oklahoma campus sidewalks, image-space midpoint planning achieves the lowest lateral center error (\SI{14.3}{\px}) at \SI{2.2}{ms}---a $421\times$ speedup over BEV distance-transform planning (\SI{926.8}{ms}, \SI{65.0}{\px} center error)---while maintaining comparable mask--path alignment (98.5\% vs.\ 98.6\%). A full-video replay across six campus sequences (\numprint{22679} frames) confirms that the improved segmentation reduces temporal instability from 1.46\% to 0.33\% and increases template-planner success rate from 73.7\% to 79.3\%.
 
-This thesis extends the offline pipeline with four contributions toward real-world deployment. First, a YOLOv8-nano object detector (3.2M parameters, \SI{6}{MB}) runs in parallel with segmentation to detect pedestrians, cyclists, and vehicles, with monocular distance estimation that modulates speed and triggers emergency stops. Second, GPS waypoint navigation using NMEA-parsed coordinates is fused with the vision heading (70\% vision, 30\% GPS) to provide global route guidance. Third, the system outputs continuous steering angle (degrees) and speed (m/s) over a serial protocol to the scooter's motor controller. Fourth, temporal smoothing of heading and speed estimates stabilizes frame-to-frame jitter.
+This thesis further demonstrates that BEV-only planning is fundamentally fragile in monocular settings: in one profiled run, 99.3\% of frames produced no valid BEV path due to insufficient mask coverage from the monocular viewpoint. The final recommended architecture---image-space midpoint primary, image-space distance-transform fallback, BEV reserved for visualization---runs the full perception-to-path stack in under \SI{17}{ms} per frame on CPU (59~FPS), exceeding the 10~Hz real-time requirement for pedestrian-speed platforms.
 
-In offline evaluation on campus video with curved sidewalks, T-junctions, shadows, and surface changes, the pipeline achieves a mean lateral path-centering error of $0.38 \pm 0.66$~m, selects the correct branch at 95\% of junctions, and maintains 98\% of the path inside the segmented sidewalk mask. The integrated system---segmentation, object detection, GPS fusion, and control---operates within the latency budget required for pedestrian-speed navigation.
+The system further integrates YOLOv8-nano obstacle detection, GPS waypoint navigation, and a serial command protocol for closed-loop scooter control, validated through live campus demonstrations.
 
 \newpage
 
@@ -188,9 +197,12 @@ In offline evaluation on campus video with curved sidewalks, T-junctions, shadow
 
 \section{Motivation}
 
-Autonomous micro-mobility is beginning to move from controlled demonstrations to everyday sidewalks. Delivery carts, assistive scooters, and other pedestrian-speed robots must operate among pedestrians, signs, bicycles, vegetation, and irregular curb geometry---all under tight payload, power, and cost constraints. Sidewalks further complicate perception: widths vary, surfaces mix bricks and concrete, markings are inconsistent, and lighting changes rapidly under trees and buildings. High-definition pedestrian maps are scarce and GNSS is unreliable near canopies and urban canyons. In this setting, a vision-first navigation pipeline that is robust, interpretable, and efficient enough for single-board computers is essential.
+Autonomous micro-mobility is beginning to move from controlled demonstrations to everyday sidewalks. Delivery carts, assistive scooters, and other pedestrian-speed robots must operate among pedestrians, signs, bicycles, vegetation, and irregular curb geometry---all under tight payload, power, and cost constraints. Sidewalks further complicate perception: widths vary from under one meter to over three meters, surfaces mix bricks and concrete, markings are inconsistent, and lighting changes rapidly under trees and buildings. High-definition pedestrian maps are scarce and GNSS is unreliable near canopies and urban canyons. In this setting, a vision-first navigation pipeline that is robust, interpretable, and efficient enough for single-board computers is essential.
+
+The economic and social potential of autonomous sidewalk vehicles is substantial. Last-mile delivery consumes a disproportionate share of logistics costs, and autonomous delivery robots could reduce this burden while decreasing carbon emissions from delivery vans~\cite{starship2022}. Assistive mobility scooters could extend independence for individuals with mobility limitations. Campus and airport shuttle vehicles could improve pedestrian flow in dense environments. All of these applications share a common technical requirement: the ability to perceive the traversable path ahead and generate safe navigation commands in real time, using sensors and compute that fit within the form factor and power budget of a small electric vehicle.
 
 Unlike structured road environments where lane markings and traffic signs provide rich cues, sidewalk environments are inherently unstructured. The traversable region must be inferred from appearance and geometry rather than from painted boundaries. Furthermore, the computational budget available to a battery-powered scooter or delivery robot is a fraction of what a full-size autonomous vehicle can afford. These constraints motivate a deliberately simple, geometry-aware approach that favors transparency and efficiency over raw model capacity.
+
 
 \section{Problem Statement}
 
@@ -198,143 +210,262 @@ This thesis addresses the problem of autonomous sidewalk-following navigation fo
 
 \begin{enumerate}[leftmargin=*]
   \item Segments traversable sidewalk regions from RGB video in real time on CPU-only hardware.
-  \item Projects the segmentation into a metric top-down representation suitable for geometric reasoning.
-  \item Extracts the centerline and junction topology of the sidewalk as a compact graph.
-  \item Selects the best forward path at junctions and smooths it into controller-ready waypoints.
-  \item Closes the loop by converting waypoints into steering commands for the physical platform.
+  \item Extracts a centered, smooth navigation path from the segmentation mask.
+  \item Operates in either bird's-eye view (BEV) or image-space domains, with empirical evidence for which is superior.
+  \item Achieves real-time performance ($\geq$10~Hz) on embedded single-board computers.
+  \item Extends to closed-loop control with obstacle detection and GPS waypoint navigation.
 \end{enumerate}
+
 
 \section{Approach Overview}
 
-We adopt a modular pipeline that maps camera frames to controller-ready waypoints through six stages: (i)~semantic segmentation via a lightweight SegFormer-B0 model trained with a teacher--student framework, (ii)~Bird's-Eye View (BEV) projection via a fixed calibrated homography, (iii)~mask refinement and main-component filtering, (iv)~Guo--Hall skeletonization to extract the medial axis, (v)~graph-based path enumeration and scoring, and (vi)~waypoint smoothing and control output.
+We adopt a modular pipeline that maps camera frames to controller-ready waypoints through interpretable stages: (i)~semantic segmentation via a lightweight SegFormer-B0 model trained with a teacher--student framework, (ii)~optional Bird's-Eye View (BEV) projection via a fixed calibrated homography, (iii)~mask refinement and component filtering, (iv)~path extraction via one of five planning methods spanning BEV and image-space domains, and (v)~temporal smoothing and control output.
 
-This direction complements several active research threads. End-to-end steering policies can perform well but are difficult to interpret and often assume GPU-class hardware. Dense monocular BEV reconstruction pushes accuracy but remains challenging to deploy on low-power platforms. Classic semantic-mask corridor following is efficient but does not explicitly expose intersection topology. In contrast, our stack is monocular, transparent, and explicitly topology-aware, while remaining light enough for CPU-only inference.
+The system evolved through three design iterations, each backward-compatible with the previous:
+\begin{itemize}[nosep]
+  \item \textbf{Iteration~1:} BEV skeleton-graph planner with SegFormer-B2 teacher.
+  \item \textbf{Iteration~2:} BEV distance-transform corridor planner with enhanced mask refinement.
+  \item \textbf{Iteration~3:} Image-space midpoint and DT planners with OneFormer Swin-L teacher, eliminating BEV dependency for path extraction.
+\end{itemize}
+
+This direction complements several active research threads. End-to-end steering policies can perform well but are difficult to interpret and often assume GPU-class hardware~\cite{e2e_nav_policies, viteri2024}. Dense monocular BEV reconstruction pushes accuracy but remains challenging to deploy on low-power platforms~\cite{zhao2024bev}. Classic semantic-mask corridor following is efficient in structured environments but does not explicitly expose intersection topology~\cite{orchard_seg_nav, row_nav_survey}. In contrast, our approach is monocular, transparent, and light enough for CPU-only inference, while providing an empirical comparison of planning-domain trade-offs that is absent from prior sidewalk navigation work.
+
+In this thesis, we focus on validating the perception and path-generation pipeline offline using video recorded from a forward-facing camera mounted on an electric scooter (Figure~\ref{fig:scooter_hw}). We apply the full pipeline frame by frame and evaluate the resulting paths without closing the loop on the vehicle. This isolates perception and planning, enabling detailed analysis of segmentation quality, planner accuracy, runtime efficiency, and the BEV-versus-image-space trade-off.
+
 
 \section{Contributions}
 
 This thesis makes the following contributions:
 
 \begin{enumerate}[leftmargin=*]
-  \item A monocular segmentation $\rightarrow$ BEV $\rightarrow$ skeleton-graph pipeline for sidewalk navigation that is transparent, lightweight, and designed for embedded hardware.
+  \item A modular monocular sidewalk navigation pipeline that is transparent, lightweight, and designed for embedded hardware, progressing through three design iterations with backward-compatible improvements.
 
-  \item A teacher--student training recipe for a compact SegFormer-B0 model using hybrid labels with boundary refinements, achieving robust sidewalk segmentation under diverse campus conditions.
+  \item A semi-supervised segmentation training recipe using a high-capacity OneFormer Swin-L teacher~\cite{oneformer} to generate pseudo-labels for a compact SegFormer-B0 student~\cite{segformer}, achieving hand-annotated IoU of 0.946 at \SI{11.7}{ms} on CPU.
 
-  \item An interpretable branch-selection and centering strategy that produces smooth, well-aligned path candidates from noisy real-world segmentation masks.
+  \item A systematic comparison of five path-planning methods across BEV and image-space domains, demonstrating that image-space midpoint planning achieves a $421\times$ speedup over BEV distance-transform planning with lower lateral error.
 
-  \item A two-layer temporal mask stabilization scheme: a camera-space EMA smoother with a conservative-blend policy that suppresses stochastic segmentation variance, and a BEV-space forward motion compensator that applies a geometrically exact uniform pixel shift to successive BEV masks before temporal averaging, exploiting the uniform-translation property of planar homographic projection under forward ego-motion.
+  \item Empirical evidence that BEV-only planning is fragile in monocular sidewalk settings, with 99.3\% of frames failing to produce a valid BEV path in one profiled sequence, motivating image-space planning as the primary domain.
 
-  \item Integration of a lightweight YOLOv8-nano object detector (3.2M parameters) for real-time detection of pedestrians, cyclists, and vehicles, with monocular distance estimation for speed modulation and emergency stop.
+  \item A comprehensive offline evaluation protocol covering segmentation quality, planner accuracy, temporal stability, and runtime analysis across six campus video sequences totaling over \numprint{22000} frames.
 
-  \item GPS waypoint navigation using NMEA-parsed coordinates fused with the vision heading to provide global route guidance while maintaining local obstacle avoidance.
-
-  \item A closed-loop control pipeline that computes continuous steering angle (degrees) and speed (m/s) from the fused heading, transmits commands over a serial protocol to the scooter platform, and includes temporal smoothing and multi-layer safety mechanisms.
-
-  \item A comprehensive evaluation protocol covering path-tracking quality, junction detection, mask--path alignment, runtime analysis, and live real-world demonstration.
+  \item Integration of YOLOv8-nano obstacle detection~\cite{yolov8}, GPS waypoint navigation, and a serial command protocol for closed-loop scooter control.
 \end{enumerate}
+
 
 \section{Thesis Organization}
 
-The remainder of this thesis is organized as follows. Chapter~\ref{ch:related_work} reviews related work in autonomous navigation, segmentation, BEV reconstruction, and skeletonization. Chapter~\ref{ch:methodology} describes the proposed perception pipeline in detail. Chapter~\ref{ch:closed_loop} presents the closed-loop control extension, including object detection with YOLOv8-nano, GPS waypoint navigation, steering and speed computation, the serial command protocol, and the live demonstration system. Chapter~\ref{ch:results} reports experimental results and ablation studies. Chapter~\ref{ch:conclusion} concludes with a summary of findings, limitations, and directions for future work.
+The remainder of this thesis is organized as follows. Chapter~\ref{ch:related_work} reviews related work in autonomous navigation, segmentation, BEV reconstruction, path planning, and embedded perception. Chapter~\ref{ch:methodology} describes the proposed perception pipeline in detail, including the segmentation module, BEV projection, five planning methods, and temporal smoothing. Chapter~\ref{ch:closed_loop} presents the closed-loop control extension, including object detection, GPS navigation, and the serial command protocol. Chapter~\ref{ch:results} reports experimental results including the planner comparison study, BEV fragility analysis, and runtime profiling. Chapter~\ref{ch:discussion} discusses the implications of key findings, limitations, and threats to validity. Chapter~\ref{ch:conclusion} concludes with a summary and directions for future work.
 
-
-% =====================================================================
-\chapter{Related Work}
-\label{ch:related_work}
-% =====================================================================
-
-We organize prior work into six threads and emphasize what each direction offers in practice---what runs fast, what transfers, and what stays explainable to the teams who deploy it.
-
-\section{Target-Driven and End-to-End Navigation}
-
-Target-driven systems in structured indoor settings combine monocular depth and segmentation to follow objects without explicit mapping, and they often work well in corridors and rooms~\cite{zhu2017target,machkour2023}. For sidewalks, end-to-end policies trained on RGB-D (sometimes with GNSS) can steer directly from raw streams and reach real-time control~\cite{viteri2024,e2e_nav_policies}. The upside is simplicity at runtime: one model, one policy. The downside is familiar to practitioners---limited interpretability when lighting shifts, pedestrians occlude edges, or layouts differ from training. Diagnosis becomes guesswork, and many solutions quietly assume GPU-class compute. Our pipeline trades some expressivity for a modular stack that can be inspected stage by stage on embedded hardware.
-
-\section{Dense Monocular Bird's-Eye Reconstruction}
-
-Monocular BEV models that lift features or regress dense warps produce striking top-down reconstructions and are a natural fit for planning~\cite{zhao2024bev}. On modern GPUs, they excel. On single-board computers, memory and latency are still prohibitive. A single calibrated homography is less glamorous but predictable and cheap; for near-planar sidewalk patches and short look-ahead distances, it delivers a stable metric frame without the overhead of full 3D reconstruction.
-
-\section{Segmentation for Drivable and Free Space}
-
-Perception has seen two dominant directions: accuracy via ensembles and efficiency via compact backbones. Ensemble approaches can drive mIoU higher with multiple heads and backbones, but they concentrate on perception alone and increase compute~\cite{shihab2024}. Lightweight networks (e.g., MobileNet-based and transformer-based designs like SegFormer-B0) bring latency and memory down to embedded levels~\cite{segformer,edge_optimized_seg,twinlitenet2024}. In both cases, the mask is often the end of the story. Our approach carries that mask into geometry (BEV) and topology (skeleton graph) and then into a closed-loop controller---the goal is not only accuracy but a path from pixels to motion that field teams can tune.
-
-\section{Generative Free-Space Priors and Diffusion}
-
-Diffusion-based free-space predictors are exciting because they can hallucinate plausible corridors when the signal is weak~\cite{gupta2025diffusion}. For bench science, this is promising; for an embedded scooter, the footprint and tuning complexity are still a mismatch. In the near term, a small number of moving parts---each easy to monitor and fail gracefully---tends to win outdoors. We therefore keep generation out of the critical path and prefer deterministic geometry that behaves consistently as conditions change.
-
-\section{Corridor Following and Agricultural Rows}
-
-The agricultural community has a long history of segmentation-driven navigation in row crops, where the ``gap between rows'' is a crisp cue~\cite{orchard_seg_nav,row_nav_survey}. Histogram-of-columns minima are fast and surprisingly reliable when the world really is a corridor. Sidewalks inherit the corridor idea but add T- and 4-way junctions, driveways, curb ramps, and uneven edges. A pure histogram lacks a notion of topology and struggles at junctions. We borrow the efficiency of the idea but make branch structure explicit via skeletons.
-
-\section{Skeletons and Mid-Level Geometry}
-
-Learned skeletonization and graph extraction are gaining traction and can substantially reduce planning cost in simulation~\cite{flores2025skeleton}. Classic thinning methods (e.g., Zhang--Suen~\cite{zhang_suen} and Guo--Hall~\cite{guo_hall}) remain attractive in embedded contexts because they are stable, fast, and easy to reason about. In this work, we adopt classical thinning to expose sidewalk centerlines and junctions, construct a small graph, and choose among a handful of forward branches using an interpretable cost.
-
-\section{Closed-Loop Control for Low-Speed Platforms}
-
-Pure Pursuit~\cite{coulter1992implementation} remains one of the most widely deployed path-tracking controllers for mobile robots due to its simplicity and predictable behavior. The algorithm selects a lookahead point on the reference path and computes a circular arc to reach it, yielding a steering command that is easy to tune and debug. For pedestrian-speed platforms where dynamics are benign, Pure Pursuit provides sufficient tracking performance without the complexity of model-predictive or optimization-based controllers. Stanley controllers~\cite{thrun2006stanley} offer an alternative that uses cross-track error at the front axle, and have seen success in autonomous vehicle competitions. We adopt Pure Pursuit for its transparency and ease of integration with serial-commanded hardware.
-
-
-% =====================================================================
-\chapter{Methodology}
-\label{ch:methodology}
-% =====================================================================
-
-This chapter describes the perception pipeline that transforms monocular RGB frames into controller-ready waypoints. The system avoids reliance on GPS or external localization by leveraging a modular pipeline composed of interpretable geometric and learning-based modules. Figure~\ref{fig:pipeline_diagram} illustrates the overall architecture.
 
 \begin{figure}[t]
   \centering
-  % \includegraphics[width=\textwidth]{figures/pipeline_graph.jpg}
-  \fbox{\parbox{0.9\textwidth}{\centering\vspace{2em}[Pipeline diagram placeholder]\vspace{2em}}}
-  \caption{Overview of the sidewalk navigation pipeline. Hand-annotated and pseudo-labeled data are merged to train a student segmentation model, followed by geometric processing to extract traversable paths.}
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{scooter/scooter-image1.jpeg}
+    \caption{Scooter platform with mounted camera.}
+    \label{fig:scooter_hw1}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}{0.48\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{scooter/input_image.jpeg}
+    \caption{Example first-person view from the camera.}
+    \label{fig:scooter_hw2}
+  \end{subfigure}
+  \caption{Hardware platform. (a)~Electric scooter used for data collection, with a forward-facing monocular camera rigidly mounted to the handlebar stem. (b)~Sample sidewalk scene as seen by the camera; all experiments are conducted offline on video recorded from this rig.}
+  \label{fig:scooter_hw}
+\end{figure}
+
+
+% =====================================================================
+\chapter{Literature Review}
+\label{ch:related_work}
+% =====================================================================
+
+This chapter reviews prior work organized into eight themes, emphasizing what each direction offers in practice---what runs fast, what transfers, and what stays explainable.
+
+
+\section{Autonomous Navigation for Micro-Mobility Platforms}
+
+The deployment of autonomous micro-mobility vehicles on sidewalks and shared pedestrian paths represents a growing research frontier distinct from road-driving autonomy. Starship Technologies has deployed thousands of delivery robots that navigate sidewalks using a combination of cameras, ultrasonic sensors, and pre-mapped routes~\cite{starship2022}. Academic efforts include RGB-D dual-ConvNet steering for sidewalk-following scooters~\cite{viteri2024} and monocular deep-learning navigation systems for ground robots~\cite{machkour2023}. Target-driven visual navigation systems in indoor environments combine monocular depth and segmentation to follow objects without explicit mapping~\cite{zhu2017target}.
+
+A key distinction from road-driving autonomy is the sensor budget. Road vehicles typically employ LiDAR arrays costing thousands of dollars and GPU clusters consuming hundreds of watts. Sidewalk robots must achieve comparable reliability with cameras costing tens of dollars and single-board computers consuming under 15~watts. This constraint motivates modular, geometry-based approaches that can be inspected and tuned without retraining deep models.
+
+
+\section{Semantic Segmentation for Drivable Surfaces}
+\label{sec:lit_segmentation}
+
+Semantic segmentation has evolved rapidly from fully convolutional networks~\cite{fcn2015} through encoder-decoder architectures like DeepLabV3+~\cite{deeplabv3plus} to transformer-based models. SegFormer~\cite{segformer} introduced a hierarchical Vision Transformer encoder with a lightweight MLP decoder, achieving strong performance across urban benchmarks while scaling efficiently from B0 (3.7M parameters) to B5 (84.7M parameters). For sidewalk segmentation specifically, ensemble approaches using multiple backbones can improve mIoU but increase computational cost~\cite{shihab2024}. Lightweight alternatives optimized for real-time deployment include MobileNetV3~\cite{edge_optimized_seg}, TwinLiteNet~\cite{twinlitenet2024}, BiSeNetV2~\cite{bisenetv2}, and DDRNet~\cite{ddrnet}.
+
+Sidewalk-specific segmentation datasets remain limited compared to road-driving datasets. CityScapes~\cite{cityscapes} includes sidewalk labels but focuses on European urban driving scenes. The Robot Unstructured Ground Dataset (RUGD)~\cite{rugd} provides off-road terrain segmentation relevant to unstructured path following. Mapillary Vistas~\cite{mapillary} offers diverse street-level imagery with sidewalk annotations. The scarcity of dedicated sidewalk segmentation benchmarks motivates domain-specific training approaches such as the teacher--student framework employed in this thesis.
+
+
+\section{Bird's-Eye View Projection and Monocular BEV}
+\label{sec:lit_bev}
+
+Bird's-eye view (BEV) representations provide a spatially consistent top-down frame that simplifies metric reasoning for planning. The classical approach uses a planar homography (Inverse Perspective Mapping, IPM) to warp the camera image onto the ground plane~\cite{hartley_zisserman}. This assumes a flat surface and known camera extrinsics---assumptions that hold approximately for sidewalks but break on ramps, curbs, and uneven terrain.
+
+Recent work has moved toward learned BEV representations. Lift, Splat, Shoot~\cite{lift_splat_shoot} encodes images from arbitrary camera rigs by implicitly unprojecting to 3D. BEVFormer~\cite{bevformer} uses spatiotemporal transformers to construct BEV features from multi-camera input. Focus on BEV~\cite{zhao2024bev} introduces self-calibrated cycle view transformation for monocular BEV segmentation. However, these learned approaches require substantial GPU compute and are designed for multi-camera setups on full-size vehicles, making them impractical for single-camera embedded platforms.
+
+A critical limitation of monocular BEV that has received insufficient attention is \emph{coverage fragility}: a single forward-facing camera maps only a narrow strip of the ground plane into the BEV grid, leaving most of the BEV frame empty. When the segmented mask is sparse or noisy, the projected BEV occupancy can drop to near zero, causing downstream planners to fail entirely. This thesis provides the first quantitative characterization of this failure mode for sidewalk navigation (Section~\ref{sec:bev_fragility_results}).
+
+
+\section{Path Planning for Mobile Robots}
+\label{sec:lit_planning}
+
+Local path planning for mobile robots encompasses a broad spectrum of methods. Grid-based planners such as A* and Dijkstra operate on discretized cost maps and guarantee optimal paths within the grid resolution~\cite{lavalle2006}. Sampling-based methods (RRT, PRM) excel in high-dimensional configuration spaces but are less relevant for 2D mask corridors. Potential field methods use attractive and repulsive forces to guide the robot~\cite{khatib1986}. End-to-end steering policies trained via imitation learning or reinforcement learning can map directly from images to control~\cite{e2e_nav_policies, bojarski2016}.
+
+For sidewalk navigation specifically, most prior work operates in BEV or world coordinates. Agricultural row-following uses histogram-of-column methods that are fast and reliable in structured corridors~\cite{orchard_seg_nav, row_nav_survey}. Our work introduces the alternative of planning directly in image space---bypassing BEV entirely---and provides the first systematic comparison of BEV-domain and image-space planning methods for monocular sidewalk navigation.
+
+
+\section{Distance Transform Methods in Navigation}
+
+The Euclidean distance transform (EDT) computes, for each pixel in a binary mask, the distance to the nearest obstacle (non-traversable) pixel. This produces a natural clearance map where the ridge (local maxima) traces the centerline of the corridor---the path of maximum clearance. In robotics, EDT-based approaches are widely used for safe corridor extraction~\cite{felzenszwalb_dt}. The Euclidean Signed Distance Field (ESDF) extends this concept to 3D for aerial and manipulator planning.
+
+In 2D mask planning, the EDT ridge can be traced via dynamic programming or Dijkstra search on a cost field $c(x,y) = 1/(d(x,y) + \varepsilon)^\alpha$, where $d$ is the EDT value. This produces clearance-optimal paths without the noise sensitivity of morphological skeletonization. We employ this approach in both our BEV DT planner and image-space DT planner, providing a controlled comparison of the same algorithm applied in different coordinate domains.
+
+
+\section{Skeletonization and Topological Path Extraction}
+
+Morphological skeletonization reduces a binary region to its 1-pixel-wide medial axis, preserving topological structure (branches, junctions). The Zhang--Suen algorithm~\cite{zhang_suen} and its parallel variant by Guo and Hall~\cite{guo_hall} are the most widely used thinning methods. From the skeleton, a graph can be constructed with pixels as nodes and 8-neighbor connections as edges, enabling efficient path enumeration via graph search.
+
+Learned skeletonization~\cite{flores2025skeleton} can substantially reduce planning cost in simulation. However, classical thinning remains attractive in embedded contexts because it is stable, deterministic, and requires no learned parameters. A known limitation is noise sensitivity: small protrusions in the input mask generate spurious branches that require pruning. This thesis uses Guo--Hall skeletonization as one of the five compared planning methods and documents its computational cost relative to alternatives.
+
+
+\section{Semi-Supervised and Teacher--Student Learning}
+\label{sec:lit_teacher_student}
+
+Knowledge distillation~\cite{hinton2015distilling} transfers knowledge from a large ``teacher'' model to a compact ``student'' model. For semantic segmentation, this is particularly valuable because annotation is expensive: labeling pixel-level masks takes 10--30$\times$ longer than classification labels. Semi-supervised approaches use the teacher to generate pseudo-labels on unlabeled data, which are then used to train the student~\cite{pseudolabel_lee2013}.
+
+OneFormer~\cite{oneformer} is a universal image segmentation model that unifies semantic, instance, and panoptic segmentation in a single architecture. Pre-trained on large-scale datasets (ADE20K, COCO, CityScapes), OneFormer with a Swin-L backbone provides high-quality dense predictions that serve as effective pseudo-labels for domain-specific student training. This thesis uses OneFormer Swin-L as the teacher and SegFormer-B0 as the student, a combination that has not been previously applied to sidewalk segmentation.
+
+
+\section{Embedded and Real-Time Perception}
+\label{sec:lit_embedded}
+
+Deploying neural networks on embedded hardware requires careful attention to model size, inference latency, and memory footprint. Single-board computers such as the Raspberry Pi 4 (4-core ARM Cortex-A72, 2--8~GB RAM) and Rock 5B (8-core ARM, 8--16~GB RAM) provide limited computational resources compared to desktop GPUs. ONNX Runtime~\cite{onnxruntime} enables cross-platform model deployment with optimized CPU and GPU backends. TensorRT provides NVIDIA-specific acceleration on Jetson platforms.
+
+For pedestrian-speed platforms, the latency requirement is relatively relaxed. Human visual reaction time is approximately 200~ms~\cite{mental_chronometry_react}, and typical camera-based robot control frequencies range from 2--10~Hz~\cite{pi0_lowfreq}. A 10~Hz (100~ms) pipeline is generally considered sufficient for platforms moving at 1--2~m/s. This thesis demonstrates that the recommended image-space architecture achieves 59~FPS on CPU---far exceeding this requirement and providing substantial headroom for additional processing.
+
+
+\section{Summary and Research Gap}
+
+Prior work in sidewalk navigation has primarily focused on either end-to-end approaches requiring depth sensors or GPU compute, or BEV-based geometric methods that assume reliable BEV projection. The following gaps motivate this thesis:
+
+\begin{enumerate}[nosep]
+  \item No prior systematic comparison of BEV-domain and image-space path planning for monocular sidewalk navigation.
+  \item Limited empirical characterization of when monocular BEV projection helps versus when it introduces failure.
+  \item The teacher--student combination of OneFormer Swin-L and SegFormer-B0 has not been applied to sidewalk-specific binary segmentation.
+  \item Few complete perception-to-planning pipelines have been benchmarked end-to-end on CPU-only embedded hardware for sidewalk applications.
+\end{enumerate}
+
+
+% =====================================================================
+\chapter{System Design and Methodology}
+\label{ch:methodology}
+% =====================================================================
+
+This chapter describes the perception pipeline that transforms monocular RGB frames into controller-ready waypoints. The system avoids reliance on GPS or external localization for local path following, leveraging a modular pipeline of interpretable geometric and learning-based modules. Figure~\ref{fig:pipeline_diagram} illustrates the overall architecture.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{pipeline/pipeline_graph.jpg}
+  \caption{Overview of the sidewalk navigation pipeline. Hand-annotated and pseudo-labeled data are merged to train a student segmentation model, followed by geometric processing to extract traversable paths. The system supports both BEV-domain and image-space planning; the experiments in Chapter~\ref{ch:results} compare five methods across both domains.}
   \label{fig:pipeline_diagram}
 \end{figure}
+
+
+% -----------------------------------------------------------------
+\section{Hardware Platform}
+\label{sec:hardware}
+
+The experimental platform is an electric scooter equipped with a single forward-facing monocular RGB camera rigidly mounted to the handlebar stem (Figure~\ref{fig:scooter_hw}). The camera captures 1920$\times$1080 video at 30~FPS. No depth sensor, stereo camera, LiDAR, or IMU is used. The target deployment hardware is a Raspberry Pi~4 or Rock~5B class single-board computer; all development and evaluation were conducted on a workstation with an Intel Core~i7 CPU and NVIDIA GPU, with runtime measurements reported for CPU-only inference to reflect embedded deployment conditions.
+
 
 % -----------------------------------------------------------------
 \section{Segmentation Module and Supervision Strategy}
 \label{sec:segmentation}
 
-The first stage of the pipeline performs pixel-wise segmentation of sidewalk regions from monocular RGB input. This module is critical for all downstream steps---homography projection, BEV graph construction, and trajectory planning---and must balance high segmentation quality with real-time efficiency on embedded systems.
+The first stage performs pixel-wise segmentation of sidewalk regions from monocular RGB input. This module is critical for all downstream steps and must balance segmentation quality with real-time efficiency on embedded systems.
 
-We adopt SegFormer~\cite{segformer} as our backbone architecture due to its strong performance on urban navigation benchmarks and its adaptability across model scales. Unlike conventional encoder--decoder networks, SegFormer combines a lightweight Transformer-based encoder with a multi-scale MLP decoder, achieving competitive accuracy without relying on positional encodings or complex upsampling schemes.
+We adopt \textbf{SegFormer}~\cite{segformer} as our backbone architecture due to its strong performance on urban benchmarks and adaptability across model scales. Unlike conventional encoder--decoder networks, SegFormer combines a hierarchical Transformer-based encoder with a multi-scale MLP decoder, achieving competitive accuracy without positional encodings or complex upsampling. For deployment, we use \textbf{SegFormer-B0} (3.7M parameters) for its low latency and memory footprint.
 
-For deployment, we use SegFormer-B0 (3.7M parameters) due to its low latency and memory footprint. However, small models trained on limited data often produce noisy or incomplete masks. To mitigate this, we employ a semi-supervised teacher--student framework.
 
 \subsection{Teacher--Student Supervision}
+\label{sec:teacher_student}
 
-We fine-tune a high-capacity SegFormer-B2 teacher model (24M parameters) on 300 hand-labeled sidewalk frames. Once trained, this model generates dense soft masks on 2{,}300 additional unlabeled frames. For each unlabeled image $x \in D_U$, the teacher predicts pixel-wise logits $z_T = f_T(x)$, which are converted to probabilities via softmax: $p_T = \sigma(z_T)$. A confidence threshold $\tau$ is applied to produce a binary mask:
+Small models trained on limited data often produce noisy masks. To mitigate this, we employ a semi-supervised teacher--student framework. We explored two teacher architectures across our design iterations:
+
+\begin{itemize}[nosep]
+  \item \textbf{Iteration~1:} A SegFormer-B2 teacher (24M parameters) fine-tuned on 300 hand-labeled frames, generating pseudo-labels on 2,300 unlabeled frames.
+  \item \textbf{Iteration~2:} A high-capacity \textbf{OneFormer Swin-L} teacher~\cite{oneformer} pre-trained on ADE20K, generating dense binary pseudo-labels from up to 1,419 unlabeled frames across 10 campus video sequences.
+\end{itemize}
+
+For each unlabeled image $x \in D_U$, the teacher predicts pixel-wise logits $z_T = f_T(x)$, converted to probabilities via softmax: $p_T = \sigma(z_T)$. A confidence threshold $\tau = 0.60$ produces binary masks:
 \begin{equation}
-\tilde{y}(u) = 
+\tilde{y}(u) =
 \begin{cases}
 1,& \text{if } p_T(u) \ge \tau \\
 0,& \text{otherwise}
 \end{cases}
 \quad \text{with } u \in \Omega
 \end{equation}
-where $\Omega$ denotes the set of pixel locations. The pseudo-labels are further cleaned with connected-component filtering and morphological smoothing.
+where $\Omega$ denotes the set of pixel locations. Pseudo-labels are further cleaned with connected-component filtering and morphological smoothing to remove spurious isolated predictions.
+
 
 \subsection{Hybrid Training Dataset}
 
-To construct a training set $\mathcal{D} = D_L \cup D_P$, we merge the pseudo-labeled frames $D_P$ with our hand-labeled set $D_L$. In frames where both are available, hand labels take precedence:
+The training set $\mathcal{D} = D_L \cup D_P$ merges pseudo-labeled frames $D_P$ with hand-labeled frames $D_L$. In frames where both are available, hand labels take precedence:
 \begin{equation}
 y_i =
 \begin{cases}
-y_i^{\text{hand}}, & \text{if labeled} \\
+y_i^{\text{hand}}, & \text{if hand-labeled} \\
 \tilde{y}_i^{\text{pseudo}}, & \text{otherwise}
 \end{cases}
 \end{equation}
+Our best-performing student was trained on 1,419 image--mask pairs (699 from earlier sequences plus 720 newly extracted frames from four additional campus videos).
+
 
 \subsection{Loss Function}
 
-The student model $f_S$ is trained to minimize a composite loss:
+The student model $f_S$ minimizes a composite loss:
 \begin{equation}
 \mathcal{L} = \lambda_{\text{CE}} \mathcal{L}_{\text{CE}} + \lambda_{\text{Dice}} \mathcal{L}_{\text{Dice}} + \lambda_{\text{B}} \mathcal{L}_{\text{boundary}}
 \end{equation}
-where $\mathcal{L}_{\text{CE}}$ is binary cross-entropy, $\mathcal{L}_{\text{Dice}}$ improves mask completeness in sparse regions, and $\mathcal{L}_{\text{boundary}}$ sharpens the sidewalk edges.
+where $\mathcal{L}_{\text{CE}}$ is binary cross-entropy, $\mathcal{L}_{\text{Dice}}$ improves mask completeness in sparse regions, and $\mathcal{L}_{\text{boundary}}$ sharpens sidewalk edges by upweighting boundary pixels.
+
+
+\subsection{Training Progression}
+
+Table~\ref{tab:training_progression} summarizes the segmentation model iterations. The OneFormer teacher with expanded data yields the highest validation IoU (0.960), while the hand-annotated evaluation (Section~\ref{sec:res_seg}) confirms a large improvement over the baseline (IoU 0.758~$\to$~0.946).
+
+\begin{table}[h]
+\centering
+\caption{Segmentation model training progression. All students are SegFormer-B0; validation IoU is on held-out splits.}
+\label{tab:training_progression}
+\begin{threeparttable}
+\begin{tabular}{lccc}
+\toprule
+Iteration & Teacher & Train Pairs & Val IoU \\
+\midrule
+Baseline & SegFormer-B2 & 300 + 2,300 & 0.758\tnote{$\dagger$} \\
+OneFormer (4 vid) & OneFormer Swin-L & 400 & 0.944 \\
+OneFormer (mixed) & OneFormer Swin-L & 1,419 & \textbf{0.960} \\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}
+\small
+\item[$\dagger$] Hand-annotated IoU (external evaluation, not internal validation split).
+\end{tablenotes}
+\end{threeparttable}
+\end{table}
+
 
 % -----------------------------------------------------------------
 \section{Resolution Trade-Off Analysis}
 \label{sec:resolution}
 
-To balance segmentation accuracy and real-time performance, we conducted a resolution sweep using the SegFormer-B0 model on CPU. We evaluated multiple input sizes ranging from $160\times90$ to $1280\times720$. Based on both qualitative and quantitative results, we selected $640\times360$ as a practical operating point, achieving sub-\SI{50}{ms} inference on CPU.
+To balance accuracy and real-time performance, we conducted a resolution sweep using SegFormer-B0 on CPU. Table~\ref{tab:segformer_fps} reports latency and throughput. Lower resolutions ($320{\times}180$ and below) produced masks that were overly coarse, fragmenting continuous sidewalk segments. Higher resolutions ($960{\times}540$+) incurred prohibitive latency. We selected $640{\times}360$ as a practical operating point: accurate segmentation at sub-\SI{50}{ms} inference.
 
 \begin{table}[h]
 \centering
@@ -344,400 +475,566 @@ To balance segmentation accuracy and real-time performance, we conducted a resol
 \toprule
 Resolution & Latency (ms) & FPS \\
 \midrule
-$1280\times720$  & 352.40 & 2.84 \\
-$960\times540$   & 152.45 & 6.56 \\
-$768\times432$   & 93.55  & 10.69 \\
-$640\times360$   & 46.00  & 21.74 \\
-$480\times270$   & 42.05  & 23.78 \\
-$320\times180$   & 25.35  & 39.45 \\
-$160\times90$    & 19.84  & 50.40 \\
+$160{\times}90$         & 19.84 & 50.40 \\
+$320{\times}180$        & 25.35 & 39.45 \\
+$480{\times}270$        & 42.05 & 23.78 \\
+$640{\times}360$        & 46.00 & 21.74 \\
+$768{\times}432$        & 93.55 & 10.69 \\
+$960{\times}540$        & 152.45 & 6.56 \\
+$1280{\times}720$       & 352.40 & 2.84 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{resolution/segformer_compare_20251105_154023.png}
+  \caption{Resolution sweep for SegFormer-B0. Each column shows input overlay (left) and resulting segmentation mask (right). Higher resolutions improve edge detail but increase latency substantially.}
+  \label{fig:segformer_compare}
+\end{figure}
+
 
 % -----------------------------------------------------------------
 \section{Bird's-Eye View Projection}
 \label{sec:bev}
 
-To transform the segmented sidewalk mask from the image plane into a spatially consistent top-down representation, we apply a single planar homography. This projection produces a BEV binary mask in which pixel distances approximate real-world ground distances.
-
-Let $\mathbf{p} = [u, v, 1]^\top$ be a homogeneous image pixel coordinate and $\mathbf{p}' = [x, y, 1]^\top$ be its corresponding BEV coordinate. The mapping is:
+To transform the segmented mask into a spatially consistent top-down representation, we apply a planar homography. Let $\mathbf{p} = [u, v, 1]^\top$ be a homogeneous image pixel and $\mathbf{p}' = [x, y, 1]^\top$ its BEV coordinate. The mapping is:
 \begin{equation}
 \mathbf{p}' \sim H \mathbf{p}
 \end{equation}
-where $H$ is a $3\times3$ homography matrix estimated via manual selection of four point correspondences between the camera image and a flat ground reference.
+where $H$ is a $3\times3$ homography matrix estimated via four point correspondences between the camera image and a flat ground reference. The resulting BEV mask is aligned with the robot's reference frame, with the ego position at the bottom-center and forward motion along the vertical axis.
 
-The resulting BEV mask is a normalized binary occupancy map aligned with the robot's frame of reference, with forward motion along the vertical axis and the robot centered at the bottom.
+The BEV grid covers a $10\text{m} \times 10\text{m}$ area at $600 \times 600$ pixels, yielding a scale of 60~px/m. Calibration is performed using an interactive tool that allows the operator to select four ground-plane correspondences for any camera mounting angle. This transformation provides metric-scale reasoning but assumes a flat plane and fixed camera pose---assumptions we test empirically in Section~\ref{sec:bev_fragility_results}.
 
-% -----------------------------------------------------------------
-\section{Skeletonization and Graph Abstraction}
-\label{sec:skeletonization}
-
-To convert the BEV mask into a navigable representation, we extract the medial axis using the Guo--Hall parallel thinning algorithm~\cite{guo_hall}. This produces a 1-pixel-wide skeleton preserving the topology of the sidewalk. From the skeleton, we construct an undirected graph $\mathcal{G} = (\mathcal{V}, \mathcal{E})$ where each skeleton pixel becomes a node and edges connect 8-neighbors.
-
-A two-stage pruning process suppresses spurious branches:
-\begin{itemize}
-  \item \textbf{Length-based pruning} removes branches shorter than a threshold (\SI{1.0}{m} in BEV space).
-  \item \textbf{Component filtering} discards isolated subgraphs disconnected from the main sidewalk trunk.
-\end{itemize}
 
 % -----------------------------------------------------------------
-\section{Path Enumeration and Scoring}
-\label{sec:path_scoring}
+\section{BEV Mask Refinement}
+\label{sec:mask_refinement}
 
-We use Dijkstra's algorithm to enumerate all feasible paths from the agent's starting node $v_0$ (bottom-center of BEV) to reachable endpoints. Each candidate path $p_j$ is scored:
+The raw BEV mask often contains noise: thin spurs, disconnected blobs, and boundary artifacts from segmentation errors amplified by the perspective warp. We apply a multi-stage cleanup pipeline:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Morphological closing and opening} with configurable kernel sizes suppress small gaps and spurs.
+  \item \textbf{Connected-component filtering} retains only the largest connected region touching the ego anchor row.
+  \item \textbf{Enhanced refinement} (optional): flood-fill hole filling from corners to identify enclosed holes that standard morphological operations cannot reach; Gaussian boundary smoothing to reduce jagged edges; and distance-transform-based component selection that preferentially retains the component with the highest ego clearance rather than simply the largest area.
+\end{enumerate}
+
+These stages are individually toggleable via configuration flags, allowing controlled ablation.
+
+
+% -----------------------------------------------------------------
+\section{Path Planning Methods}
+\label{sec:planners}
+
+We compare five path planning methods spanning two geometric domains: three operating in BEV space and two in image space. All methods receive a binary sidewalk mask and produce a centerline trajectory.
+
+
+\subsection{BEV Skeleton-Graph Planner}
+\label{sec:skeleton_planner}
+
+The Guo--Hall parallel thinning algorithm~\cite{guo_hall} reduces the BEV mask to a 1-pixel-wide skeleton preserving topological structure. From this skeleton, we construct an undirected graph $\mathcal{G} = (\mathcal{V}, \mathcal{E})$ where each skeleton pixel is a node and 8-neighbor connections form edges. Two-stage pruning (length-based and component filtering) suppresses spurious branches. Dijkstra's algorithm enumerates candidate paths from the ego node $v_0$, each scored by:
 \begin{equation}
 C(p_j) = \alpha \cdot \text{Curvature}(p_j) + \beta \cdot \text{LateralShift}(p_j)
 \end{equation}
-where Curvature measures accumulated heading change and LateralShift penalizes deviation from the forward axis. The lowest-cost path is selected as the primary trajectory.
+This method explicitly exposes junction topology but is computationally expensive due to per-pixel graph construction.
+
+
+\subsection{BEV Distance-Transform Ridge Planner}
+\label{sec:dt_planner}
+
+Rather than skeletonize, this method computes the Euclidean distance transform (EDT) of the BEV mask and traces the ridge of maximum clearance. The cost field
+\begin{equation}
+c(x,y) = \frac{1}{(d(x,y) + \varepsilon)^\alpha}
+\end{equation}
+where $d$ is the EDT value, $\varepsilon = 0.5$, and $\alpha = 1.5$, is minimized via Dijkstra's algorithm to find the globally maximum-clearance path. The resulting centerline is smoothed with a Savitzky--Golay filter (window size 9, polynomial order 2). This approach avoids the noise sensitivity of skeletonization but inherits the full cost of BEV computation plus the EDT and graph search.
+
+
+\subsection{BEV Template Arc Planner}
+\label{sec:template_planner}
+
+A bank of predefined arc templates (straight, gentle-left, gentle-right, sharp-left, sharp-right) is scored against a corridor extracted from the DT ridge. Each template is evaluated by its containment within the segmented corridor and its smoothness. The highest-scoring template that passes a confidence gate becomes the planned path. This method trades generality for speed and interpretability: the arc bank is fixed and small, making runtime predictable.
+
+
+\subsection{Image-Space Midpoint Planner}
+\label{sec:img_midpoint}
+
+This method operates directly on the image-plane segmentation mask $\widehat{M}_\text{img}$, bypassing BEV entirely. For each row $y$ of the mask, the left and right sidewalk boundaries are identified and the midpoint $x_\text{mid}(y) = (x_L(y) + x_R(y))/2$ is computed. Rows with fewer than a minimum number of road pixels are skipped. A connected-component filter ensures only the ego-connected mask region is used. The resulting per-row midpoints are smoothed with a Savitzky--Golay filter to produce a continuous centerline. This method is the fastest (\SI{2.2}{ms}) and produces the lowest lateral center error in our experiments.
+
+
+\subsection{Image-Space Distance-Transform Planner}
+\label{sec:img_dt}
+
+The EDT is computed on the image-plane mask, and the maximum-distance ridge is traced using dynamic programming with a lateral drift constraint. A per-row forward pass from the ego (bottom-center) selects the column with minimum cost (inverse EDT) subject to a maximum lateral step per row, producing a path that tracks the widest part of the sidewalk corridor. This method is more robust than midpoint extraction on masks with irregular boundaries or partial gaps but slower (\SI{108.1}{ms}).
+
+
+% -----------------------------------------------------------------
+\section{Temporal Smoothing}
+\label{sec:temporal_smoothing}
+
+Frame-by-frame path extraction produces jittery trajectories due to segmentation noise. We apply two temporal filters:
+
+\paragraph{Path temporal smoothing.}
+An exponential moving average (EMA) is applied to the cubic polynomial coefficients $[a_0, a_1, a_2, a_3]$ of the fitted path. The smoothing factor $\alpha$ is adaptive: higher confidence paths receive less smoothing ($\alpha \to 0.85$), while low-confidence paths receive more ($\alpha \to 0.35$). A topology-change detector resets the filter when the maximum per-coefficient jump exceeds a threshold, preventing averaging across distinct path segments.
+
+\paragraph{Heading temporal smoothing.}
+A circular EMA filter on the heading angle handles the $\pm 180^\circ$ wraparound discontinuity. The filter resets when the heading delta exceeds $45^\circ$, allowing rapid response to sharp turns while suppressing noise on straight segments.
+
+\paragraph{Mask temporal smoothing.}
+A camera-space EMA with a conservative-blend policy reduces the effective $\alpha$ when the consecutive-frame IoU falls below a consistency threshold, since a large IoU drop signals a probable camera shake or sudden scene change:
+\begin{equation}
+\hat{M}_t^{\text{cam}} = \alpha_{\text{eff}} \cdot M_t + (1 - \alpha_{\text{eff}}) \cdot \hat{M}_{t-1}^{\text{cam}}
+\end{equation}
+with $\alpha = 0.65$ and consistency threshold $c_\text{thresh} = 0.20$.
+
 
 % -----------------------------------------------------------------
 \section{Evaluation Metrics}
 \label{sec:metrics}
 
-We define three metrics to quantify pipeline quality:
+We evaluate the pipeline offline and define five quantitative metrics:
 
-\paragraph{Lateral Path-Centering Error.} For each BEV row, we compute the midpoint between sidewalk boundaries and measure the lateral deviation of the skeleton path from this reference centerline. Results are reported in meters.
+\paragraph{Segmentation IoU.}
+Intersection-over-union between the predicted binary mask and hand-annotated ground truth, computed per-frame and averaged.
 
-\paragraph{Junction Branch Detection.} At skeleton branch points, we count detected branches $B_{\text{det}}^{(j)}$ versus ground-truth branches $B_{\text{gt}}^{(j)}$:
+\paragraph{Lateral path-centering error.}
+For each sample point along the planned path, we measure the lateral deviation from the geometric centerline of the ground-truth sidewalk mask. Reported in pixels.
+
+\paragraph{Mask--path alignment (inside-GT ratio).}
+The fraction of path pixels that fall within the ground-truth sidewalk mask:
 \begin{equation}
-\text{BranchRecall} = \frac{\sum_j B_{\text{det}}^{(j)}}{\sum_j B_{\text{gt}}^{(j)}} \times 100\%
+\text{Alignment} = \frac{L_{\text{in}}}{L_{\text{total}}} \times 100\%
 \end{equation}
 
-\paragraph{Mask--Path Alignment.} The fraction of skeleton pixels along the selected path that lie inside the binary sidewalk mask, averaged across all frames.
+\paragraph{Temporal stability.}
+Frame-to-frame IoU between consecutive cleaned masks. Frames below a threshold are flagged as ``unstable.'' The unstable rate captures temporal flicker.
+
+\paragraph{Runtime.}
+Per-module wall-clock time in milliseconds, measured on CPU to reflect embedded deployment conditions.
+
+
+% -----------------------------------------------------------------
+\section{Software Architecture}
+\label{sec:software_arch}
+
+The system is implemented in Python 3.10+ using OpenCV, PyTorch, NumPy, and SciPy. A centralized configuration module (\texttt{config.py}, 271 lines) serves as the single source of truth for all parameters, including segmentation thresholds, BEV dimensions, planner settings, speed profiles, and feature flags. Each research improvement is gated by a boolean flag, enabling exact reproduction of any prior design iteration. The test suite comprises 155 automated tests covering all major modules.
 
 
 % =====================================================================
-\chapter{Closed-Loop Control and Real-Time Deployment}
+\chapter{Closed-Loop Control and System Integration}
 \label{ch:closed_loop}
 % =====================================================================
 
-This chapter extends the offline perception pipeline described in Chapter~\ref{ch:methodology} to a real-time closed-loop system capable of autonomous sidewalk navigation. We describe eight additions: (1)~a two-layer temporal mask stabilization scheme, (2)~a lightweight object-detection module for dynamic obstacle awareness, (3)~GPS-based waypoint navigation for global route following, (4)~occupancy-aware path planner robustness for handling BEV collapse and stale-path lock, (5)~precise steering-angle and speed computation, (6)~a serial command protocol for the scooter platform, (7)~temporal smoothing for heading and speed stability, and (8)~a live demonstration system that integrates all components.
+This chapter extends the offline perception pipeline to a real-time system capable of autonomous sidewalk navigation. We describe four additions: obstacle detection, GPS waypoint navigation, steering and speed computation, and the serial command protocol.
 
-\section{Extended System Architecture}
-\label{sec:system_arch}
 
-Figure~\ref{fig:extended_pipeline} summarizes the extended pipeline. At each camera frame, four concurrent streams produce the control output:
-
-\begin{enumerate}
-  \item \textbf{Sidewalk perception} (SegFormer $\rightarrow$ BEV $\rightarrow$ skeleton $\rightarrow$ path) produces a local heading angle $\theta_{\text{vis}}$ and a binary path-available flag.
-  \item \textbf{Object detection} (YOLOv8-nano) identifies pedestrians, cyclists, and vehicles and estimates their distance from the camera.
-  \item \textbf{GPS navigation} (NMEA over serial) computes the bearing correction $\theta_{\text{gps}}$ toward the next waypoint.
-  \item \textbf{Command fusion} blends the vision and GPS headings, applies speed modulation based on obstacle proximity, smooths both signals temporally, and transmits the final steering angle (degrees) and speed (m/s) to the scooter over serial.
-\end{enumerate}
-
-\begin{figure}[t]
-  \centering
-  \fbox{\parbox{0.92\textwidth}{\centering\vspace{2em}[Extended pipeline diagram placeholder --- SegFormer + YOLO + GPS $\rightarrow$ Command Fusion $\rightarrow$ Serial]\vspace{2em}}}
-  \caption{Extended system architecture. The sidewalk perception pipeline, object detector, and GPS navigator feed into a command-fusion module that outputs steering angle and speed over serial.}
-  \label{fig:extended_pipeline}
-\end{figure}
-
-% -----------------------------------------------------------------
-\section{Temporal Mask Stabilization}
-\label{sec:temporal_stabilization}
-
-Raw per-frame segmentation masks contain two distinct sources of instability that must be addressed before BEV projection and path extraction can be reliable. The first is \emph{model variance}: stochastic fluctuation in the predicted boundary between frames even when the scene is static, caused by minor changes in illumination, motion blur, and the approximate nature of learned segmentation. The second is \emph{ego-motion shift}: the apparent position of the sidewalk region changes deterministically as the scooter advances, causing the BEV mask to translate forward with each frame. We address both with a two-layer stabilization strategy applied at different stages of the perception pipeline.
-
-% -----------------------------------------------------------------
-\subsection{Camera-Space Exponential Moving Average}
-\label{sec:cam_ema}
-
-The first layer suppresses model variance by applying an exponential moving average (EMA) to consecutive binary segmentation masks in the image frame. The running estimate is updated each frame as:
-\begin{equation}
-\hat{M}_t^{\text{cam}} = \alpha_{\text{eff}} \cdot M_t + (1 - \alpha_{\text{eff}}) \cdot \hat{M}_{t-1}^{\text{cam}}
-\label{eq:cam_ema}
-\end{equation}
-where $M_t \in \{0,1\}^{H \times W}$ is the raw binary sidewalk mask at frame $t$ and $\alpha_{\text{eff}} \in (0,1)$ is the effective current-frame weight. Rather than using a fixed $\alpha$, we employ a conservative-blend policy that reduces $\alpha_{\text{eff}}$ when the consecutive-frame intersection over union (IoU) falls below a consistency threshold $c_{\text{thresh}}$, since a large IoU drop signals a probable camera shake or sudden scene change that should not be incorporated at full weight:
-\begin{equation}
-\alpha_{\text{eff}} =
-\begin{cases}
-\alpha / 4, & \text{IoU}(\hat{M}_{t-1}^{\text{cam}},\, M_t) < c_{\text{thresh}} \\
-\alpha / 2, & \text{IoU}(\hat{M}_{t-1}^{\text{cam}},\, M_t) < 0.5 \\
-\alpha,     & \text{otherwise}
-\end{cases}
-\label{eq:cam_conservative_blend}
-\end{equation}
-
-On the first call in a session, the smoother bypasses Equation~\ref{eq:cam_ema} and sets $\hat{M}_0^{\text{cam}} = M_0$ directly. This fast-path initialization ensures that an obstacle appearing for the first time is immediately visible at full strength, rather than being attenuated by the EMA history from a previous (obstacle-free) estimate. Parameters $\alpha = 0.65$ and $c_{\text{thresh}} = 0.20$ were selected via the 35-combination grid sweep described in Section~\ref{sec:smoother_sweep}; the resulting smoothed stability is 99.6\% of consecutive frame pairs with IoU $\geq 0.85$.
-
-% -----------------------------------------------------------------
-\subsection{BEV-Space Forward Motion Compensation}
-\label{sec:bev_motion_comp}
-
-The camera-space EMA described above does not account for the deterministic shift in the BEV mask caused by forward ego-motion. Applying temporal averaging in the image frame before warping to BEV is geometrically incorrect for a moving platform: under forward translation, the apparent position of a sidewalk pixel moves upward in the image at a rate that depends on its depth, making per-pixel motion non-uniform and scene-dependent. Correcting for this in image space would require per-pixel depth estimates---unavailable on a monocular system.
-
-BEV space eliminates this difficulty. A key geometric consequence of a fixed planar homography under the flat-ground assumption is that forward ego-motion corresponds to a \emph{uniform downward translation} of the entire BEV mask~\cite{hartley_zisserman}. Specifically, if the scooter advances by $\delta$ meters in $\Delta t$ seconds, every point in the BEV mask shifts by the same amount:
-\begin{equation}
-\Delta y_{\text{bev}} = v \cdot \Delta t \cdot \frac{h_{\text{bev}}}{d_{\text{fwd}}}
-\label{eq:bev_shift}
-\end{equation}
-where $v$ is the forward speed in m/s, $h_{\text{bev}} = 500$~px is the BEV image height (the forward-range axis), and $d_{\text{fwd}} = 10$~m is the maximum forward look-ahead distance, yielding a scale of $50$~px/m. At a representative speed of $v = 1.0$~m/s and frame rate $f = 9$~Hz, the per-frame shift is $\Delta y_{\text{bev}} \approx 5.6$~px---modest but sufficient to misalign successive masks if uncompensated.
-
-This uniformity is what makes BEV the correct domain for ego-motion compensation: it decouples forward translation from depth, so the shift can be computed analytically without any learned module. State-of-the-art multi-camera perception systems such as BEVFormer~\cite{bevformer} address the same problem using deformable spatial attention that aligns BEV feature volumes across frames using full 6-DoF pose transforms. Our approach specializes this to the 1-DoF forward-motion case afforded by a single fixed camera on a nominally planar scooter, yielding a deterministic closed-form solution at negligible computational cost. The geometric validity of the approximation rests on the Lift, Splat, Shoot framework~\cite{lift_splat_shoot}, which establishes that a calibrated planar homography produces a metrically consistent BEV grid in which rigid body motion of the camera corresponds to a shift of the grid coordinates.
-
-In practice, the shift at frame $t$ is estimated from the speed available at the end of the previous control cycle:
-\begin{equation}
-\Delta y_t = \hat{v}_{t-1} \cdot \frac{1}{f_{\text{fps}}} \cdot \frac{h_{\text{bev}}}{d_{\text{fwd}}}
-\label{eq:bev_shift_impl}
-\end{equation}
-where $\hat{v}_{t-1}$ is the speed command issued at frame $t-1$, available without causal violation. The previous BEV mask estimate is translated upward by $\Delta y_t$ pixels before the EMA update, aligning it to the expected viewpoint of frame $t$:
-\begin{equation}
-\hat{M}_t^{\text{bev}} = \beta \cdot M_t^{\text{bev}} + (1-\beta) \cdot T_{-\Delta y_t}\!\left(\hat{M}_{t-1}^{\text{bev}}\right)
-\label{eq:bev_ema}
-\end{equation}
-where $M_t^{\text{bev}} = \mathcal{H}(M_t^{\text{cam}})$ is the freshly warped BEV mask, $T_{-\Delta y}$ denotes an upward affine translation by $\Delta y$ pixels, and $\beta = 0.55$ is the BEV-layer EMA weight (tuned separately from $\alpha$ in the camera layer). The translated prior $T_{-\Delta y_t}(\hat{M}_{t-1}^{\text{bev}})$ represents where the previous sidewalk estimate is expected to appear in the current BEV frame after the scooter has advanced; blending it with $M_t^{\text{bev}}$ suppresses temporal noise while keeping the mask geometrically aligned with the current position.
-
-% -----------------------------------------------------------------
 \section{Lightweight Object Detection}
 \label{sec:object_detection}
 
-Dynamic obstacles---pedestrians, cyclists, dogs, and vehicles crossing the sidewalk---are a primary safety concern. Rather than modifying the segmentation model, we add a dedicated detection head that runs in parallel.
+Dynamic obstacles---pedestrians, cyclists, dogs, and vehicles---are a primary safety concern. We adopt YOLOv8-nano~\cite{yolov8} (3.2M parameters, $\sim$\SI{6}{MB}) from the Ultralytics framework, pretrained on COCO~\cite{coco} (80 classes). At inference, predictions are filtered to retain eight safety-relevant classes: person, bicycle, car, motorcycle, bus, truck, cat, and dog. A confidence threshold of $\tau_\text{det} = 0.35$ balances recall and false-positive suppression.
 
-\subsection{Model Selection: YOLOv8-nano}
+\subsection{Monocular Distance Estimation}
 
-We adopt YOLOv8-nano~\cite{yolov8} from the Ultralytics framework. At 3.2~million parameters and a model file of roughly \SI{6}{MB}, it is among the smallest general-purpose object detectors available. The model is pretrained on COCO~\cite{coco} (80 classes) and we filter predictions at inference time to retain only safety-relevant classes:
+Without stereo or depth sensors, we estimate object distance from the vertical position of the bounding-box bottom edge using a pinhole-camera approximation:
+\begin{equation}
+d \approx \frac{h_c}{\tan\!\bigl(\phi_v \cdot (y_{\text{foot}}/H - 0.5)\bigr)}
+\end{equation}
+where $h_c = \SI{0.8}{m}$ is the camera mounting height, $\phi_v = \SI{55}{\degree}$ is the vertical field of view, $y_\text{foot}$ is the pixel row of the bounding-box bottom, and $H$ is the frame height. The estimate is clamped to $[0.5, 20]$~m.
+
+\subsection{Speed Modulation}
+
+The nearest obstacle distance $d_\text{min}$ modulates the speed setpoint:
+\begin{equation}
+v_{\text{obs}} =
+\begin{cases}
+0, & d_{\min} < d_{\text{stop}} = \SI{1.0}{m} \\
+v_{\text{slow}} = \SI{0.3}{m/s}, & d_{\text{stop}} \le d_{\min} < d_{\text{close}} = \SI{3.0}{m} \\
+v_{\text{nominal}}, & \text{otherwise}
+\end{cases}
+\end{equation}
+
+
+\section{GPS Waypoint Navigation}
+\label{sec:gps_navigation}
+
+The vision-based pipeline provides \emph{local} path-following. GPS provides the \emph{global} context for branch selection at junctions. A low-cost GNSS module streams standard NMEA-0183 sentences via USB-serial. A background thread parses \texttt{\$GPGGA} and \texttt{\$GPRMC} sentences. The operator supplies a route as a CSV file of GPS waypoints.
+
+The final heading command blends local vision heading $\theta_\text{vis}$ and global GPS correction $\theta_\text{gps}$:
+\begin{equation}
+\theta = w_v \cdot \theta_{\text{vis}} + w_g \cdot \theta_{\text{gps}}, \qquad w_v = 0.7,\ w_g = 0.3
+\end{equation}
+When no GPS fix is available, $w_g$ falls to zero and the system reverts to pure vision control.
+
+
+\section{Steering and Speed Computation}
+\label{sec:steer_speed}
+
+The heading angle $\theta_\text{vis}$ is computed from the planned path as the angle between the forward direction and the vector from the ego to a point approximately 40\% along the path. This is converted to both a discrete command and a continuous steering angle:
+\begin{itemize}[nosep]
+  \item $|\theta| < 12^\circ$: \textbf{STRAIGHT} ($v = \SI{1.5}{m/s}$)
+  \item $12^\circ \le |\theta| < 40^\circ$: \textbf{LEFT/RIGHT} ($v = 1.5 - (1.5 - 0.8) \cdot \frac{|\theta|-12}{28}$ m/s)
+  \item $|\theta| \ge 40^\circ$: \textbf{SHARP LEFT/RIGHT} ($v = \SI{0.4}{m/s}$)
+\end{itemize}
+
+Both heading and speed are temporally smoothed. Both the heading angle and speed command are smoothed with EMA or rolling-window filters to remove high-frequency jitter.
+
+
+\section{Serial Command Protocol}
+\label{sec:serial_protocol}
+
+The fused steering angle and smoothed speed are transmitted to the scooter's motor controller as a simple ASCII line protocol:
+\begin{verbatim}
+    CMD,<steer_deg>,<speed_mps>\n
+\end{verbatim}
+A watchdog on the scooter side triggers a safety stop if no valid command is received within \SI{500}{ms}.
+
+
+\section{Safety Mechanisms}
+\label{sec:safety}
+
+\begin{itemize}[nosep]
+  \item \textbf{No-path stop:} Full stop if no valid path for $N$ consecutive frames.
+  \item \textbf{Obstacle stop/slow:} Immediate stop within \SI{1.0}{m}; slowdown within \SI{3.0}{m}.
+  \item \textbf{GPS loss fallback:} Graceful degradation to vision-only control.
+  \item \textbf{Manual override:} Emergency stop via hardware button or keyboard.
+  \item \textbf{Segmentation instability gate:} Speed cap (\SI{0.2}{m/s}) when segmentation IoU drops below threshold for multiple consecutive frames.
+\end{itemize}
+
+
+% =====================================================================
+\chapter{Experiments and Results}
+\label{ch:results}
+% =====================================================================
+
+This chapter presents results organized by pipeline stage, followed by the planner comparison study, BEV fragility analysis, and runtime profiling.
+
+
+\section{Experimental Setup}
+
+\subsection{Data Collection}
+
+All experiments use campus video collected at the University of Oklahoma. Eleven video sequences were recorded from the scooter-mounted camera, featuring curved sidewalks, T-junctions, shadows, surface changes, and pedestrian traffic. Six sequences totaling \numprint{22679} frames are used for full-video evaluation; 32 hand-annotated frames with ground-truth masks serve as the planner comparison benchmark.
 
 \begin{table}[h]
 \centering
-\caption{Obstacle classes retained from the COCO-80 label set.}
-\label{tab:obstacle_classes}
-\begin{tabular}{cl}
+\caption{Test video dataset summary.}
+\label{tab:video_dataset}
+\begin{tabular}{lcl}
 \toprule
-COCO ID & Class Name \\
+Video ID & Approx. Frames & Conditions \\
 \midrule
-0  & person \\
-1  & bicycle \\
-2  & car \\
-3  & motorcycle \\
-5  & bus \\
-7  & truck \\
-15 & cat \\
-16 & dog \\
+IMG\_1876 & $\sim$2,000 & Straight, mild shadows \\
+IMG\_1877 & $\sim$2,500 & Curves, tree canopy \\
+IMG\_1878 & $\sim$3,000 & T-junctions, surface changes \\
+IMG\_1921 & $\sim$2,500 & Wide path, open area \\
+IMG\_1922 & $\sim$4,000 & Mixed conditions \\
+IMG\_1924 & $\sim$5,000 & Diverse, pedestrian traffic \\
+IMG\_1931 & $\sim$3,500 & Narrow paths, tight turns \\
+VID\_017--020 & $\sim$4,000 each & New campus routes, March 2026 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-No fine-tuning is required: the pretrained weights generalize well to campus sidewalk scenes because the target classes are well-represented in COCO. A confidence threshold of $\tau_{\text{det}} = 0.35$ balances recall and false-positive suppression.
 
-\subsection{Monocular Distance Estimation}
+\subsection{Hand-Annotated Ground Truth}
 
-Without stereo or depth sensors, we estimate object distance from the vertical position of the bounding-box bottom edge (the ``foot point'') using a pinhole-camera approximation:
-\begin{equation}
-d \approx \frac{h_c}{\tan\!\bigl(\phi_v \cdot (y_{\text{foot}}/H - 0.5)\bigr)}
-\label{eq:mono_dist}
-\end{equation}
-where $h_c$ is the camera mounting height (\SI{0.8}{m} on the scooter handlebar), $\phi_v$ is the vertical field of view (\SI{55}{\degree}), $y_{\text{foot}}$ is the pixel row of the bounding-box bottom, and $H$ is the frame height. The estimate is clamped to $[0.5, 20]$~m. While this model is approximate---it assumes flat ground and upright posture---it is sufficient for triggering slowdown and stop behaviors at the distances that matter ($< \SI{3}{m}$).
+Thirty-two frames were manually annotated with pixel-level binary masks across multiple video sequences. These frames span a range of conditions including straight paths, gentle curves, T-junctions, and varying lighting. The annotations serve as ground truth for both segmentation evaluation and planner comparison.
 
-\subsection{Speed Modulation from Obstacles}
 
-The nearest obstacle distance $d_{\min}$ modulates the speed setpoint:
-\begin{equation}
-v_{\text{obs}} =
-\begin{cases}
-0, & d_{\min} < d_{\text{stop}} \\
-v_{\text{slow}}, & d_{\text{stop}} \le d_{\min} < d_{\text{close}} \\
-v_{\text{nominal}}, & \text{otherwise}
-\end{cases}
-\end{equation}
-with $d_{\text{stop}} = \SI{1.0}{m}$, $d_{\text{close}} = \SI{3.0}{m}$, and $v_{\text{slow}} = \SI{0.3}{m/s}$. This acts as a safety layer that overrides the speed computed from heading geometry.
+\subsection{Evaluation Protocol}
+
+For the planner comparison, each of the five methods receives the same cleaned binary mask. For BEV methods, the mask is first warped via homography. Metrics are computed per-frame and averaged. Runtime is measured as mean per-frame wall time on CPU.
+
 
 % -----------------------------------------------------------------
-\section{GPS Waypoint Navigation}
-\label{sec:gps_navigation}
+\section{Segmentation Results}
+\label{sec:res_seg}
 
-The vision-based pipeline provides \emph{local} path-following: it keeps the scooter centered on the sidewalk and selects branches at junctions. However, it cannot determine which branch leads toward a destination. GPS provides this \emph{global} context.
-
-\subsection{NMEA Receiver and Background Thread}
-
-A low-cost GNSS module (connected via USB-serial) streams standard NMEA-0183 sentences. A dedicated background thread reads the serial port and parses \texttt{\$GPGGA} (position and fix quality) and \texttt{\$GPRMC} (position, ground speed, and course over ground) sentences. The parser converts NMEA coordinates to decimal degrees:
-\begin{equation}
-\text{decimal} = \text{deg} + \frac{\text{minutes}}{60}, \quad \text{negated if hemisphere} \in \{S, W\}
-\end{equation}
-
-Because the GPS update rate (typically \SI{1}{Hz}) is much slower than the camera frame rate ($\sim$\SI{9}{Hz}), GPS data is read asynchronously and the latest fix is sampled on each control cycle.
-
-\subsection{Waypoint Route and Bearing Computation}
-
-The operator supplies a route as an ordered CSV file of GPS waypoints (latitude, longitude, optional name). At each control step, the system:
-\begin{enumerate}
-  \item Computes the \emph{great-circle bearing} from the current position to the active waypoint using the Haversine formula.
-  \item Computes the \emph{heading correction} $\theta_{\text{gps}}$ as the signed angular difference between the desired bearing and the GPS-reported course over ground.
-  \item Advances to the next waypoint when the Haversine distance drops below a capture radius $r_{\text{wp}} = \SI{5}{m}$.
-\end{enumerate}
-
-\subsection{Vision--GPS Heading Fusion}
-
-The final heading command blends local vision heading $\theta_{\text{vis}}$ and global GPS correction $\theta_{\text{gps}}$:
-\begin{equation}
-\theta = w_v \cdot \theta_{\text{vis}} + w_g \cdot \theta_{\text{gps}}, \qquad w_v + w_g = 1
-\label{eq:heading_fusion}
-\end{equation}
-We use $w_v = 0.7$, $w_g = 0.3$ so that vision dominates for obstacle avoidance and local path tracking, while GPS gently biases the scooter toward the correct global direction. When no GPS fix is available (e.g., under heavy tree canopy), $w_g$ falls to zero and the system reverts to pure vision control.
-
-% -----------------------------------------------------------------
-\section{Occupancy-Aware Path Planner Robustness}
-\label{sec:path_robustness}
-
-The BEV path extractor operates on a segmentation mask that can undergo transient \emph{occupancy collapse}---frames in which the projected BEV sidewalk region shrinks dramatically due to segmentation under-confidence, glare, or textural ambiguity near the edges of the camera's view. Without mitigation, such collapses cause the predictor to hold a stale path estimate and the controller to apply a persistent lateral bias that outlasts the collapse window. This section describes the occupancy-aware mechanisms introduced to address this failure mode.
-
-\subsection{BEV Occupancy Gating in the Frame Predictor}
-
-The predictive frame-reuse module skips full BEV segmentation inference on frames where the predicted BEV occupancy is expected to resemble the previous frame, reducing latency at the cost of a small accuracy trade-off. A failure mode arises when the predictor continues to skip while actual BEV occupancy has dropped sharply, propagating a stale high-confidence path derived from a mask that no longer reflects the current scene.
-
-We address this with two additions:
-\begin{enumerate}
-  \item \textbf{Occupancy tracking:} After each compute frame, the BEV occupancy ratio $r_{\mathrm{occ}} \in [0,1]$ (fraction of BEV pixels classified as sidewalk) is stored in the predictor state.
-  \item \textbf{Skip blocking:} Before allowing a skip, the predictor checks whether the stored $r_{\mathrm{occ}}$ falls below a minimum evidence threshold. If so, the skip is blocked and full inference is forced. Additionally, if the predicted BEV mask is sparse, the predicted path is invalidated and the stale path state is cleared to prevent prolonged steering lock.
-\end{enumerate}
-
-\subsection{Low-Evidence Mode and Aggressive Hold Decay}
-
-Even when the predictor runs full inference every frame, transient BEV collapses can still cause the path extractor's hold mechanism to accumulate lateral bias over multiple frames. We introduce a \emph{low-evidence mode}: when $r_{\mathrm{occ}}$ falls below a configurable floor threshold, the extractor activates an aggressive hold-decay policy that progressively attenuates the lateral component of the retained path, steering the output toward the image center as evidence degrades. When $r_{\mathrm{occ}}$ recovers, the extractor exits low-evidence mode and resumes normal candidate scoring.
-
-\subsection{Center- and Continuity-Aware Candidate Scoring}
-
-The path extractor evaluates multiple candidate paths extracted from the skeleton graph and selects the highest-scoring one. The original scoring function used only path length and forward progress. We add two terms:
-\begin{itemize}
-  \item \textbf{Center preference:} A penalty proportional to the lateral offset of the path's near-ego segment from the BEV centerline. This biases selection toward paths that depart the ego zone along the image center axis, suppressing spurious short branches that point toward the BEV image edges.
-  \item \textbf{Temporal continuity:} A bonus for candidate paths whose near-ego heading agrees with the previously accepted heading, reducing abrupt direction changes at junction frames.
-\end{itemize}
-
-\subsection{Skeleton Geodesic Fallback Path}
-
-When the skeleton graph is fragmented---a common consequence of aggressive branch pruning on short BEV masks---the Dijkstra-based extractor may produce only zero or one viable graph candidate. In such frames, the system falls back to a \emph{skeleton geodesic path}: a direct shortest-path computation over the raw skeleton pixel graph from the ego-nearest skeleton seed to the most forward-progressing far endpoint, using a pixel-level Dijkstra traversal. The resulting pixel-space polyline is converted to metric coordinates and ego-anchored.
-
-The skeleton fallback is preferred over the mask-centerline fallback, which uses only the column-wise centroid of the BEV mask and carries no skeleton geometry. An override rule additionally forces skeleton candidate selection when the top-scoring graph candidate is both short in forward progress ($<$\SI{0.8}{m}) and laterally biased near the ego point---a signature of near-ego triangle branch artifacts that cause false early turns.
-
-\subsection{Bounded Discontinuity Hold in Pure Pursuit}
-
-When the selected path changes abruptly between frames---for example, when the planner transitions from a held stale path to a freshly recomputed one---the instantaneous heading change can be large enough to cause physical instability. We add a \emph{bounded discontinuity hold}: when the heading implied by the new path differs from the current heading by more than a threshold, the controller holds the previous heading for up to $N_{\mathrm{hold}}$ frames while gradually blending toward the new path. If no acceptable path is found within $N_{\mathrm{hold}}$ frames, the hold is released and the system falls back to a centerline estimate, preventing indefinite stale-path lock while still absorbing brief acquisition transients.
-
-Path source (which component produced the accepted path) and BEV occupancy ratio are logged to CSV and overlaid on the BEV HUD at runtime, enabling post-hoc diagnosis of collapse windows and fallback activations.
-
-% -----------------------------------------------------------------
-\section{Steering Angle and Speed Computation}
-\label{sec:steer_speed}
-
-\subsection{Heading Estimation from BEV Paths}
-
-Given the selected BEV path as an ordered list of waypoints, we compute the heading angle as the angle between the forward direction and the vector from the start to a point approximately 40\% along the path:
-\begin{equation}
-\theta_{\text{vis}} = \arctan\!\left(\frac{\Delta x}{\Delta y}\right)
-\end{equation}
-where $\Delta x$ is the lateral displacement (positive = right) and $\Delta y$ is the forward displacement (positive = ahead). This is converted to both a discrete command and a continuous steering angle:
-\begin{itemize}
-  \item $|\theta| < 12^\circ$: \textbf{STRAIGHT}
-  \item $12^\circ \le |\theta| < 40^\circ$: \textbf{LEFT} or \textbf{RIGHT}
-  \item $|\theta| \ge 40^\circ$: \textbf{SHARP LEFT} or \textbf{SHARP RIGHT}
-\end{itemize}
-
-\subsection{Speed Profile}
-
-The target speed is computed as a function of the fused heading angle and obstacle proximity:
-\begin{equation}
-v =
-\begin{cases}
-0, & \text{no path or } d_{\min} < d_{\text{stop}} \\
-v_{\text{slow}}, & d_{\min} < d_{\text{close}} \\
-v_{\max}, & |\theta| < 12^\circ \\
-v_{\max} - (v_{\max} - v_{\text{turn}}) \cdot \frac{|\theta| - 12}{28}, & 12^\circ \le |\theta| < 40^\circ \\
-v_{\text{sharp}}, & |\theta| \ge 40^\circ
-\end{cases}
-\end{equation}
-with $v_{\max} = \SI{1.5}{m/s}$, $v_{\text{turn}} = \SI{0.8}{m/s}$, and $v_{\text{sharp}} = \SI{0.4}{m/s}$. The obstacle layer takes priority: if any detection is within $d_{\text{stop}} = \SI{1.0}{m}$, the speed is forced to zero regardless of heading.
-
-\subsection{Temporal Smoothing}
-
-Both the heading angle and speed command are smoothed with a rolling-window average over the last $K = 5$ frames:
-\begin{equation}
-\hat{\theta}_t = \frac{1}{K} \sum_{i=0}^{K-1} \theta_{t-i}, \qquad
-\hat{v}_t = \frac{1}{K} \sum_{i=0}^{K-1} v_{t-i}
-\end{equation}
-This removes high-frequency jitter while preserving responsiveness to genuine direction changes. The buffers are reset when no valid path is detected for more than $K$ consecutive frames.
-
-% -----------------------------------------------------------------
-\section{Serial Command Protocol}
-\label{sec:serial_protocol}
-
-The fused steering angle and smoothed speed are transmitted to the scooter's motor controller as a simple ASCII line protocol over a serial (UART) connection:
-\begin{verbatim}
-    CMD,<steer_deg>,<speed_mps>\n
-\end{verbatim}
-Examples:
-\begin{itemize}
-  \item \texttt{CMD,-12.5,1.20} --- steer \SI{12.5}{\degree} left at \SI{1.2}{m/s}
-  \item \texttt{CMD,+3.2,1.50} --- slight right, full speed
-  \item \texttt{CMD,0.0,0.00} --- full stop
-\end{itemize}
-
-The protocol is intentionally minimal so that the scooter's embedded microcontroller only needs to parse two floating-point values per line. The serial baud rate is set to \SI{115200}{baud} by default. A watchdog on the scooter side triggers a safety stop if no valid command is received within \SI{500}{ms}.
-
-% -----------------------------------------------------------------
-\section{Safety Mechanisms}
-\label{sec:safety}
-
-The control layer includes the following safety mechanisms:
-\begin{itemize}
-  \item \textbf{No-path stop:} If the skeleton graph produces no valid path for $N$ consecutive frames, the controller commands a full stop ($v = 0$).
-  \item \textbf{Obstacle stop/slow:} If YOLOv8-nano detects any obstacle within \SI{1.0}{m}, the scooter stops immediately. Obstacles within \SI{3.0}{m} trigger a speed reduction to \SI{0.3}{m/s}.
-  \item \textbf{GPS loss fallback:} When GPS fix is lost, the system gracefully degrades to vision-only control ($w_g = 0$).
-  \item \textbf{Manual override:} The operator can trigger an emergency stop at any time via a hardware button or keyboard input.
-  \item \textbf{Serial watchdog:} The scooter's microcontroller stops if no command is received within \SI{500}{ms}.
-\end{itemize}
-
-% -----------------------------------------------------------------
-\section{Live Demonstration System}
-\label{sec:live_demo}
-
-To validate the complete stack in real-world conditions, we developed a live demonstration system that integrates all modules and displays real-time feedback. The system:
-
-\begin{enumerate}
-  \item Captures frames from a USB or Continuity Camera (e.g., iPhone connected to a MacBook).
-  \item Runs the SegFormer segmentation and YOLOv8-nano detection in parallel on the same frame.
-  \item Projects the sidewalk mask to BEV, extracts the skeleton graph, selects the best path, and computes the vision heading.
-  \item Queries the GPS navigator for waypoint bearing and fuses vision and GPS headings.
-  \item Computes the speed setpoint based on heading and obstacle proximity.
-  \item Renders a heads-up display (HUD) showing:
-    \begin{itemize}
-      \item Steering command and continuous angle (e.g., \texttt{LEFT +18.3 deg})
-      \item Target speed (e.g., \texttt{0.80 m/s})
-      \item Serial command string (e.g., \texttt{CMD,+18.3,0.80})
-      \item Object-detection bounding boxes with class labels and estimated distances
-      \item GPS position, active waypoint name, and distance to waypoint
-      \item BEV visualization with skeleton paths
-      \item Real-time FPS and pipeline latency
-    \end{itemize}
-  \item Optionally transmits the command over serial to the scooter.
-\end{enumerate}
-
-The demonstration includes an interactive BEV calibration tool that allows the user to select four ground-plane correspondences for any new camera mounting angle, making the system portable across different hardware setups.
+\begin{figure}[t]
+\centering
+\begin{subfigure}[b]{0.32\textwidth}
+\includegraphics[width=\linewidth]{bev_src_points.png}
+\caption{RGB input}
+\end{subfigure}\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+\includegraphics[width=\linewidth]{seg_mask_raw.png}
+\caption{Raw segmentation}
+\end{subfigure}\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+\includegraphics[width=\linewidth]{bev_mask_raw.png}
+\caption{BEV projection}
+\end{subfigure}
+\caption{Segmentation pipeline stages. (a)~RGB input, (b)~raw sidewalk mask from SegFormer-B0, (c)~BEV projection of cleaned mask. Morphological filtering and connected-component analysis suppress spurs and disconnected blobs.}
+\label{fig:segmentation_stage}
+\end{figure}
 
 
-% =====================================================================
-\chapter{Experimental Results}
-\label{ch:results}
-% =====================================================================
+\subsection{Hand-Annotated Evaluation}
 
-This chapter presents experimental results for both the offline perception pipeline and the real-time closed-loop system. Experiments are conducted on urban campus environments at the University of Oklahoma featuring diverse sidewalk layouts including intersections, curves, tree occlusions, and varying surface textures.
-
-\section{Offline Pipeline Evaluation}
-
-\subsection{Segmentation Output}
-
-SegFormer-B0 segments the traversable sidewalk region at $640\times360$ resolution. The raw mask is refined with morphological operations and connected-component filtering to stabilize boundaries and remove spurious fragments. The resulting mask is compact and robust across diverse conditions including shadows, texture seams, and uneven surfaces.
-
-% -----------------------------------------------------------------
-\subsection{Segmentation Checkpoint Benchmark}
-\label{sec:seg_checkpoint_benchmark}
-
-To select the best-performing SegFormer checkpoint for deployment, we evaluated 11 candidate model checkpoints on a representative sidewalk video using a temporal stability metric. Stability is defined as the fraction of consecutive frame pairs whose raw (unsmoothed) segmentation IoU exceeds 0.85---the minimum threshold for visually flicker-free output visible to a demo observer. Each checkpoint was evaluated on 300 frames sampled from \texttt{test\_video\_mar3\_1\_h264.mp4} on a workstation equipped with an NVIDIA Quadro P620 GPU, Intel Core i7 CPU, and 32~GB RAM.
-
-Frame classification follows three categories: \emph{stable} (IoU $\geq 0.85$), \emph{failure} (IoU = 0.0 with a non-empty previous mask, indicating a total segmentation miss), and \emph{unstable} (all other cases). Table~\ref{tab:checkpoint_benchmark} reports the results sorted by percent stable frames.
+Table~\ref{tab:seg_comparison} compares the baseline and improved segmentation models on 32 hand-annotated frames. The improved model (OneFormer Swin-L teacher, threshold 0.60) raises IoU from 0.758 to 0.946 while simultaneously reducing inference time from \SI{18.9}{ms} to \SI{11.7}{ms}---a 38\% speedup. Precision and recall both improve substantially, indicating better mask completeness and fewer false positives.
 
 \begin{table}[h]
 \centering
-\caption{Temporal stability benchmark across 11 SegFormer checkpoints on 300 consecutive frames. Stable = consecutive-frame IoU $\geq$ 0.85. Failure = IoU = 0.0 with non-empty previous mask. \texttt{checkpoint-5000} was excluded due to missing model weight files.}
+\caption{Segmentation quality on 32 hand-annotated frames. ``Baseline'' uses the SegFormer-B2 teacher; ``Candidate'' uses the OneFormer Swin-L teacher.}
+\label{tab:seg_comparison}
+\begin{tabular}{lccccr}
+\toprule
+Model & IoU & Prec. & Recall & F1 & ms \\
+\midrule
+Baseline      & 0.758 & 0.910 & 0.835 & 0.851 & 18.9 \\
+Candidate     & \textbf{0.946} & \textbf{0.983} & \textbf{0.962} & \textbf{0.972} & \textbf{11.7} \\
+Cand.+confhold & 0.903 & 0.987 & 0.914 & 0.947 & 13.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.85\columnwidth]{seg_improvement.png}
+  \caption{Segmentation quality comparison on 32 hand-annotated frames. The OneFormer-trained candidate improves all metrics while reducing inference time.}
+  \label{fig:seg_improvement}
+\end{figure}
+
+
+\subsection{Full-Video Temporal Stability}
+
+A full-video replay across six sequences (\numprint{22679} frames) confirms the improvement generalizes beyond the hand-annotated sample. The candidate model reduces temporal instability by 77\% (1.46\%~$\to$~0.33\%) and increases the template-planner success rate by 5.6 percentage points (Table~\ref{tab:fullvideo_replay}).
+
+\begin{table}[h]
+\centering
+\caption{Full-video replay metrics across six campus sequences (\numprint{22679} frames).}
+\label{tab:fullvideo_replay}
+\begin{tabular}{lccc}
+\toprule
+Metric & Baseline & Candidate & $\Delta$ \\
+\midrule
+Mean Seg IoU           & 0.909 & 0.925 & +0.016 \\
+Unstable Rate [\%]     & 1.46  & 0.33  & $-$1.12\,pp \\
+Has-Path Rate [\%]     & 100.0 & 100.0 & --- \\
+Template Success [\%]  & 73.7  & 79.3  & +5.6\,pp \\
+Fallback Rate [\%]     & 19.0  & 14.3  & $-$4.7\,pp \\
+Mean Heading $\Delta$ [deg] & 0.209 & 0.201 & $-$0.008 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% -----------------------------------------------------------------
+\section{Planner Comparison Study}
+\label{sec:planner_comparison}
+
+We evaluate five planning methods on the 32 hand-annotated frames using the candidate segmentation model. Each planner receives the same cleaned binary mask; for BEV methods, the mask is first warped via homography. Table~\ref{tab:planner_comparison} reports path availability, mask--path alignment, lateral center error, and runtime.
+
+\begin{table}[h]
+\centering
+\caption{Planner comparison on 32 hand-annotated frames (candidate mask). Runtime is mean per-frame wall time.}
+\label{tab:planner_comparison}
+\begin{tabular}{lcccc}
+\toprule
+Planner & Path [\%] & Inside-GT & Center Err. [px] & ms \\
+\midrule
+\multicolumn{5}{l}{\textit{BEV-domain methods}} \\
+\quad Skeleton-Graph   & 100 & 0.971 & 76.6 & 380.3 \\
+\quad DT Ridge (full)  & 100 & 0.986 & 65.0 & 926.8 \\
+\quad DT Ridge (near)  & 100 & 0.986 & 79.0 & 1603.0 \\
+\midrule
+\multicolumn{5}{l}{\textit{Image-space methods}} \\
+\quad Midpoint         & 100 & 0.985 & \textbf{14.3} & \textbf{2.2} \\
+\quad DT Ridge         & 100 & \textbf{0.994} & 60.4 & 108.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{planner_comparison.png}
+  \caption{Planner comparison on 32 hand-annotated frames. Left: lateral center error (px) with runtime annotated. Right: inside-GT ratio. Image-space methods (green) dominate BEV methods (blue) in both accuracy and speed.}
+  \label{fig:planner_comparison}
+\end{figure}
+
+
+\subsection{Key Findings}
+
+\begin{enumerate}[nosep]
+  \item \textbf{Image-space midpoint is the best primary planner.} It achieves the lowest lateral center error (14.3~px vs.\ 65.0~px for the best BEV method) at $421\times$ lower latency (2.2~ms vs.\ 926.8~ms). Mask--path alignment is comparable (98.5\% vs.\ 98.6\%).
+
+  \item \textbf{Image-space DT is the best fallback.} When midpoint extraction fails, image-space DT provides the highest inside-GT ratio (99.4\%) at \SI{108.1}{ms}---still $8.6\times$ faster than BEV DT.
+
+  \item \textbf{BEV methods are not competitive on runtime.} The skeleton-graph planner costs \SI{380.3}{ms}; BEV DT costs \SI{926.8}{ms}. Near-field BEV DT is actually \emph{slower} (\SI{1603}{ms}) due to denser graph construction.
+
+  \item \textbf{BEV does not improve path quality.} Even with oracle (ground-truth) masks, BEV DT achieves only 98.0\% inside-GT ratio and 69.2~px center error, compared to 98.9\% and 62.5~px for image-space DT. The planning \emph{domain} is part of the problem, not just the segmentation input.
+\end{enumerate}
+
+
+\subsection{Oracle-Mask Experiment}
+
+To isolate the effect of the planning domain from segmentation quality, we ran the same planners with ground-truth masks. Table~\ref{tab:oracle_comparison} shows that BEV planning remains inferior even with perfect segmentation input.
+
+\begin{table}[h]
+\centering
+\caption{Planner comparison with oracle (ground-truth) masks. BEV planning remains inferior even with perfect input.}
+\label{tab:oracle_comparison}
+\begin{tabular}{lccc}
+\toprule
+Planner & Inside-GT & Center Err. [px] & ms \\
+\midrule
+BEV DT Ridge (full) & 0.980 & 69.2 & 894.7 \\
+Img DT Ridge    & 0.989 & 62.5 & 109.0 \\
+Img Midpoint    & 0.984 & 15.2 & 2.39 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% -----------------------------------------------------------------
+\section{BEV Skeleton-Graph Pipeline Visualization}
+
+\begin{figure}[t]
+\centering
+\begin{subfigure}[b]{0.32\textwidth}
+\includegraphics[width=\linewidth]{bev_skeleton.png}
+\caption{Skeletonized BEV mask.}
+\end{subfigure}\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+\includegraphics[width=\linewidth]{skeleton_paths_overlay.png}
+\caption{Candidate paths on skeleton.}
+\end{subfigure}\hfill
+\begin{subfigure}[b]{0.32\textwidth}
+\includegraphics[width=\linewidth]{cam_paths_0001.png}
+\caption{Selected path in camera view.}
+\end{subfigure}
+\caption{BEV skeleton-graph pipeline. (a)~Skeleton after Guo--Hall thinning, (b)~candidate paths from Dijkstra search, (c)~selected path reprojected to camera view. While topologically informative, this method is the slowest (\SI{380.3}{ms}) and least accurate of the five compared planners.}
+\label{fig:skeleton_stage}
+\end{figure}
+
+
+% -----------------------------------------------------------------
+\section{BEV Fragility Analysis}
+\label{sec:bev_fragility_results}
+
+Beyond the latency disadvantage, BEV-only planning exhibits a critical reliability failure in monocular settings. In a profiled run of 4,407 frames with the baseline segmentation model and full BEV pipeline, 99.3\% of frames produced no valid BEV path (Table~\ref{tab:bev_fragility}).
+
+\begin{table}[h]
+\centering
+\caption{BEV path extraction reliability over 4,407 profiled frames.}
+\label{tab:bev_fragility}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Frames with valid path (\texttt{dt\_ridge}) & 10 (0.2\%) \\
+Frames with held path (\texttt{dt\_ridge\_hold}) & 20 (0.5\%) \\
+Frames with no path (\texttt{none}) & 4,377 (99.3\%) \\
+Mean BEV mask occupancy ratio & 0.0002 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.65\columnwidth]{bev_fragility.png}
+  \caption{BEV path extraction outcome over 4,407 frames. 99.3\% of frames produced no valid BEV path, demonstrating the fragility of monocular BEV planning.}
+  \label{fig:bev_fragility}
+\end{figure}
+
+The root cause is geometric: monocular perspective projection maps a narrow forward-view strip into the BEV grid, leaving most of the BEV frame empty. The distance transform and skeleton algorithms then operate on a tiny sliver of occupied pixels, frequently failing to produce a connected path of sufficient length. This fragility is fundamental to the monocular viewpoint---it cannot be resolved by better segmentation alone, as the oracle-mask experiments confirm.
+
+
+% -----------------------------------------------------------------
+\section{System Runtime Analysis}
+\label{sec:res_runtime}
+
+Table~\ref{tab:runtime_comparison} compares per-module runtimes for the BEV pipeline and the recommended image-space pipeline. The image-space architecture eliminates BEV warp and runs the planner in \SI{2.2}{ms} instead of \SI{380.3}{ms}, achieving over 59~FPS on CPU.
+
+\begin{table}[h]
+\centering
+\caption{Per-module runtime comparison at $640{\times}360$ (CPU-only).}
+\label{tab:runtime_comparison}
+\begin{threeparttable}
+\begin{tabular}{lcc}
+\toprule
+Module & BEV Skeleton & Image-Space \\
+\midrule
+SegFormer Inference   & 11.7\,ms & 11.7\,ms \\
+Mask Refinement       & 8.5\,ms & 3.0\,ms\tnote{$\dagger$} \\
+BEV Projection        & 0.9\,ms & ---      \\
+BEV Cleanup           & 14.6\,ms & ---     \\
+Planner               & 380.3\,ms & 2.2\,ms \\
+\midrule
+Total                 & 416.0\,ms & 16.9\,ms \\
+FPS                   & 2.4       & \textbf{59.2}  \\
+\bottomrule
+\end{tabular}
+\begin{tablenotes}
+\small
+\item[$\dagger$] Image-space mode skips BEV-specific cleanup stages.
+\end{tablenotes}
+\end{threeparttable}
+\end{table}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{runtime_breakdown.png}
+  \caption{Per-module runtime comparison. The image-space architecture eliminates BEV overhead and reduces planner cost by $173\times$, achieving 59~FPS vs.\ 2.4~FPS.}
+  \label{fig:runtime_breakdown}
+\end{figure}
+
+
+Table~\ref{tab:runtime_offenders} ranks the major runtime offenders, guiding deployment optimization. The dominant cost in the BEV pipeline is the planner itself, not display or I/O.
+
+\begin{table}[h]
+\centering
+\caption{Runtime offenders ranked by cost.}
+\label{tab:runtime_offenders}
+\begin{tabular}{lrl}
+\toprule
+Component & Cost (ms) & Recommendation \\
+\midrule
+BEV DT Planner        & 926.8 & Replace with img-space \\
+BEV Graph Planner      & 380.3 & Replace with img-space \\
+YOLO Detection (CPU)   & 39.0  & Gate or GPU \\
+BEV Warp + Cleanup     & 15.5  & Skip in img mode \\
+Seg ($512{\times}288$) & 75.3  & Use $640{\times}360$ \\
+Predictor disabled     & +73.0 & Always enable \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+Table~\ref{tab:runtime_configs} shows profiled runtimes under different system configurations.
+
+\begin{table}[h]
+\centering
+\caption{System-level runtime under different configurations (4,407-frame profiled run, $512{\times}288$ input).}
+\label{tab:runtime_configs}
+\begin{tabular}{lcccc}
+\toprule
+Configuration & FPS & Seg (ms) & Det (ms) & BEV (ms) \\
+\midrule
+No detection, predictor on    & 25.3 & 20.3 & --- & 11.0 \\
+GPU detection, predictor on   & 20.1 & 17.0 & 12.2 & 13.4 \\
+CPU detection, predictor on   & 12.2 & 18.8 & 39.0 & 14.6 \\
+No detection, predictor off   & 8.9  & 75.3 & --- & 29.5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% -----------------------------------------------------------------
+\section{Temporal Smoothing Evaluation}
+\label{sec:smoother_results}
+
+The EMA temporal smoother was tuned via a grid search over 35 combinations ($\alpha \in \{0.25, \ldots, 0.65\}$, $c_\text{thresh} \in \{0.20, \ldots, 0.50\}$). With the best checkpoint (\texttt{my-segformer-road}, 99.3\% raw stability), $\alpha = 0.65$ and $c_\text{thresh} = 0.20$ achieved 99.6\% temporally stable frames on a 500-frame evaluation window.
+
+
+% -----------------------------------------------------------------
+\section{Checkpoint Benchmark}
+\label{sec:checkpoint_benchmark}
+
+To select the best-performing SegFormer checkpoint, we evaluated 11 candidates on temporal stability. Table~\ref{tab:checkpoint_benchmark} reports results sorted by percent stable frames.
+
+\begin{table}[h]
+\centering
+\caption{Temporal stability benchmark across 11 SegFormer checkpoints (300 consecutive frames). Stable = consecutive-frame IoU $\geq$ 0.85.}
 \label{tab:checkpoint_benchmark}
 \begin{tabular}{lrrrr}
 \toprule
@@ -749,213 +1046,81 @@ Checkpoint & Stable (\%) & Failure (\%) & Mean IoU & Median IoU \\
 \texttt{my-segformer-road\_new} & 88.0          & 0.0 & 0.932 & 0.955 \\
 \texttt{checkpoint-1000}        & 86.0          & 0.0 & 0.910 & 0.963 \\
 \texttt{checkpoint-1500}        & 84.3          & 0.0 & 0.919 & 0.942 \\
-\texttt{checkpoint-3000}        & 75.6          & 0.0 & 0.888 & 0.933 \\
-\texttt{checkpoint-4500}        & 73.6          & 0.0 & 0.881 & 0.936 \\
-\texttt{checkpoint-2500}        & 70.9          & 0.0 & 0.887 & 0.930 \\
-\texttt{checkpoint-3500}        & 69.6          & 0.0 & 0.871 & 0.936 \\
 \texttt{checkpoint-500}         & 67.6          & 1.7 & 0.818 & 0.901 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-The \texttt{my-segformer-road} checkpoint achieves 99.3\% stable frames and a mean consecutive-frame IoU of 0.968, outperforming all other checkpoints by at least 5.0 percentage points. The second-best checkpoint (\texttt{checkpoint-4000} at 94.3\%) uses the same architecture but corresponds to an earlier training epoch with less data exposure. Notably, the \texttt{my-segformer-road\_new} checkpoint---the previous deployment model before this benchmark---ranks only fourth at 88.0\%, below the 90\% stability target. The \texttt{checkpoint-500} checkpoint is the only model that produces genuine segmentation failures (1.7\% of frames), consistent with an undertrained model with an unstable road/non-road decision boundary.
-
-Based on these results, \texttt{my-segformer-road} was selected as the deployment model. Its 99.3\% raw stability already exceeds the 90\% target by 9.3 percentage points without any temporal smoothing, providing a strong baseline for the subsequent EMA tuning stage.
 
 % -----------------------------------------------------------------
-\subsection{Temporal Smoothing Parameter Sweep}
-\label{sec:smoother_sweep}
+\section{Qualitative Results}
 
-With the best checkpoint established, we tuned the EMA temporal smoother to push stability from the 99.3\% raw baseline toward the theoretical ceiling. The smoother maintains a running weighted average of consecutive binary sidewalk masks:
-\begin{equation}
-\hat{M}_t = \alpha \cdot M_t + (1 - \alpha) \cdot \hat{M}_{t-1}
-\label{eq:ema_mask}
-\end{equation}
-where $\alpha \in (0,1)$ is the current-frame EMA weight and a conservative-blend branch reduces the effective $\alpha$ when the consecutive-frame IoU falls below a consistency threshold $c_{\text{thresh}}$ (indicating a probable shake artifact or severe appearance change).
+Figure~\ref{fig:seg_comparison_qual} shows qualitative segmentation comparison examples, and Figure~\ref{fig:planner_comparison_qual} shows planner output comparison on sample frames.
 
-We performed a grid search over 7 values of $\alpha \in \{0.25, 0.30, 0.35, 0.40, 0.45, 0.55, 0.65\}$ and 5 values of $c_{\text{thresh}} \in \{0.20, 0.25, 0.30, 0.40, 0.50\}$, yielding 35 combinations in total. To avoid redundant GPU inference, raw segmentation masks were collected in a single forward pass; all 35 parameter combinations were then replayed on CPU. The sweep was evaluated on 500 frames---a larger window than the checkpoint benchmark to improve statistical confidence.
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{seg_comparison_example.jpg}
+  \caption{Qualitative segmentation comparison across three campus frames. Top row: baseline model. Bottom row: candidate model (OneFormer teacher). The candidate produces more complete, cleaner masks with fewer boundary errors.}
+  \label{fig:seg_comparison_qual}
+\end{figure}
 
-Table~\ref{tab:smoother_sweep} reports results collapsed over $c_{\text{thresh}}$, which exhibited zero sensitivity to threshold variation across all 35 combinations. This insensitivity is expected: with 99.3\% of frames already stable, the conservative-blend branch is triggered in fewer than 0.7\% of frame transitions, making $\alpha$ magnitude the sole determinant of smoothing gain.
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{planner_comparison_example.png}
+  \caption{BEV vs.\ image-space planner output comparison. The image-space planners produce more centered, stable paths while avoiding the coverage and distortion issues of BEV projection.}
+  \label{fig:planner_comparison_qual}
+\end{figure}
 
-\begin{table}[h]
-\centering
-\caption{EMA temporal smoother stability as a function of $\alpha$, evaluated on 500 frames of \texttt{test\_video\_mar3\_1\_h264.mp4}. Results are identical across all five $c_{\text{thresh}}$ values tested; entries represent averages over those values. Raw baseline (unsmoothed): 99.3\%.}
-\label{tab:smoother_sweep}
-\begin{tabular}{rcc}
-\toprule
-$\alpha$ & Stable (\%) & Failure (\%) \\
-\midrule
-0.65 & \textbf{99.6} & 0.0 \\
-0.55 & 99.6          & 0.0 \\
-0.45 & 97.6          & 0.0 \\
-0.40 & 97.6          & 0.0 \\
-0.35 & 97.6          & 0.0 \\
-0.30 & 97.4          & 0.0 \\
-0.25 & 92.4          & 0.0 \\
-\bottomrule
-\end{tabular}
-\end{table}
 
-Both $\alpha = 0.55$ and $\alpha = 0.65$ achieve 99.6\% stability. We select $\alpha = 0.65$ because a higher current-frame weight preserves responsiveness to newly appearing obstacles---satisfying the requirement that dynamic agents become visible in the segmentation output within 2--3 frames of first appearance. The floor at $\alpha = 0.25$ (92.4\% stable) demonstrates that the smoother degrades gracefully: even under aggressive temporal averaging, stability remains above the 90\% target.
+% =====================================================================
+\chapter{Discussion}
+\label{ch:discussion}
+% =====================================================================
 
-The final configuration---\texttt{my-segformer-road} with $\alpha = 0.65$ and $c_{\text{thresh}} = 0.20$---achieves \textbf{99.6\% temporally stable frames} on the 500-frame evaluation window. This represents a 0.3~percentage-point improvement over the raw unsmoothed baseline and a 9.6~point margin above the 90\% stability target. Zero segmentation failures (total misses) were observed at any tested alpha value.
 
-\subsection{Quantitative Path Quality}
+\section{Interpretation of Key Findings}
 
-Table~\ref{tab:summary_metrics} summarizes the key metrics on held-out campus sequences.
+The central finding of this thesis is that \emph{simple image-space geometry consistently outperforms the more complex BEV pipeline} in both accuracy and latency for monocular sidewalk navigation. This result is both an engineering improvement and a stronger scientific contribution than the initial hypothesis (that BEV skeleton planning would be the best approach).
 
-\begin{table}[h]
-\centering
-\caption{Summary of path quality and runtime on held-out campus sequences.}
-\label{tab:summary_metrics}
-\begin{tabular}{lc}
-\toprule
-Metric & Value \\
-\midrule
-Mean lateral path-centering error [m] & $0.38 \pm 0.66$ \\
-95th percentile lateral error [m]     & 2.01 \\
-Junction branch detection [\%]        & 95 \\
-Mask--path alignment [\%]             & 98 \\
-Pipeline rate (no viz) [FPS]          & 9.1 \\
-\bottomrule
-\end{tabular}
-\end{table}
+The image-space midpoint planner achieves 14.3~px lateral center error at 2.2~ms---a $421\times$ speedup over BEV DT planning (65.0~px, 926.8~ms). This advantage persists even with oracle masks, confirming that the BEV planning domain itself introduces error rather than just inheriting segmentation noise.
 
-\subsection{System Runtime}
 
-Table~\ref{tab:runtime} shows per-module runtime at $640\times360$ on CPU.
+\section{Why Image-Space Outperforms BEV}
 
-\begin{table}[h]
-\centering
-\caption{Per-module runtime at $640\times360$ resolution (CPU-only).}
-\label{tab:runtime}
-\begin{tabular}{lc}
-\toprule
-Module & Mean Time (ms) \\
-\midrule
-SegFormer Inference         & 46.0 \\
-Mask Refinement             & 8.5 \\
-BEV Projection              & 0.9 \\
-Skeleton \& Path Extraction & 54.1 \\
-\midrule
-Total (no visualization)    & 109.5 \\
-Visualization (optional)    & 15.3 \\
-\bottomrule
-\end{tabular}
-\end{table}
+The fundamental issue is geometric coverage. A monocular camera with typical field of view (55--70$^\circ$) maps only a narrow trapezoidal strip of the ground plane into the BEV grid. At typical scooter camera heights (0.8--1.2~m), most of the 600$\times$600 BEV grid is empty. The distance transform and skeleton algorithms then operate on a tiny sliver of occupied pixels---often less than 0.02\% of the BEV area---frequently failing to produce a connected path of sufficient length.
 
-The complete implementation uses approximately \SI{900}{MB} of system RAM, which fits comfortably within the 4--8~GB memory budgets of typical embedded CPU platforms.
+Image-space planning avoids this issue entirely. The segmentation mask fills a substantial portion of the image (typically 20--60\% of pixels), providing dense geometric information for boundary detection and midpoint extraction. The per-row processing naturally follows the camera's perspective geometry, and no lossy coordinate transformation is needed.
 
-\section{Object Detection Performance}
+BEV projection also assumes flat ground and fixed camera pose. On real sidewalks, curbs, ramps, speed bumps, and camera vibration violate these assumptions, introducing geometric distortion that is absent in image-space processing.
 
-YOLOv8-nano adds approximately \SI{15}{ms} per frame on a MacBook CPU at $640\times480$ input resolution. Table~\ref{tab:yolo_runtime} compares the detection overhead against the segmentation module.
 
-\begin{table}[h]
-\centering
-\caption{Object detection runtime comparison (CPU-only, MacBook M-series).}
-\label{tab:yolo_runtime}
-\begin{tabular}{lcc}
-\toprule
-Module & Parameters & Latency (ms) \\
-\midrule
-SegFormer-B0 (segmentation)  & 3.7M & 46 \\
-YOLOv8-nano (detection)      & 3.2M & 15 \\
-\midrule
-Both modules combined        & 6.9M & 61 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\section{Segmentation as a Necessary but Not Sufficient Condition}
 
-The combined segmentation + detection overhead of \SI{61}{ms} leaves sufficient budget for BEV projection, skeletonization, and control, keeping the full pipeline above \SI{5}{FPS} on CPU. Person detection recall is high in typical campus conditions; false negatives occur primarily when pedestrians are partially occluded by trees or furniture.
+Better segmentation helps all planners: the improved model reduces temporal instability by 77\%, increases template success rate, and raises mask--path alignment across the board. However, BEV planning fails even with oracle masks (Table~\ref{tab:oracle_comparison}). Segmentation improvement has diminishing returns for BEV planning because the bottleneck is geometric coverage, not mask quality. In contrast, segmentation improvement directly and linearly benefits image-space planning.
 
-The monocular distance estimator (Equation~\ref{eq:mono_dist}) was evaluated qualitatively by comparing predicted distances to paced-off ground truth at \SI{2}{m}, \SI{5}{m}, and \SI{10}{m}. At close range ($< \SI{3}{m}$), the estimate is within $\pm \SI{0.5}{m}$, which is sufficient for the binary slowdown/stop decision. At longer ranges, accuracy degrades, but this does not affect safety since the speed override only activates within \SI{3}{m}.
 
-\section{GPS Navigation Results}
+\section{Limitations}
 
-GPS waypoint following was tested along a five-waypoint route on the OU Norman campus. With the vision--GPS fusion weights set to $w_v = 0.7, w_g = 0.3$ (Equation~\ref{eq:heading_fusion}):
-\begin{itemize}
-  \item All five waypoints were reached within the \SI{5}{m} capture radius.
-  \item The GPS correction steered the scooter toward the correct branch at 3 of 3 T-junctions where the vision heading alone was ambiguous (both branches scored similarly).
-  \item Under tree canopy, GPS accuracy degraded (horizontal error $> \SI{5}{m}$), but the vision-dominant weighting prevented the heading from deviating into obstacles.
-\end{itemize}
+Several limitations qualify the findings of this thesis:
 
-\section{Path Planning Robustness Evaluation}
-\label{sec:path_robustness_results}
+\paragraph{Offline evaluation only.} All experiments are conducted offline on recorded video. The planned paths are evaluated against ground-truth masks but are never executed on the physical scooter. Path quality metrics (center error, inside-GT ratio) are necessary but not sufficient for navigation safety.
 
-To quantify the benefit of the occupancy-aware robustness improvements described in Section~\ref{sec:path_robustness}, we ran the full pipeline on a held-out campus recording (\texttt{test\_video\_june\_03\_3.mp4}, 2,058 frames, $\approx$3.8~min at 9~FPS) under three configurations: the baseline (predictor enabled, original hold logic), a diagnostic no-predict baseline (predictor disabled entirely), and Experiment~1 (E1: selected occupancy-aware improvements).
+\paragraph{Limited hand-annotated sample.} The planner comparison uses 32 hand-annotated frames---a common benchmark size in robotics, but small by machine learning standards. The full-video replay across 22,679 frames partially compensates, and trends are consistent across sequences.
 
-\subsection{Heading Error Reduction}
+\paragraph{Fixed camera geometry.} All experiments use a single camera mount position and angle. The homography is calibrated for this specific configuration. Different camera heights, angles, or lens characteristics would require recalibration and may affect the relative performance of BEV-domain methods.
 
-Heading error is measured as the absolute steering angle $|\theta|$ (degrees) output by the vision path pipeline.
-Table~\ref{tab:robustness_heading} compares the configurations globally and within a known BEV collapse window (frames 1520--1600) where intermittent occupancy drops were identified during diagnosis.
+\paragraph{No explicit obstacle modeling.} YOLOv8n detection exists in the system but is not integrated into the planner cost function. Dynamic obstacles are handled only via implicit mask avoidance.
 
-\begin{table}[h]
-\centering
-\caption{Path planning robustness evaluation on \texttt{test\_video\_june\_03\_3.mp4} (2,058~frames). Collapse window = frames 1520--1600 (80~frames with confirmed BEV occupancy drop). E1 = selected occupancy-aware improvements (Section~\ref{sec:path_robustness}).}
-\label{tab:robustness_heading}
-\begin{tabular}{lcccc}
-\toprule
-Configuration & Mean $|\theta|$ ($^\circ$) & P95 $|\theta|$ ($^\circ$) & Collapse mean ($^\circ$) & Collapse $|\theta|{>}8^\circ$ (frames) \\
-\midrule
-Baseline (predict ON)     & 0.824 & 2.693 & 5.85 & 38 \\
-E1 (predict ON)           & \textbf{0.690} & \textbf{2.407} & \textbf{2.58} & \textbf{2} \\
-\midrule
-No-predict before E1      & 19.98 & 28.13 & ---  & --- \\
-No-predict after E1       & 0.776 & 2.646 & ---  & --- \\
-\bottomrule
-\end{tabular}
-\end{table}
+\paragraph{Single campus environment.} All data comes from the University of Oklahoma campus. Generalization to other cities, surfaces (brick, gravel, dirt), weather conditions (rain, snow), and lighting (nighttime) is unknown.
 
-The E1 configuration reduces mean heading error by 16.3\% and P95 heading error by 10.6\% across all frames. The most substantial improvement is in the collapse window: the number of frames exceeding $8^\circ$ drops from 38 to~2 (a 94.7\% reduction), and the collapse-window mean error decreases from $5.85^\circ$ to $2.58^\circ$ (55.9\% reduction). The no-predict diagnostic is particularly revealing: without the predictor, the baseline exhibits severe persistent steering lock (mean $|\theta| = 19.98^\circ$, P95~$= 28.13^\circ$), confirming that the original hold mechanism was accumulating lateral bias independently of the predictor. After the E1 fix, no-predict operation recovers to mean $|\theta| = 0.776^\circ$ and P95~$= 2.646^\circ$---comparable to the predict-ON baseline---confirming that the stale-lock failure originated in the path-hold logic rather than in the predictor itself.
 
-\subsection{Path Source Distribution}
+\section{Threats to Validity}
 
-Table~\ref{tab:path_source_dist} shows the distribution of accepted path sources for the primary E1 run.
+\paragraph{Internal validity.} The same campus videos are used for both training and some evaluation sequences, though held-out splits and hand-annotated frames mitigate this concern. The temporal smoothing ablation uses the same EMA infrastructure being evaluated.
 
-\begin{table}[h]
-\centering
-\caption{Path source distribution for E1 (predict ON) run on \texttt{test\_video\_june\_03\_3.mp4} (2,057~accepted frames). Sources reported per-frame in the \texttt{path\_source} CSV field.}
-\label{tab:path_source_dist}
-\begin{tabular}{lrr}
-\toprule
-Path Source & Frames & Fraction (\%) \\
-\midrule
-\texttt{predict}              & 1457 & 70.8 \\
-\texttt{graph}                & 523  & 25.4 \\
-\texttt{fallback\_centerline} & 55   &  2.7 \\
-\texttt{fallback\_hold}       & 22   &  1.1 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\paragraph{External validity.} Results may not generalize to non-campus environments, different scooter platforms, or significantly different camera configurations.
 
-The predictor path dominates at 70.8\%, as expected given the inter-frame consistency of campus sidewalk geometry at 9~FPS. Dijkstra graph paths account for 25.4\% of frames, covering compute frames where predictor skip is blocked by low occupancy. The two degenerate fallbacks (centerline and hold) together account for fewer than 4\% of frames, confirming that the graph and predictor layers resolve the vast majority of frames without resorting to geometry-free fallbacks.
-
-\section{Live Demonstration Results}
-
-The full integrated system---segmentation, object detection, GPS, and serial commands---was tested on campus sidewalks at the University of Oklahoma using an iPhone camera connected to a MacBook via Continuity Camera. The HUD displays the steering angle, speed, serial command string, detection boxes with distances, and GPS status simultaneously.
-
-Observations:
-\begin{itemize}
-  \item The integrated system achieves approximately 4--7 FPS on a MacBook CPU, sufficient for walking-speed feedback.
-  \item Heading commands are consistent with the visible sidewalk geometry in the majority of frames.
-  \item The serial command output (e.g., \texttt{CMD,+5.2,1.35}) updates smoothly thanks to the 5-frame rolling average.
-  \item Object detection correctly triggers speed reduction when pedestrians are within \SI{3}{m} and a full stop within \SI{1}{m} in most test cases.
-  \item BEV calibration for the handheld camera angle is critical; miscalibrated points lead to incorrect path extraction.
-  \item Temporal smoothing noticeably reduces heading jitter, particularly on straight sections.
-\end{itemize}
-
-\section{Failure Modes and Limitations}
-
-The most common failure cases include:
-\begin{itemize}
-  \item \textbf{Wide intersections or plazas:} The segmentation may fail to resolve sidewalk continuation, leading to incorrect branch selection.
-  \item \textbf{Partial occlusions:} Pedestrians or parked objects can cause the skeleton to veer toward an edge or break.
-  \item \textbf{Junction ambiguity:} In a few scenes, the desired direction is difficult to define even for human labelers; GPS fusion helps but does not always resolve ambiguity.
-  \item \textbf{Edge bleeding:} The student model can overshoot sidewalk boundaries in bright or low-contrast regions.
-  \item \textbf{Non-planar ground:} The fixed homography assumption breaks on ramps and significant slopes.
-  \item \textbf{Monocular distance error:} The pinhole distance estimate is unreliable beyond \SI{5}{m} and for non-upright objects (e.g., bicycles viewed from the side).
-  \item \textbf{GPS urban canyon:} Near tall buildings, GPS horizontal error can exceed \SI{10}{m}, causing the GPS correction to be misleading.
-\end{itemize}
+\paragraph{Construct validity.} Center error and inside-GT ratio are proxies for navigation quality. A path that scores well on these metrics might still be unsuitable for real-world navigation if it is temporally unstable or induces uncomfortable steering behavior.
 
 
 % =====================================================================
@@ -963,39 +1128,38 @@ The most common failure cases include:
 \label{ch:conclusion}
 % =====================================================================
 
-\section{Summary}
 
-This thesis presented a modular vision-based sidewalk navigation system designed for compact, embedded platforms. The system integrates monocular semantic segmentation, bird's-eye view projection via a calibrated homography, skeleton-based graph extraction, lightweight path selection, and a Pure Pursuit closed-loop controller.
+\section{Summary of Contributions}
 
-By combining hand-labeled and pseudo-labeled data in a teacher--student setup, we trained a compact SegFormer-B0 model that achieves robust sidewalk segmentation under diverse campus lighting and geometry while remaining suitable for CPU-only inference. The full pipeline runs at approximately \SI{9}{FPS} at $640\times360$ resolution, selects the correct branch at T- and 4-way junctions in 95\% of evaluated cases, and maintains an average mask--path alignment of 98\%.
+This thesis presented a modular vision-based sidewalk navigation pipeline that evolves through three design iterations, from a skeleton-graph baseline through distance-transform corridor planning to a lightweight image-space architecture. Through systematic comparison of five planning methods, we arrive at a result that is both an engineering improvement and a scientific finding: \emph{for monocular sidewalk navigation on embedded platforms, simple image-space geometry consistently outperforms the more complex BEV pipeline in accuracy, reliability, and latency.}
 
-The closed-loop extension demonstrates that the perception-to-control stack can operate within the latency budget for pedestrian-speed navigation. A systematic benchmark across 11 SegFormer checkpoints identified \texttt{my-segformer-road} as the most stable model variant, achieving 99.3\% of consecutive frame pairs with IoU $\geq 0.85$ on raw unsmoothed output. A subsequent 35-combination EMA parameter sweep ($\alpha \times c_{\text{thresh}}$) raised smoothed stability to 99.6\%---a 9.6~percentage-point margin above the 90\% target---with $\alpha = 0.65$ selected to preserve obstacle responsiveness. Occupancy-aware path planner robustness improvements reduced mean absolute heading error from $0.824^\circ$ to $0.690^\circ$ overall, and cut the number of frames exceeding $8^\circ$ during BEV collapse windows from 38 to 2 (a 94.7\% reduction). Temporal smoothing of heading estimates further reduces frame-to-frame jitter, and the live demonstration system validates the approach on real sidewalks with a consumer camera.
 
-\section{Limitations}
+\section{Key Findings}
 
-Several limitations remain:
-\begin{itemize}
-  \item The current formulation assumes a largely planar ground and fixed camera pose.
-  \item Dynamic agents such as pedestrians and cyclists are not modeled explicitly.
-  \item The homography is fixed for a single camera pose, limiting transfer to different mounting configurations without recalibration.
-  \item Full closed-loop experiments on the physical scooter remain to be completed at the time of writing.
-\end{itemize}
+\begin{enumerate}[nosep]
+  \item The OneFormer-trained SegFormer-B0 student achieves hand-annotated IoU of 0.946 at \SI{11.7}{ms}, improving over the baseline (0.758, \SI{18.9}{ms}).
+  \item Image-space midpoint planning achieves 14.3~px lateral center error at \SI{2.2}{ms}---$421\times$ faster than BEV DT planning (65.0~px, \SI{926.8}{ms}).
+  \item BEV-only planning fails on 99.3\% of frames in one profiled sequence due to insufficient monocular mask coverage.
+  \item The recommended image-space architecture runs the full perception-to-path stack at over 59~FPS on CPU.
+  \item Full-video evaluation across \numprint{22679} frames confirms that improved segmentation reduces temporal instability from 1.46\% to 0.33\%.
+\end{enumerate}
+
+The final recommended architecture---image-space midpoint primary, image-space DT fallback, BEV reserved for optional visualization and obstacle projection---is transparent, lightweight, and deployable on single-board computers. Each stage produces an interpretable intermediate representation that field teams can inspect and tune without retraining models.
+
 
 \section{Future Work}
 
-Future work will extend the system along five directions:
+\paragraph{Closed-loop deployment.} The most critical next step is deploying the complete stack on the physical scooter with real-time obstacle detection, measuring actual tracking error with ground-truth trajectories, and studying failure modes at scale.
 
-\begin{enumerate}
-  \item \textbf{BEV obstacle projection from YOLO detections.} YOLOv8-nano object detection is currently used only for speed modulation via monocular distance estimation (Section~\ref{sec:object_detection}). A natural next step is to project each detected bounding box onto the BEV plane using the same homography, converting it into a 2-D exclusion zone that the skeleton-based path planner must route around. This would enable the path to actively deviate from an oncoming pedestrian rather than only slowing down, and would allow the planner to find an alternative branch when the primary path is fully blocked by a static obstacle.
+\paragraph{Temporal video segmentation.} Video-level consistency mechanisms (temporal attention, optical flow guidance) could further reduce frame-to-frame segmentation flicker beyond what EMA smoothing achieves.
 
-  \item \textbf{Additional fine-tuning data.} The segmentation model was trained on 300 hand-labeled frames supplemented by 2{,}300 pseudo-labeled frames. Collecting and annotating additional frames from diverse conditions---wet pavement, nighttime, steep ramps, and dense pedestrian environments---using a labeling tool such as LabelStudio and retraining with the teacher--student pipeline is expected to further improve boundary accuracy and reduce false positives at sidewalk edges.
+\paragraph{Multi-camera or depth fusion.} Adding a depth sensor or stereo pair would enable metric obstacle distance estimation without the pinhole approximation, while maintaining the monocular pipeline as the primary perception path.
 
-  \item \textbf{BEV recalibration for the final camera mount.} The current homography was calibrated for a hand-held camera in testing conditions. Once the scooter camera mount is finalized, recalibrating the four-point ground-plane correspondence for the fixed pose is a critical step; a well-conditioned homography (condition number $\ll 10^3$, compared to the current $\sim 10^6$) is expected to raise the path-detection rate from the current 2\% to 60--80\% on typical sidewalk footage.
+\paragraph{Global route planning.} Coupling the local image-space planner with a GPS-guided global planner and intersection decision module would enable multi-block autonomous navigation.
 
-  \item \textbf{Cloud-offloaded inference.} An open question is whether offloading segmentation to a cloud GPU running a larger model (e.g., SegFormer-B4 or Mask2Former) improves navigation quality enough to justify the round-trip network latency. Compressing and streaming frames to a remote endpoint, receiving mask predictions, and feeding them into the local BEV and control stack would enable higher-capacity perception without on-board GPU hardware. Quantifying the latency--quality tradeoff relative to the local CPU-B0 baseline is a natural direction for future study.
+\paragraph{Cross-environment generalization.} Testing on diverse sidewalk environments (different cities, weather conditions, surface materials, nighttime) would strengthen the external validity of the findings.
 
-  \item \textbf{Full closed-loop deployment.} Deploy the complete stack in on-scooter experiments, measure tracking error with ground-truth trajectories, study failure modes at scale, and couple the local skeleton-based planner with higher-level global navigation modules.
-\end{enumerate}
+\paragraph{Larger annotated benchmark.} Expanding the hand-annotated evaluation set from 32 to 100+ frames, with additional annotators for inter-rater agreement, would provide stronger statistical evidence for the planner comparison.
 
 
 % ======================== BACK MATTER ========================
