@@ -268,3 +268,34 @@ SH_PRUNE_MIN_LEN = 8                 # min branch length after pruning
 SH_REFINE_RADIUS_PX = 15             # DT-refinement window radius
 SH_DT_WEIGHT_EXP = 2.0              # DT weighting exponent for refinement
 SH_SG_WINDOW = 9                     # Savitzky-Golay window (odd)
+
+# =============================================================================
+# Waypoint Turn Planner (Phase 11.1)
+# GPS-intent-conditioned commanded-side target selection and path approval
+# =============================================================================
+
+# Forward decision band where turn openings are searched (meters from ego)
+WAYPOINT_DECISION_BAND_MIN_M = 2.0
+WAYPOINT_DECISION_BAND_MAX_M = 7.0
+
+# Support thresholds: fraction of decision-band rows with commanded-side pixels
+WAYPOINT_ACQUIRE_SUPPORT_MIN = 0.40   # support needed to initially acquire a target
+WAYPOINT_SUSTAIN_SUPPORT_MIN = 0.25   # support needed to keep an existing target
+
+# Target update hysteresis
+WAYPOINT_TARGET_UPDATE_ALPHA = 0.40   # EMA alpha for smoothing target lateral shifts
+
+# Path containment gates
+WAYPOINT_PATH_CONTAINMENT_MIN = 0.60        # fraction of path points inside corridor
+WAYPOINT_NEAR_CONTAINMENT_MIN = 0.70        # near-field containment fraction
+WAYPOINT_NEAR_FIELD_M = 1.20                # near-field distance from ego (meters)
+
+# Confidence and slowdown
+WAYPOINT_LOW_CONFIDENCE_THRESHOLD = 0.35     # below this -> recommend hold
+WAYPOINT_SLOWDOWN_FLOOR = 0.35               # minimum slowdown when low-confidence
+WAYPOINT_HOLD_SLOWDOWN = 1.0                 # slowdown when hold is recommended
+
+# Path geometry
+WAYPOINT_PATH_HORIZON_M = 6.0               # how far ahead the turn path extends
+WAYPOINT_PATH_DS_M = 0.25                   # sample spacing along the path
+WAYPOINT_EXIT_REJOIN_FACTOR = 0.6           # exit anchor blends back toward corridor center
