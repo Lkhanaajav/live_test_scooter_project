@@ -19,7 +19,14 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from config import BEV_OBSTACLE_PENALTY_WEIGHT, PATH_SMOOTH_ENABLED, DT_CORRIDOR_ENABLED, DT_PLANNER_ENABLED, bev_ego_x_px
+from config import (
+    BEV_OBSTACLE_PENALTY_WEIGHT,
+    PATH_SMOOTH_ENABLED,
+    DT_CORRIDOR_ENABLED,
+    DT_PLANNER_ENABLED,
+    WAYPOINT_TURN_ENABLED,
+    bev_ego_x_px,
+)
 from template_path_planner import (
     CorridorConfig,
     TemplateApprovalResult,
@@ -51,6 +58,21 @@ except ImportError:
     _HAS_DT_PLANNER = False
     DtPathPlanner = None  # type: ignore[assignment,misc]
     DtPlannerConfig = None  # type: ignore[assignment,misc]
+
+try:
+    from waypoint_turn_planner import (
+        WaypointTurnPlannerConfig,
+        WaypointTurnResult,
+        WaypointTurnTarget,
+        plan_waypoint_turn,
+    )
+    _HAS_WAYPOINT_TURN = True
+except ImportError:
+    _HAS_WAYPOINT_TURN = False
+    plan_waypoint_turn = None  # type: ignore[assignment,misc]
+    WaypointTurnPlannerConfig = None  # type: ignore[assignment,misc]
+    WaypointTurnResult = None  # type: ignore[assignment,misc]
+    WaypointTurnTarget = None  # type: ignore[assignment,misc]
 
 
 def _odd(v: int) -> int:
@@ -194,6 +216,7 @@ class PathExtractorConfig:
     template_planner_cfg: TemplatePlannerConfig = field(default_factory=TemplatePlannerConfig)
     endpoint_arc_enabled: bool = True  # replace raw graph polyline with smooth cubic to detected endpoint
     use_dt_planner: bool = DT_PLANNER_ENABLED  # use clean DT-ridge planner (bypasses all skeleton/template logic)
+    waypoint_turn_enabled: bool = WAYPOINT_TURN_ENABLED  # Phase 11.1: use waypoint-turn planner for commanded turns
 
 
 @dataclass
@@ -362,6 +385,15 @@ class BEVPathExtractor:
         )
         self._dt_corridor = get_default_dt_corridor() if (_HAS_DT_CORRIDOR and DT_CORRIDOR_ENABLED) else None
 
+        # Phase 11.1: Waypoint-turn planner state
+        self._waypoint_turn_cfg: Optional[object] = None
+        self._waypoint_turn_prev_result: Optional[object] = None
+        self._waypoint_turn_prev_target: Optional[object] = None
+        self._waypoint_turn_lock_count: int = 0  # consecutive supported frames
+        self._waypoint_turn_unsupported_count: int = 0  # consecutive unsupported frames
+        if _HAS_WAYPOINT_TURN and bool(getattr(self.cfg, "waypoint_turn_enabled", False)):
+            self._waypoint_turn_cfg = WaypointTurnPlannerConfig()
+
         # Clean DT-ridge planner (when enabled, bypasses all skeleton/template logic)
         self._dt_planner: Optional[object] = None
         if _HAS_DT_PLANNER and self.cfg.use_dt_planner:
@@ -417,6 +449,10 @@ class BEVPathExtractor:
         corridor_valid_ratio: float = 0.0,
         corridor_forward_span_m: float = 0.0,
         corridor_width_cv: float = 0.0,
+        override_is_low_confidence: Optional[bool] = None,
+        override_suggested_slowdown: Optional[float] = None,
+        override_selected_template_family: Optional[str] = None,
+        override_approval_confidence: Optional[float] = None,
     ) -> PathPlanResult:
         orig_h, orig_w = orig_shape_hw
         final_best_idx = int(best_idx)
@@ -467,6 +503,16 @@ class BEVPathExtractor:
             corridor_valid_ratio = float(corridor_valid_ratio)
             corridor_forward_span = float(corridor_forward_span_m)
             corridor_width_cv = float(corridor_width_cv)
+
+        # Apply waypoint-turn overrides when present
+        if override_is_low_confidence is not None:
+            is_low_conf = bool(override_is_low_confidence)
+        if override_suggested_slowdown is not None:
+            slowdown = float(override_suggested_slowdown)
+        if override_selected_template_family is not None:
+            template_family = str(override_selected_template_family)
+        if override_approval_confidence is not None:
+            approval_conf = float(override_approval_confidence)
 
         return PathPlanResult(
             has_path=bool(path_model is not None and best_path_m is not None and len(best_path_m) >= 2),
@@ -1860,8 +1906,157 @@ class BEVPathExtractor:
         normalized_source = str(path_source or "").strip().lower()
         if normalized_source == "template":
             self.prev_template_family = str(template_family or "").strip().lower()
+        elif normalized_source in ("waypoint_turn", "waypoint_turn_hold"):
+            # Waypoint-turn mode: preserve the commanded family
+            self.prev_template_family = str(template_family or "").strip().lower()
         elif normalized_source != "fallback_hold":
             self.prev_template_family = ""
+
+    # -------------------------------------------------------------------------
+    # Phase 11.1: Waypoint-turn planner integration
+    # -------------------------------------------------------------------------
+    def _try_waypoint_turn(
+        self,
+        mask: np.ndarray,
+        bev_mask_255: np.ndarray,
+        gps_intent_family: Optional[str],
+        orig_h: int,
+        orig_w: int,
+        mask_occ_ratio: float,
+        t_pre: float,
+    ) -> Optional[PathPlanResult]:
+        """Attempt waypoint-turn planning for commanded left/right.
+
+        Returns a PathPlanResult if waypoint-turn mode handled the frame
+        (either an active turn path or a low-confidence hold result).
+        Returns None to fall through to existing template/skeleton logic.
+        """
+        if self._waypoint_turn_cfg is None or not _HAS_WAYPOINT_TURN:
+            return None
+
+        normalized_intent = str(gps_intent_family or "").strip().lower()
+
+        # Only engage for commanded left/right; no-intent/straight falls through
+        if normalized_intent not in ("left", "right"):
+            # Reset waypoint-turn lock counters when not commanding a turn
+            self._waypoint_turn_lock_count = 0
+            self._waypoint_turn_unsupported_count = 0
+            self._waypoint_turn_prev_result = None
+            self._waypoint_turn_prev_target = None
+            return None
+
+        # Build corridor for waypoint planner (uses same config as template planner)
+        template_cfg = self._make_template_planner_cfg()
+        corridor = corridor_from_mask(mask, template_cfg.corridor_cfg)
+
+        wpt_result = plan_waypoint_turn(
+            corridor=corridor,
+            intent=normalized_intent,
+            bev_mask=bev_mask_255,
+            cfg=self._waypoint_turn_cfg,
+            prev_target=self._waypoint_turn_prev_target,
+            prev_result=self._waypoint_turn_prev_result,
+        )
+
+        # Update lock state
+        if wpt_result.active:
+            self._waypoint_turn_lock_count += 1
+            self._waypoint_turn_unsupported_count = 0
+            self._waypoint_turn_prev_target = wpt_result.target
+            self._waypoint_turn_prev_result = wpt_result
+
+            # Build a valid PathPlanResult from the waypoint-turn path
+            best_path_m = self._anchor_path_to_ego(
+                _resample_polyline(wpt_result.path_m, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
+            )
+            path_model = self._fit_regularized_cubic(best_path_m)
+
+            if path_model is not None:
+                path_model = self._apply_path_smoothing(
+                    path_model,
+                    float(wpt_result.confidence),
+                    "waypoint_turn",
+                )
+                self._commit_selected_path(
+                    best_path_m,
+                    path_source="waypoint_turn",
+                    template_family=normalized_intent,
+                )
+                return self._build_result(
+                    orig_shape_hw=(orig_h, orig_w),
+                    best_path_m=best_path_m,
+                    path_model=path_model,
+                    cand_paths_m=[best_path_m.astype(np.float32)],
+                    cand_lens_m=[float(_polyline_length_m(best_path_m))],
+                    best_idx=0,
+                    skel_work=None,
+                    graph_nodes=0,
+                    graph_edges=0,
+                    t_skeleton_ms=0.0,
+                    t_path_ms=(time.time() - t_pre) * 1000.0,
+                    path_source="waypoint_turn",
+                    mask_occ_ratio=mask_occ_ratio,
+                    corridor_confidence=float(corridor.confidence),
+                    corridor_valid_ratio=float(corridor.valid_ratio),
+                    corridor_forward_span_m=float(corridor.forward_span_m),
+                    corridor_width_cv=float(corridor.width_cv),
+                    override_selected_template_family=normalized_intent,
+                    override_approval_confidence=float(wpt_result.confidence),
+                    override_suggested_slowdown=float(wpt_result.suggested_slowdown),
+                )
+
+        # Waypoint-turn was not active: commanded turn unsupported
+        self._waypoint_turn_unsupported_count += 1
+
+        # Emit low-confidence hold result for unsupported commanded turns
+        # so that the downstream speed controller slows down
+        from config import WAYPOINT_LOCK_RELEASE_FRAMES
+        if self._waypoint_turn_unsupported_count <= WAYPOINT_LOCK_RELEASE_FRAMES:
+            # Try hold with previous path
+            hold_path = self._hold_previous_path(aggressive=True)
+            path_model = None
+            best_path_m = np.zeros((0, 2), dtype=np.float32)
+            path_source = "waypoint_turn_hold"
+            if len(hold_path) >= 2:
+                hold_model = self._fit_regularized_cubic(hold_path)
+                if hold_model is not None:
+                    best_path_m = hold_path
+                    path_model = hold_model
+                    self._commit_selected_path(
+                        best_path_m,
+                        path_source="waypoint_turn_hold",
+                        template_family=normalized_intent,
+                    )
+
+            return self._build_result(
+                orig_shape_hw=(orig_h, orig_w),
+                best_path_m=best_path_m,
+                path_model=path_model,
+                cand_paths_m=[best_path_m.astype(np.float32)] if len(best_path_m) >= 2 else [],
+                cand_lens_m=[float(_polyline_length_m(best_path_m))] if len(best_path_m) >= 2 else [],
+                best_idx=0 if path_model is not None else -1,
+                skel_work=None,
+                graph_nodes=0,
+                graph_edges=0,
+                t_skeleton_ms=0.0,
+                t_path_ms=(time.time() - t_pre) * 1000.0,
+                path_source=path_source if path_model is not None else "none",
+                mask_occ_ratio=mask_occ_ratio,
+                corridor_confidence=float(corridor.confidence),
+                corridor_valid_ratio=float(corridor.valid_ratio),
+                corridor_forward_span_m=float(corridor.forward_span_m),
+                corridor_width_cv=float(corridor.width_cv),
+                override_is_low_confidence=True,
+                override_suggested_slowdown=float(wpt_result.suggested_slowdown),
+                override_selected_template_family=normalized_intent,
+                override_approval_confidence=float(wpt_result.confidence),
+            )
+
+        # Lock released: clear state and fall through to template/skeleton
+        self._waypoint_turn_lock_count = 0
+        self._waypoint_turn_prev_result = None
+        self._waypoint_turn_prev_target = None
+        return None
 
     # -------------------------------------------------------------------------
     # Public API
@@ -1895,6 +2090,12 @@ class BEVPathExtractor:
             or forward_reach_m < float(self.cfg.low_evidence_min_forward_m)
         )
         t_pre = time.time()
+
+        # --- Phase 11.1: Waypoint-turn planner for commanded left/right ---
+        waypoint_result = self._try_waypoint_turn(mask, bev_mask_255, gps_intent_family, orig_h, orig_w, mask_occ_ratio, t_pre)
+        if waypoint_result is not None:
+            return waypoint_result
+
         template_approval = None
         if bool(getattr(self.cfg, "template_planner_enabled", True)):
             template_cfg = self._make_template_planner_cfg()

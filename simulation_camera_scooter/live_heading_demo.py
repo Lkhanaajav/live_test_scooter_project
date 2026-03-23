@@ -790,10 +790,20 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             has_control_path = bool(ctrl_out.valid_path)
             path_valid_for_speed = bool(has_model_path or has_control_path)
             speed_raw = compute_speed(heading_smoothed, min_obstacle_dist, path_valid_for_speed)
+
+            # Phase 11.1: waypoint-turn low-confidence speed gating
+            _nav_slowdown = float(getattr(nav_out, "suggested_slowdown", 0.0))
+            _nav_low_conf = bool(getattr(nav_out, "is_low_confidence", False))
+            _nav_path_source = str(getattr(nav_out, "path_source", ""))
+            if _nav_path_source in ("waypoint_turn_hold",) and _nav_low_conf:
+                # Explicit low-confidence hold from unsupported commanded turn:
+                # enforce the planner's recommended slowdown as minimum
+                _nav_slowdown = max(_nav_slowdown, 0.5)
+
             speed_raw = apply_planner_speed_limit(
                 speed_raw,
-                getattr(nav_out, "suggested_slowdown", 0.0),
-                getattr(nav_out, "is_low_confidence", False),
+                _nav_slowdown,
+                _nav_low_conf,
                 cautious_speed_mps=SPEED_TURN,
             )
             speed_buffer.append(speed_raw)

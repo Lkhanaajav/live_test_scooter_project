@@ -299,3 +299,9 @@ WAYPOINT_HOLD_SLOWDOWN = 1.0                 # slowdown when hold is recommended
 WAYPOINT_PATH_HORIZON_M = 6.0               # how far ahead the turn path extends
 WAYPOINT_PATH_DS_M = 0.25                   # sample spacing along the path
 WAYPOINT_EXIT_REJOIN_FACTOR = 0.6           # exit anchor blends back toward corridor center
+
+# Runtime toggle: enable waypoint-turn mode for commanded left/right turns
+WAYPOINT_TURN_ENABLED = True                # set False to revert to Phase 11 template-only
+# Maneuver lock: keep the commanded family active while support persists
+WAYPOINT_LOCK_SUSTAIN_FRAMES = 3            # min consecutive supported frames before lock engages
+WAYPOINT_LOCK_RELEASE_FRAMES = 5            # consecutive unsupported frames to release lock
