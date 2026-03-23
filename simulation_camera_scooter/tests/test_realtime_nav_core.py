@@ -7,6 +7,7 @@ Unit tests for BEVPathExtractor and AdaptivePurePursuitController.
 import numpy as np
 import pytest
 
+import config as cfg_module
 from realtime_nav_core import (
     BEVPathExtractor,
     PathExtractorConfig,
@@ -137,3 +138,134 @@ class TestAdaptivePurePursuitController:
         out2 = ctrl.update(None, 1.0)
         max_step = cfg.steer_rate_max_deg_s * cfg.dt_s
         assert abs(out2.steer_deg - out1.steer_deg) <= max_step + 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Waypoint-Turn Integration Tests (Phase 11.1 Plan 03)
+# ---------------------------------------------------------------------------
+
+def _make_waypoint_extractor() -> BEVPathExtractor:
+    """Create a BEVPathExtractor with waypoint-turn mode enabled."""
+    cfg = PathExtractorConfig(waypoint_turn_enabled=True, use_dt_planner=False)
+    return BEVPathExtractor(cfg)
+
+
+class TestWaypointTurnMode:
+    """Integration tests: waypoint-turn path wired into BEVPathExtractor.process()."""
+
+    def test_waypoint_turn_engaged_for_commanded_left(self, commanded_left_bev_mask):
+        """With waypoint-turn mode on + commanded left, path_source should be 'waypoint_turn'."""
+        extractor = _make_waypoint_extractor()
+        result = extractor.process(
+            commanded_left_bev_mask,
+            gps_intent_family="left",
+        )
+        assert isinstance(result, PathPlanResult)
+        assert result.path_source == "waypoint_turn"
+        assert result.has_path is True
+        assert result.selected_template_family == "left"
+
+    def test_waypoint_turn_engaged_for_commanded_right(self, commanded_right_bev_mask):
+        """With waypoint-turn mode on + commanded right, path_source should be 'waypoint_turn'."""
+        extractor = _make_waypoint_extractor()
+        result = extractor.process(
+            commanded_right_bev_mask,
+            gps_intent_family="right",
+        )
+        assert isinstance(result, PathPlanResult)
+        assert result.path_source == "waypoint_turn"
+        assert result.has_path is True
+        assert result.selected_template_family == "right"
+
+
+class TestWaypointTurnLockStability:
+    """Maneuver lock: consecutive supported frames keep the family locked."""
+
+    def test_maneuver_lock_persists_across_frames(self, commanded_left_bev_mask):
+        """Repeated supported left-turn frames keep path_source='waypoint_turn' and family='left'."""
+        extractor = _make_waypoint_extractor()
+        families = []
+        sources = []
+        for _ in range(5):
+            result = extractor.process(
+                commanded_left_bev_mask,
+                gps_intent_family="left",
+            )
+            families.append(result.selected_template_family)
+            sources.append(result.path_source)
+        # All frames should be waypoint_turn with left family
+        assert all(f == "left" for f in families), f"Families bounced: {families}"
+        assert all(s == "waypoint_turn" for s in sources), f"Sources bounced: {sources}"
+
+    def test_maneuver_lock_does_not_flip_to_opposite(self, commanded_left_bev_mask):
+        """Commanded left should never produce right family even if right-side support exists."""
+        extractor = _make_waypoint_extractor()
+        result = extractor.process(
+            commanded_left_bev_mask,
+            gps_intent_family="left",
+        )
+        # Family should be left, never right
+        assert result.selected_template_family != "right"
+
+
+class TestNoIntentPreservation:
+    """No-intent and straight-intent preserve existing dt_corridor/template behavior."""
+
+    def test_no_intent_uses_existing_behavior(self, no_intent_straight_bev_mask):
+        """Without intent, path_source should NOT be 'waypoint_turn'."""
+        extractor = _make_waypoint_extractor()
+        result = extractor.process(
+            no_intent_straight_bev_mask,
+            gps_intent_family=None,
+        )
+        assert isinstance(result, PathPlanResult)
+        assert result.path_source != "waypoint_turn"
+        assert result.path_source != "waypoint_turn_hold"
+
+    def test_straight_intent_uses_existing_behavior(self, no_intent_straight_bev_mask):
+        """Explicit 'straight' intent should NOT engage waypoint-turn mode."""
+        extractor = _make_waypoint_extractor()
+        result = extractor.process(
+            no_intent_straight_bev_mask,
+            gps_intent_family="straight",
+        )
+        assert result.path_source != "waypoint_turn"
+        assert result.path_source != "waypoint_turn_hold"
+
+
+class TestWaypointTurnHoldBehavior:
+    """Unsupported commanded turns produce low-confidence hold, not opposite fallback."""
+
+    def test_unsupported_turn_returns_low_confidence(self, unsupported_turn_bev_mask):
+        """Unsupported commanded left returns low confidence and recommends hold/slowdown."""
+        extractor = _make_waypoint_extractor()
+        result = extractor.process(
+            unsupported_turn_bev_mask,
+            gps_intent_family="left",
+        )
+        assert isinstance(result, PathPlanResult)
+        # Should NOT have active waypoint_turn path
+        assert result.path_source != "waypoint_turn"
+        # Should have low confidence or suggest slowdown
+        assert result.is_low_confidence or result.suggested_slowdown > 0.0
+
+    def test_unsupported_turn_does_not_choose_opposite(self, unsupported_turn_bev_mask):
+        """Unsupported commanded left must not silently pick a right-turn path."""
+        extractor = _make_waypoint_extractor()
+        result = extractor.process(
+            unsupported_turn_bev_mask,
+            gps_intent_family="left",
+        )
+        # Family must not be opposite of the commanded direction
+        assert result.selected_template_family != "right"
+
+    def test_unsupported_turn_emits_slowdown(self, unsupported_turn_bev_mask):
+        """Unsupported commanded right triggers planner slowdown."""
+        extractor = _make_waypoint_extractor()
+        result = extractor.process(
+            unsupported_turn_bev_mask,
+            gps_intent_family="right",
+        )
+        # Either low confidence or explicit slowdown recommendation
+        has_slowdown = result.suggested_slowdown > 0.0 or result.is_low_confidence
+        assert has_slowdown, "Unsupported turn should emit slowdown or low confidence"
