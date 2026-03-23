@@ -54,6 +54,13 @@
 - [ ] **TPL-03**: The approved path remains inside the sidewalk corridor on representative straight and turning sequences while matching the commanded intent instead of free-guessing left vs right
 - [ ] **TPL-04**: When intent-consistent candidates do not fit the corridor with enough confidence, the planner emits low confidence and a slowdown/hold recommendation instead of selecting a different maneuver
 
+### GPS-Intent Corridor Waypoint Turn Planning (Phase 11.1)
+
+- [ ] **WPT-01**: When maneuver intent is `left` or `right`, the planner selects a corridor-supported waypoint target on the commanded side instead of using skeleton branches as the primary turn selector
+- [ ] **WPT-02**: The turn path is generated as a smooth controller-feasible trajectory from ego to the selected waypoint and remains within the visible drivable corridor through entry, apex, and exit
+- [ ] **WPT-03**: While a commanded turn is active, the planner maintains maneuver-consistent behavior across consecutive frames and does not revert to an uncommanded straight or opposite-turn path unless corridor evidence fails
+- [ ] **WPT-04**: If the commanded-side waypoint target is not well-supported by corridor evidence, the planner emits low confidence plus slowdown/hold guidance rather than falling back to skeleton-driven turn selection
+
 ## v2 Requirements
 
 ### Advanced Navigation
@@ -110,10 +117,14 @@
 | TPL-02 | Phase 11 | Pending |
 | TPL-03 | Phase 11 | Pending |
 | TPL-04 | Phase 11 | Pending |
+| WPT-01 | Phase 11.1 | Pending |
+| WPT-02 | Phase 11.1 | Pending |
+| WPT-03 | Phase 11.1 | Pending |
+| WPT-04 | Phase 11.1 | Pending |
 
 **Coverage:**
-- v1 requirements: 28 total (15 original + 9 OBS + 4 TPL)
-- Mapped to phases: 28
+- v1 requirements: 32 total (15 original + 9 OBS + 4 TPL + 4 WPT)
+- Mapped to phases: 32
 - Unmapped: 0
 
 ---

@@ -131,6 +131,7 @@ Phases execute in numeric order, with Phase 3 as the next mainline target. Phase
 | 9. Shared-Backbone Multitask Perception | 0/0 | Not planned | - |
 | 10. Tiny Image-to-Waypoints Student | 0/0 | Not planned | - |
 | 11. Template Path Approval Scoring | 0/4 | Planned | - |
+| 11.1 GPS-Intent Corridor Waypoint Turn Planner | 0/0 | Not planned | - |
 
 ### Phase 6: Path quality improvements: post-selection smoothing, BEV mask morphological closing, stronger temporal continuity weight, and draw fitted cubic on overlay
 
@@ -208,3 +209,23 @@ Plans:
 *Granularity: coarse (3-5 phases)*
 *Coverage: 15/15 v1 requirements mapped + 9 OBS requirements (Phase 03.1) + 4 PATH-QUALITY requirements (Phase 6) + 4 TPL requirements (Phase 11)*
 *Last updated: 2026-03-13 — Phase 11 reframed as GPS intent-conditioned corridor fitting; Phase 7 boundary-net foundation remains in progress*
+
+### Phase 11.1: GPS-intent corridor waypoint turn planner (INSERTED)
+
+**Goal:** Add a research-backed, GPS-intent-conditioned turn mode that chooses a corridor-supported waypoint target on the commanded side and fits a smooth controller-ready path to that target, avoiding skeleton-first turn selection
+**Requirements**: WPT-01, WPT-02, WPT-03, WPT-04
+**Depends on:** Phase 11
+**Plans:** 4 plans
+
+**Success Criteria** (what must be TRUE):
+  1. With `left` or `right` intent active, the planner chooses a commanded-side waypoint target from the visible corridor instead of selecting a skeleton branch as the primary turn source
+  2. The resulting path remains smooth and controller-feasible, with visibly earlier and more stable turn commitment than the current manual/skeleton fallback behavior
+  3. During commanded turns, the live path remains maneuver-consistent across consecutive frames and does not flip back to uncommanded `straight` behavior while corridor support remains valid
+  4. If the commanded turn is not yet visually supported, the planner emits low confidence and slowdown/hold guidance instead of inventing a different maneuver
+  5. The implementation is reversible: baseline `dt_corridor`, Phase 11 template approval, and this new waypoint-turn mode can be compared without deleting existing work
+
+Plans:
+- [ ] 11.1-01-PLAN.md - Wave 0 baseline stabilization plus waypoint-turn test scaffolding
+- [ ] 11.1-02-PLAN.md - Standalone waypoint-turn core with commanded-side target and dual-gate approval
+- [ ] 11.1-03-PLAN.md - Runtime integration with dt_corridor preservation, maneuver lock, and low-confidence hold behavior
+- [ ] 11.1-04-PLAN.md - Replay comparison harness and waypoint-turn threshold tuning

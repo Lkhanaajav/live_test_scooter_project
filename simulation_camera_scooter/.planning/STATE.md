@@ -155,6 +155,7 @@ Recent decisions affecting current work:
 - Phase 9 added: Shared-backbone multitask perception for sidewalk, boundaries, and obstacles
 - Phase 10 added: Tiny image-to-waypoints student policy for low-compute scooter control
 - Phase 11 added: Template path fitting inside segmentation corridor with path approval scoring
+- Phase 11.1 inserted after Phase 11: GPS-intent corridor waypoint turn planner (URGENT) - preserve the Phase 11 template-approval track while planning a waypoint-target alternative for commanded turns
 - Phase 7 started: added reusable row-wise boundary target extraction and dataset export pipeline
 - Phase 7 advanced: added metric centerline decoding and low-confidence gating outputs for the tiny boundary-net baseline
 - Phase 11 planned: added requirements, context, research, validation, and four execution plans for template-path approval scoring
