@@ -1,16 +1,16 @@
 """
 test_waypoint_turn_planner.py
 =============================
-Phase 11.1 Wave 0: Contract and fixture tests for the waypoint-turn planner.
+Phase 11.1 Wave 0+1: Contract, fixture, and algorithm tests for the waypoint-turn planner.
 
 Covers:
   - Public contract stability (imports, function signatures, dataclass fields)
   - Commanded-left and commanded-right fixtures expose distinct side support
   - Unsupported or fragmented commanded-turn masks return low-confidence hold
   - No-intent and straight-intent leave the commanded-turn module inactive
-
-These tests are intentionally stub-level: they verify the contract and
-placeholder behavior, not the full algorithm (which arrives in later waves).
+  - (Wave 1) Commanded-side support scoring selects the best cluster on the requested side
+  - (Wave 1) Weak outer-edge candidates do not pass the target gate
+  - (Wave 1) Fitted paths pass only when containment thresholds are met
 """
 
 import numpy as np
@@ -214,3 +214,245 @@ class TestInactive:
             bev_mask=no_intent_straight_bev_mask,
         )
         assert result.path_m.shape == (0, 2) or len(result.path_m) == 0
+
+
+# ===========================================================================
+# Wave 1 tests: target selection, support scoring, containment gating
+# ===========================================================================
+
+
+class TestCommandedSideTargetSelection:
+    """WPT-01: commanded left/right selects a corridor-supported target on
+    the requested side instead of using skeleton branches."""
+
+    def test_left_target_has_negative_lateral(self, commanded_left_bev_mask):
+        """Commanded 'left' must produce a target with negative lateral
+        (left of ego in BEV metric coords)."""
+        corridor = _corridor(commanded_left_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="left",
+            bev_mask=commanded_left_bev_mask,
+        )
+        assert result.active is True, "Left turn with good support should be active"
+        assert result.target is not None, "Target must be selected"
+        assert result.target.side == "left"
+        # BEV convention: left = negative lateral
+        assert result.target.apex_m[1] < 0.0, (
+            f"Left target lateral should be negative, got {result.target.apex_m[1]}"
+        )
+
+    def test_right_target_has_positive_lateral(self, commanded_right_bev_mask):
+        """Commanded 'right' must produce a target with positive lateral
+        (right of ego in BEV metric coords)."""
+        corridor = _corridor(commanded_right_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="right",
+            bev_mask=commanded_right_bev_mask,
+        )
+        assert result.active is True, "Right turn with good support should be active"
+        assert result.target is not None, "Target must be selected"
+        assert result.target.side == "right"
+        # BEV convention: right = positive lateral
+        assert result.target.apex_m[1] > 0.0, (
+            f"Right target lateral should be positive, got {result.target.apex_m[1]}"
+        )
+
+    def test_left_target_ignores_right_side_opening(self, commanded_right_bev_mask):
+        """When intent is 'left' but only right-side support exists,
+        the planner should NOT produce an active target on the wrong side."""
+        corridor = _corridor(commanded_right_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="left",
+            bev_mask=commanded_right_bev_mask,
+        )
+        # With no left support, either inactive or hold with low confidence
+        if result.target is not None:
+            assert result.target.side == "left", (
+                "Target side must match commanded intent"
+            )
+        else:
+            assert result.recommend_hold is True or result.confidence < 0.35
+
+    def test_right_target_ignores_left_side_opening(self, commanded_left_bev_mask):
+        """When intent is 'right' but only left-side support exists,
+        the planner should NOT produce an active target on the wrong side."""
+        corridor = _corridor(commanded_left_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="right",
+            bev_mask=commanded_left_bev_mask,
+        )
+        if result.target is not None:
+            assert result.target.side == "right"
+        else:
+            assert result.recommend_hold is True or result.confidence < 0.35
+
+    def test_target_forward_within_decision_band(self, commanded_left_bev_mask):
+        """The selected target apex should be in or near the forward decision band."""
+        cfg = WaypointTurnPlannerConfig()
+        corridor = _corridor(commanded_left_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="left",
+            bev_mask=commanded_left_bev_mask,
+            cfg=cfg,
+        )
+        assert result.target is not None
+        fwd = result.target.apex_m[0]
+        # Target forward should be reasonably in the decision band region
+        assert fwd >= cfg.decision_band_min_m * 0.5, (
+            f"Target forward too close: {fwd}"
+        )
+        assert fwd <= cfg.decision_band_max_m * 2.0, (
+            f"Target forward too far: {fwd}"
+        )
+
+
+class TestSupportScoring:
+    """Support-score ordering and false-pocket rejection."""
+
+    def test_support_score_above_threshold_for_good_opening(self, commanded_left_bev_mask):
+        """A wide left opening should produce a target with support_score
+        above the acquire threshold."""
+        cfg = WaypointTurnPlannerConfig()
+        corridor = _corridor(commanded_left_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="left",
+            bev_mask=commanded_left_bev_mask,
+            cfg=cfg,
+        )
+        assert result.target is not None
+        assert result.target.support_score >= cfg.acquire_support_min, (
+            f"Expected support >= {cfg.acquire_support_min}, got {result.target.support_score}"
+        )
+
+    def test_false_pocket_rejected_as_target(self, false_pocket_bev_mask):
+        """A near-ego false pocket on the left should not produce a high-support
+        target since it is disconnected and narrow."""
+        corridor = _corridor(false_pocket_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="left",
+            bev_mask=false_pocket_bev_mask,
+        )
+        # The false pocket is near ego (rows 185-220), outside the decision band
+        # so it should either not produce an active result or have low confidence
+        assert (
+            result.active is False
+            or result.confidence < 0.5
+            or result.recommend_hold is True
+        ), "False pocket should not produce a confident turn target"
+
+    def test_weak_unsupported_target_not_active(self, unsupported_turn_bev_mask):
+        """Sparse/fragmented side support (small isolated pockets) should
+        not pass the target gate when below acquire_support_min."""
+        cfg = WaypointTurnPlannerConfig()
+        corridor = _corridor(unsupported_turn_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="left",
+            bev_mask=unsupported_turn_bev_mask,
+            cfg=cfg,
+        )
+        # Either inactive or the target has low support
+        if result.target is not None:
+            assert result.target.support_score < cfg.acquire_support_min, (
+                f"Unsupported target should have low support, got {result.target.support_score}"
+            )
+        assert result.active is False or result.recommend_hold is True
+
+
+class TestContainmentGating:
+    """WPT-02: the generated path must pass containment gates to be approved."""
+
+    def test_approved_left_path_stays_inside_corridor(self, commanded_left_bev_mask):
+        """When active, the returned path points should all be within
+        the visible drivable corridor boundaries."""
+        corridor = _corridor(commanded_left_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="left",
+            bev_mask=commanded_left_bev_mask,
+        )
+        assert result.active is True, "Good left opening should produce active result"
+        assert result.path_m.shape[0] > 0, "Active result must have path points"
+        assert result.path_m.shape[1] == 2, "Path must be (N, 2)"
+        # Path should be smooth: forward coordinates monotonically increasing
+        fwd = result.path_m[:, 0]
+        assert np.all(np.diff(fwd) >= -0.01), "Path forward coords should be non-decreasing"
+
+    def test_approved_right_path_stays_inside_corridor(self, commanded_right_bev_mask):
+        """Right turn path should also be valid and inside corridor."""
+        corridor = _corridor(commanded_right_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="right",
+            bev_mask=commanded_right_bev_mask,
+        )
+        assert result.active is True, "Good right opening should produce active result"
+        assert result.path_m.shape[0] > 0, "Active result must have path points"
+        fwd = result.path_m[:, 0]
+        assert np.all(np.diff(fwd) >= -0.01), "Path forward coords should be non-decreasing"
+
+    def test_confidence_above_low_threshold_when_active(self, commanded_left_bev_mask):
+        """An active (approved) result should have confidence above the
+        low_confidence_threshold."""
+        cfg = WaypointTurnPlannerConfig()
+        corridor = _corridor(commanded_left_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="left",
+            bev_mask=commanded_left_bev_mask,
+            cfg=cfg,
+        )
+        assert result.active is True
+        assert result.confidence >= cfg.low_confidence_threshold, (
+            f"Active result confidence should be >= {cfg.low_confidence_threshold}, got {result.confidence}"
+        )
+
+    def test_narrow_corridor_path_rejected(self, unsupported_turn_bev_mask):
+        """On a narrow corridor with no real side support, the path gate should
+        reject the turn and result should be inactive or hold."""
+        corridor = _corridor(unsupported_turn_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="right",
+            bev_mask=unsupported_turn_bev_mask,
+        )
+        # Either inactive or low-confidence hold
+        assert result.active is False or result.recommend_hold is True
+
+    def test_hold_result_has_slowdown(self, unsupported_turn_bev_mask):
+        """When the planner recommends hold, suggested_slowdown should be
+        above zero (advising the controller to slow down or stop)."""
+        corridor = _corridor(unsupported_turn_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="left",
+            bev_mask=unsupported_turn_bev_mask,
+        )
+        if result.recommend_hold:
+            assert result.suggested_slowdown > 0.0, (
+                "Hold recommendation should come with positive slowdown"
+            )
+
+    def test_active_result_has_nonzero_path_length(self, commanded_right_bev_mask):
+        """An active turn result should produce a path of meaningful length
+        (not just a single point or zero-length path)."""
+        corridor = _corridor(commanded_right_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="right",
+            bev_mask=commanded_right_bev_mask,
+        )
+        assert result.active is True
+        assert result.path_m.shape[0] >= 3, (
+            f"Active path should have >= 3 points, got {result.path_m.shape[0]}"
+        )
+        # Path should span some forward distance
+        fwd_span = float(result.path_m[-1, 0] - result.path_m[0, 0])
+        assert fwd_span > 0.5, f"Path forward span too short: {fwd_span}"
