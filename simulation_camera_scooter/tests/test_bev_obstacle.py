@@ -32,14 +32,21 @@ def test_projection_centered(bev_h_matrix, mock_detections):
 
 
 def test_metric_conversion(bev_h_matrix, bev_obstacle_mask_500x600, mock_detections):
-    """OBS-02: metric coordinate of projected foot matches expected (forward_m, lateral_m)."""
+    """OBS-02: metric coordinate of projected foot matches expected (forward_m, lateral_m).
+
+    Analytical derivation (H scales x*0.3, y*0.5):
+      foot = ((270+330)/2, 400) = (300, 400)  ->  bev = (90, 200)
+      forward_m = (499 - 200) / 499 * NAV_BEV_FORWARD_M
+      lateral_m = (90 - bev_ego_x_px(600)) / 599 * NAV_BEV_LATERAL_M
+
+    With NAV_BEV_FORWARD_M=11.0, NAV_BEV_LATERAL_M=6.0, ego_x=299.5 (BEV_EGO_X_FRAC=0.5):
+      forward_m = 299/499 * 11.0  ~= 6.59
+      lateral_m = (90 - 299.5)/599 * 6.0  ~= -2.10
+    """
     det = {"bbox": (270, 200, 330, 400), "class_name": "person", "confidence": 0.9, "distance_m": 2.5}
-    # bev_x=90, bev_y=200 in a 500x600 BEV
-    # forward_m = (499 - 200) / 499 * 10.0 = 299/499 * 10 ≈ 5.99
-    # lateral_m = (90/599 - 0.5) * 10.0 = (0.1502 - 0.5) * 10 ≈ -3.50
     forward_m, lateral_m = detection_to_metric(det, bev_h_matrix, bev_obstacle_mask_500x600.shape)
-    assert abs(forward_m - 5.99) < 0.1, f"Expected forward_m ~5.99, got {forward_m}"
-    assert abs(lateral_m - (-3.50)) < 0.1, f"Expected lateral_m ~-3.50, got {lateral_m}"
+    assert abs(forward_m - 6.59) < 0.1, f"Expected forward_m ~6.59, got {forward_m}"
+    assert abs(lateral_m - (-2.10)) < 0.15, f"Expected lateral_m ~-2.10, got {lateral_m}"
 
 
 def test_ema_decay(bev_obstacle_mask_500x600):
