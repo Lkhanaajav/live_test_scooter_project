@@ -11,24 +11,24 @@ If another AI or engineer picks this up later, start here.
 
 ## Current Important Files
 
-- Runtime entry: [live_heading_demo.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/live_heading_demo.py)
-- Planner core: [realtime_nav_core.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/realtime_nav_core.py)
-- BEV calibration loader: [bev_calibration.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/bev_calibration.py)
-- Calibration preview tool: [calibrate_bev_examples.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/scripts/calibrate_bev_examples.py)
-- Shared constants: [config.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/config.py)
-- HUD drawing: [visualization.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/visualization.py)
+- Runtime entry: [live_heading_demo.py](simulation_camera_scooter/live_heading_demo.py)
+- Planner core: [realtime_nav_core.py](simulation_camera_scooter/realtime_nav_core.py)
+- BEV calibration loader: [bev_calibration.py](simulation_camera_scooter/bev_calibration.py)
+- Calibration preview tool: [calibrate_bev_examples.py](simulation_camera_scooter/scripts/calibrate_bev_examples.py)
+- Shared constants: [config.py](simulation_camera_scooter/config.py)
+- HUD drawing: [visualization.py](simulation_camera_scooter/visualization.py)
 
 ## Current Model
 
-Use this segmentation checkpoint for the general 1080p campus-style videos:
+Use the latest and best segmentation checkpoint (val IoU 0.9602, trained 2026-03-19):
 
-- [best_checkpoint](/C:/Users/miji0000/Desktop/thesis_prep/outputs/training/binary_segformer_oneformer_teacher/best_checkpoint)
+- `outputs/training/binary_segformer_old400_img1931_vid017_020/best_checkpoint`
 
-Do not assume the `IMG_1931` fine-tuned model is the best general default.
+This model was fine-tuned from `old400_plus_img_1931` on 1419 frames spanning 9 videos including the newest VID_017–020 1080p campus clips. It supersedes both `oneformer_teacher` (IoU 0.9437) and `all6_t400` (IoU 0.9588).
 
 ## Current BEV Geometry
 
-Current committed runtime geometry in [config.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/config.py):
+Current committed runtime geometry in [config.py](simulation_camera_scooter/config.py):
 
 - `BEV_SIZE = (360, 660)`
 - `NAV_BEV_LATERAL_M = 6.0`
@@ -38,7 +38,7 @@ This is a taller BEV than earlier experiments.
 
 ## Current Calibration
 
-Current committed calibration metadata in [bev_calibration_meta.json](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/bev_calibration_meta.json):
+Current committed calibration metadata in [bev_calibration_meta.json](simulation_camera_scooter/bev_calibration_meta.json):
 
 - source resolution: `1920x1080`
 - BEV resolution: `360x660`
@@ -69,7 +69,7 @@ What it does:
 - left side: segmented camera frame
 - right side: live warped BEV preview
 
-Save only when the preview BEV looks correct for the active `BEV_SIZE` in [config.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/config.py).
+Save only when the preview BEV looks correct for the active `BEV_SIZE` in [config.py](simulation_camera_scooter/config.py).
 
 ## Recommended Debug Run
 
@@ -78,7 +78,7 @@ This is the current honest debug command. It avoids predictor reuse and skip-fra
 ```powershell
 python simulation_camera_scooter\live_heading_demo.py ^
   --video simulation_camera_scooter\test_videos\VID_20260319_155939_00_017.mp4 ^
-  --model-dir outputs\training\binary_segformer_oneformer_teacher\best_checkpoint ^
+  --model-dir outputs\training\binary_segformer_old400_img1931_vid017_020\best_checkpoint ^
   --seg-conf-thresh 0.6 ^
   --seg-width 640 ^
   --seg-height 360 ^
@@ -143,7 +143,7 @@ Important:
 
 ## What `dt_corridor` Means
 
-`dt_corridor` in [safe_corridor.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/safe_corridor.py):
+`dt_corridor` in [safe_corridor.py](simulation_camera_scooter/safe_corridor.py):
 
 - computes distance transform on the BEV drivable mask
 - treats high-clearance pixels as low cost
@@ -180,15 +180,15 @@ If continuing work later, the safest order is:
 
 If pushing runtime changes, include these tracked files:
 
-- [bev_calibration.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/bev_calibration.py)
-- [bev_calibration.npy](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/bev_calibration.npy)
-- [bev_calibration_meta.json](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/bev_calibration_meta.json)
-- [config.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/config.py)
-- [live_heading_demo.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/live_heading_demo.py)
-- [realtime_nav_core.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/realtime_nav_core.py)
-- [calibrate_bev_examples.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/scripts/calibrate_bev_examples.py)
-- [visualization.py](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/visualization.py)
-- [RUNTIME_RUNBOOK.md](/C:/Users/miji0000/Desktop/thesis_prep/simulation_camera_scooter/RUNTIME_RUNBOOK.md)
+- [bev_calibration.py](simulation_camera_scooter/bev_calibration.py)
+- [bev_calibration.npy](simulation_camera_scooter/bev_calibration.npy)
+- [bev_calibration_meta.json](simulation_camera_scooter/bev_calibration_meta.json)
+- [config.py](simulation_camera_scooter/config.py)
+- [live_heading_demo.py](simulation_camera_scooter/live_heading_demo.py)
+- [realtime_nav_core.py](simulation_camera_scooter/realtime_nav_core.py)
+- [calibrate_bev_examples.py](simulation_camera_scooter/scripts/calibrate_bev_examples.py)
+- [visualization.py](simulation_camera_scooter/visualization.py)
+- [RUNTIME_RUNBOOK.md](simulation_camera_scooter/RUNTIME_RUNBOOK.md)
 
 Do not push local-only artifacts by accident:
 
