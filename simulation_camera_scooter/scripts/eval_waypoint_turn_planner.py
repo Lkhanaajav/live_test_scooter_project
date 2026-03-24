@@ -66,6 +66,40 @@ _DEFAULT_MODEL_DIR = str(
 
 
 # ---------------------------------------------------------------------------
+# Accepted threshold snapshot (Phase 11.1 Plan 04, 2026-03-24)
+# ---------------------------------------------------------------------------
+# These are the config.py values at acceptance time. The evaluator logs them
+# into the comparison artifact so future replays can verify which thresholds
+# were active during a given evaluation run.
+
+def _snapshot_waypoint_thresholds() -> Dict:
+    """Capture current waypoint-turn config values for provenance logging."""
+    try:
+        import config as _cfg
+        return {
+            "WAYPOINT_DECISION_BAND_MIN_M": _cfg.WAYPOINT_DECISION_BAND_MIN_M,
+            "WAYPOINT_DECISION_BAND_MAX_M": _cfg.WAYPOINT_DECISION_BAND_MAX_M,
+            "WAYPOINT_ACQUIRE_SUPPORT_MIN": _cfg.WAYPOINT_ACQUIRE_SUPPORT_MIN,
+            "WAYPOINT_SUSTAIN_SUPPORT_MIN": _cfg.WAYPOINT_SUSTAIN_SUPPORT_MIN,
+            "WAYPOINT_TARGET_UPDATE_ALPHA": _cfg.WAYPOINT_TARGET_UPDATE_ALPHA,
+            "WAYPOINT_PATH_CONTAINMENT_MIN": _cfg.WAYPOINT_PATH_CONTAINMENT_MIN,
+            "WAYPOINT_NEAR_CONTAINMENT_MIN": _cfg.WAYPOINT_NEAR_CONTAINMENT_MIN,
+            "WAYPOINT_NEAR_FIELD_M": _cfg.WAYPOINT_NEAR_FIELD_M,
+            "WAYPOINT_LOW_CONFIDENCE_THRESHOLD": _cfg.WAYPOINT_LOW_CONFIDENCE_THRESHOLD,
+            "WAYPOINT_SLOWDOWN_FLOOR": _cfg.WAYPOINT_SLOWDOWN_FLOOR,
+            "WAYPOINT_HOLD_SLOWDOWN": _cfg.WAYPOINT_HOLD_SLOWDOWN,
+            "WAYPOINT_PATH_HORIZON_M": _cfg.WAYPOINT_PATH_HORIZON_M,
+            "WAYPOINT_PATH_DS_M": _cfg.WAYPOINT_PATH_DS_M,
+            "WAYPOINT_EXIT_REJOIN_FACTOR": _cfg.WAYPOINT_EXIT_REJOIN_FACTOR,
+            "WAYPOINT_TURN_ENABLED": _cfg.WAYPOINT_TURN_ENABLED,
+            "WAYPOINT_LOCK_SUSTAIN_FRAMES": _cfg.WAYPOINT_LOCK_SUSTAIN_FRAMES,
+            "WAYPOINT_LOCK_RELEASE_FRAMES": _cfg.WAYPOINT_LOCK_RELEASE_FRAMES,
+        }
+    except ImportError:
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Manifest loader
 # ---------------------------------------------------------------------------
 
@@ -582,12 +616,24 @@ def main() -> int:
                     "error": str(exc),
                 })
 
+    # Capture threshold provenance for the artifact
+    threshold_snapshot = _snapshot_waypoint_thresholds()
+
     # Write combined artifacts
     summary_json = output_root / "summary.json"
     summary_md = output_root / "comparison.md"
+    thresholds_json = output_root / "thresholds.json"
 
+    artifact = {
+        "thresholds": threshold_snapshot,
+        "modes": modes,
+        "results": results,
+    }
     summary_json.write_text(
-        json.dumps(results, indent=2, default=str), encoding="utf-8"
+        json.dumps(artifact, indent=2, default=str), encoding="utf-8"
+    )
+    thresholds_json.write_text(
+        json.dumps(threshold_snapshot, indent=2), encoding="utf-8"
     )
     md_text = build_comparison_report(
         "Phase 11.1 Waypoint-Turn Replay Comparison", results
@@ -596,6 +642,7 @@ def main() -> int:
 
     print(f"\n[eval] Wrote {summary_json}")
     print(f"[eval] Wrote {summary_md}")
+    print(f"[eval] Wrote {thresholds_json}")
     print(f"\n{'=' * 60}")
     print("WAYPOINT-TURN REPLAY COMPARISON COMPLETE")
     print(f"Output: {output_root}")

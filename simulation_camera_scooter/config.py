@@ -272,36 +272,77 @@ SH_SG_WINDOW = 9                     # Savitzky-Golay window (odd)
 # =============================================================================
 # Waypoint Turn Planner (Phase 11.1)
 # GPS-intent-conditioned commanded-side target selection and path approval
+#
+# ACCEPTED THRESHOLDS — Phase 11.1 Plan 04 (2026-03-24)
+# These values are the first-pass acceptance set, derived from:
+#   - BEV geometry: NAV_BEV_FORWARD_M=11m, NAV_BEV_LATERAL_M=6m, BEV_SIZE=(360,660)
+#   - Campus sidewalk turn geometry: ~2-3m wide, turns visible at 2-7m forward range
+#   - Safety invariant: unsupported turns always emit low-confidence + slowdown
+# Replay manifest: .planning/phases/11.1-.../11.1-REPLAY_SET.txt (3 campus videos)
+# Evaluator: scripts/eval_waypoint_turn_planner.py
 # =============================================================================
 
-# Forward decision band where turn openings are searched (meters from ego)
+# -- Decision band placement --
+# Forward range (meters from ego) where turn openings are searched.
+# 2.0m near edge: avoids ego-artifact zone (BEV bottom rows are noisy)
+# 7.0m far edge: matches real BEV visibility range for campus sidewalk turns
 WAYPOINT_DECISION_BAND_MIN_M = 2.0
 WAYPOINT_DECISION_BAND_MAX_M = 7.0
 
-# Support thresholds: fraction of decision-band rows with commanded-side pixels
-WAYPOINT_ACQUIRE_SUPPORT_MIN = 0.40   # support needed to initially acquire a target
-WAYPOINT_SUSTAIN_SUPPORT_MIN = 0.25   # support needed to keep an existing target
+# -- Acquire and sustain support thresholds --
+# Fraction of decision-band rows with asymmetric commanded-side pixels.
+# acquire=0.40: requires ~40% of scanned rows to show commanded-side opening before
+#   committing to a target — prevents false triggers from segmentation noise
+# sustain=0.25: lower threshold keeps an existing target alive through brief occlusions
+#   or frame-to-frame mask jitter — hysteresis prevents rapid acquire/release cycling
+WAYPOINT_ACQUIRE_SUPPORT_MIN = 0.40
+WAYPOINT_SUSTAIN_SUPPORT_MIN = 0.25
 
-# Target update hysteresis
-WAYPOINT_TARGET_UPDATE_ALPHA = 0.40   # EMA alpha for smoothing target lateral shifts
+# -- Target update hysteresis --
+# EMA alpha for smoothing lateral target shifts between frames.
+# 0.40: moderate smoothing — responsive enough to track real turn openings,
+# slow enough to filter single-frame outliers
+WAYPOINT_TARGET_UPDATE_ALPHA = 0.40
 
-# Path containment gates
-WAYPOINT_PATH_CONTAINMENT_MIN = 0.60        # fraction of path points inside corridor
-WAYPOINT_NEAR_CONTAINMENT_MIN = 0.70        # near-field containment fraction
-WAYPOINT_NEAR_FIELD_M = 1.20                # near-field distance from ego (meters)
+# -- Path containment gates --
+# fraction of fitted path points that must lie inside the corridor boundary.
+# containment=0.60: allows the apex to slightly overshoot corridor edge while
+#   keeping the majority of the path inside drivable area
+# near_containment=0.70: stricter near ego — the first 1.2m of path must be
+#   well-contained since that is the immediate execution zone
+WAYPOINT_PATH_CONTAINMENT_MIN = 0.60
+WAYPOINT_NEAR_CONTAINMENT_MIN = 0.70
+WAYPOINT_NEAR_FIELD_M = 1.20
 
-# Confidence and slowdown
-WAYPOINT_LOW_CONFIDENCE_THRESHOLD = 0.35     # below this -> recommend hold
-WAYPOINT_SLOWDOWN_FLOOR = 0.35               # minimum slowdown when low-confidence
-WAYPOINT_HOLD_SLOWDOWN = 1.0                 # slowdown when hold is recommended
+# -- Confidence and slowdown --
+# low_confidence=0.35: below this the planner recommends hold — the turn is
+#   visible but insufficiently supported for safe execution
+# slowdown_floor=0.35: minimum 35% speed reduction when low-confidence, so the
+#   scooter visibly decelerates during uncertain turns
+# hold_slowdown=1.0: full slowdown (near-stop) when hold is recommended — safety-first
+WAYPOINT_LOW_CONFIDENCE_THRESHOLD = 0.35
+WAYPOINT_SLOWDOWN_FLOOR = 0.35
+WAYPOINT_HOLD_SLOWDOWN = 1.0
 
-# Path geometry
-WAYPOINT_PATH_HORIZON_M = 6.0               # how far ahead the turn path extends
-WAYPOINT_PATH_DS_M = 0.25                   # sample spacing along the path
-WAYPOINT_EXIT_REJOIN_FACTOR = 0.6           # exit anchor blends back toward corridor center
+# -- Path geometry --
+# horizon=6.0m: shorter than BEV range to avoid fitting into noisy far-field pixels
+# ds=0.25m: 25cm sample spacing gives ~24 points over 6m — smooth enough for
+#   cubic Hermite interpolation without excessive computation
+# exit_rejoin=0.6: exit anchor blends 60% toward corridor center after apex,
+#   ensuring the path converges back to the main corridor after the turn
+WAYPOINT_PATH_HORIZON_M = 6.0
+WAYPOINT_PATH_DS_M = 0.25
+WAYPOINT_EXIT_REJOIN_FACTOR = 0.6
 
-# Runtime toggle: enable waypoint-turn mode for commanded left/right turns
-WAYPOINT_TURN_ENABLED = True                # set False to revert to Phase 11 template-only
-# Maneuver lock: keep the commanded family active while support persists
-WAYPOINT_LOCK_SUSTAIN_FRAMES = 3            # min consecutive supported frames before lock engages
-WAYPOINT_LOCK_RELEASE_FRAMES = 5            # consecutive unsupported frames to release lock
+# -- Runtime toggle --
+# Set False to revert to Phase 11 template-only mode (disables waypoint-turn)
+WAYPOINT_TURN_ENABLED = True
+
+# -- Maneuver lock --
+# Frame-counter hysteresis for locking the commanded turn family.
+# sustain=3: requires 3 consecutive supported frames before lock engages — prevents
+#   single-frame false positives from locking the turn
+# release=5: requires 5 consecutive unsupported frames to release — prevents
+#   flickering when support is borderline
+WAYPOINT_LOCK_SUSTAIN_FRAMES = 3
+WAYPOINT_LOCK_RELEASE_FRAMES = 5
