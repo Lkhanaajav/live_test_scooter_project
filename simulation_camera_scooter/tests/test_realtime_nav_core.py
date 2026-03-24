@@ -153,6 +153,14 @@ def _make_waypoint_extractor() -> BEVPathExtractor:
 class TestWaypointTurnMode:
     """Integration tests: waypoint-turn path wired into BEVPathExtractor.process()."""
 
+    def test_waypoint_turn_uses_runtime_bev_geometry(self):
+        """Waypoint-turn config should inherit the extractor BEV metric dimensions."""
+        extractor = _make_waypoint_extractor()
+        cfg = extractor._waypoint_turn_cfg
+        assert cfg is not None
+        assert float(cfg.bev_forward_m) == float(extractor.cfg.bev_forward_m)
+        assert float(cfg.bev_lateral_m) == float(extractor.cfg.bev_lateral_m)
+
     def test_waypoint_turn_engaged_for_commanded_left(self, commanded_left_bev_mask):
         """With waypoint-turn mode on + commanded left, path_source should be 'waypoint_turn'."""
         extractor = _make_waypoint_extractor()

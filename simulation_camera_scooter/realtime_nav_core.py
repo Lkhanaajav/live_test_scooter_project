@@ -403,7 +403,10 @@ class BEVPathExtractor:
         self._waypoint_turn_lock_count: int = 0  # consecutive supported frames
         self._waypoint_turn_unsupported_count: int = 0  # consecutive unsupported frames
         if _HAS_WAYPOINT_TURN and bool(getattr(self.cfg, "waypoint_turn_enabled", False)):
-            self._waypoint_turn_cfg = WaypointTurnPlannerConfig()
+            self._waypoint_turn_cfg = WaypointTurnPlannerConfig(
+                bev_forward_m=float(self.cfg.bev_forward_m),
+                bev_lateral_m=float(self.cfg.bev_lateral_m),
+            )
 
         # Clean DT-ridge planner (when enabled, bypasses all skeleton/template logic)
         self._dt_planner: Optional[object] = None

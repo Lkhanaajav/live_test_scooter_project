@@ -229,8 +229,8 @@ def main() -> int:
             np.save(CALIBRATION_FILE, src)
             meta = {
                 "ego_x_frac": float(np.clip(ego_x_frac, 0.05, 0.95)),
-                "source_width": int(raw.shape[1]),
-                "source_height": int(raw.shape[0]),
+                "source_frame_width": int(raw.shape[1]),
+                "source_frame_height": int(raw.shape[0]),
                 "source_frame_id": int(example.frame_id),
                 "bev_width": int(BEV_SIZE[0]),
                 "bev_height": int(BEV_SIZE[1]),

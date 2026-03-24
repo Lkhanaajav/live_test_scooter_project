@@ -31,6 +31,14 @@ def _load_calibration_meta() -> dict:
         return {}
 
 
+def _meta_dim(meta: dict, primary: str, legacy: str) -> int:
+    """Read a dimension from calibration metadata with legacy-key fallback."""
+    try:
+        return int(meta.get(primary, 0) or meta.get(legacy, 0) or 0)
+    except Exception:
+        return 0
+
+
 def run_calibration(camera_id=0, video_path=None, start_frame=0):
     """Interactive 4-point BEV calibration. Click 4 sidewalk corners.
 
@@ -218,8 +226,8 @@ def load_bev_params(current_frame_size=None):
             cur_w, cur_h = int(current_frame_size[0]), int(current_frame_size[1])
         except Exception:
             cur_w, cur_h = 0, 0
-        src_ref_w = int(meta.get("source_frame_width", 0) or 0)
-        src_ref_h = int(meta.get("source_frame_height", 0) or 0)
+        src_ref_w = _meta_dim(meta, "source_frame_width", "source_width")
+        src_ref_h = _meta_dim(meta, "source_frame_height", "source_height")
         if cur_w > 0 and cur_h > 0 and src_ref_w > 0 and src_ref_h > 0:
             if cur_w != src_ref_w or cur_h != src_ref_h:
                 sx = float(cur_w) / float(src_ref_w)

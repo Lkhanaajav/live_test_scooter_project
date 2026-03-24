@@ -22,6 +22,7 @@ Design rules:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -304,50 +305,61 @@ def _build_turn_path(
     target: WaypointTurnTarget,
     cfg: WaypointTurnPlannerConfig,
 ) -> np.ndarray:
-    """Build a smooth entry -> apex -> exit path to the waypoint target.
+    """Build a geometry-consistent turn path from ego to the commanded side.
 
-    Uses cubic Hermite interpolation with zero-tangent boundary conditions
-    at ego (start straight) and smooth transition through apex to exit.
-    This avoids the overshoot that polynomial fits produce.
+    The previous implementation used a smoothstep segment to an apex followed
+    by a linear blend back toward the exit anchor. That introduced an artificial
+    curvature break near the apex and often looked like a snake once the runtime
+    fit another cubic over the generated points.
 
-    Returns (N, 2) array of (forward_m, lateral_m) points.
+    This version uses a single constant-curvature circular arc over the visible
+    horizon. It intentionally does not rejoin toward the centerline inside the
+    short planning horizon; rejoin should happen later as new frames arrive.
     """
     apex_fwd, apex_lat = target.apex_m
     exit_fwd, exit_lat = target.exit_m
     ds = max(0.05, cfg.path_ds_m)
+    sign = -1.0 if target.side == "left" else 1.0
 
-    # Generate evenly spaced forward samples
-    n_pts = max(10, int(exit_fwd / ds) + 2)
-    fwd_samples = np.linspace(0.0, exit_fwd, n_pts, dtype=np.float64)
+    # Keep the endpoint on the commanded side over the short visible horizon.
+    # Rejoining toward center inside the same 6 m horizon was producing the
+    # artificial "snake" shape.
+    end_fwd = max(float(exit_fwd), float(apex_fwd), ds * 4.0)
+    end_fwd = min(end_fwd, float(cfg.path_horizon_m))
+    end_lat_mag = max(abs(float(apex_lat)), abs(float(exit_lat)))
+    end_lat = sign * max(0.05, end_lat_mag)
 
-    # Use piecewise cubic Hermite: ego(0,0) with zero tangent -> apex -> exit
-    # This gives a natural-looking path that starts straight then curves.
-    #
-    # Segment 1: ego to apex using cubic with zero start tangent
-    # y(x) = a*t^3 + b*t^2  where t = x/apex_fwd, t in [0,1]
-    # Boundary: y(0)=0, y'(0)=0, y(1)=apex_lat
-    # => b*1 + a*1 = apex_lat, b = apex_lat - a
-    # For a smooth curve, set a = -apex_lat (gives S-like shape: y = apex_lat*(3t^2 - 2t^3))
-    #
-    # Segment 2: apex to exit using linear blend (short segment)
+    if end_fwd <= ds or abs(end_lat) <= 1e-4:
+        fwd = np.linspace(0.0, max(end_fwd, ds), max(3, int(max(end_fwd, ds) / ds) + 1), dtype=np.float32)
+        lat = np.zeros_like(fwd)
+        return np.stack([fwd, lat], axis=1).astype(np.float32)
 
-    lat_samples = np.zeros_like(fwd_samples)
+    # Circular arc with start tangent aligned to +forward axis:
+    #   x = R sin(theta), y = sign * R (1 - cos(theta))
+    # Solve theta from the endpoint ratio y/x = tan(theta / 2).
+    theta = 2.0 * math.atan2(abs(end_lat), max(1e-4, end_fwd))
+    theta = float(np.clip(theta, 1e-3, 1.35))
+    sin_theta = math.sin(theta)
+    if abs(sin_theta) < 1e-5:
+        fwd = np.linspace(0.0, end_fwd, max(3, int(end_fwd / ds) + 1), dtype=np.float32)
+        lat = np.linspace(0.0, end_lat, len(fwd), dtype=np.float32)
+        return np.stack([fwd, lat], axis=1).astype(np.float32)
 
-    for i, x in enumerate(fwd_samples):
-        if apex_fwd > 0.01 and x <= apex_fwd:
-            # Hermite segment: starts at (0,0) with zero tangent, ends at apex
-            t = x / apex_fwd
-            # Smooth step: 3t^2 - 2t^3 (starts flat, ends flat)
-            lat_samples[i] = apex_lat * (3.0 * t * t - 2.0 * t * t * t)
-        elif exit_fwd > apex_fwd + 0.01:
-            # Linear blend from apex to exit
-            t = (x - apex_fwd) / (exit_fwd - apex_fwd)
-            t = min(1.0, max(0.0, t))
-            lat_samples[i] = apex_lat + (exit_lat - apex_lat) * t
-        else:
-            lat_samples[i] = apex_lat
+    radius = max(0.25, end_fwd / sin_theta)
+    n_pts = max(12, int((radius * theta) / ds) + 2)
+    phi = np.linspace(0.0, theta, n_pts, dtype=np.float64)
+    fwd_samples = radius * np.sin(phi)
+    lat_samples = sign * radius * (1.0 - np.cos(phi))
+
+    # Match the requested horizon exactly so containment checks line up with the
+    # corridor band used to approve the turn.
+    if fwd_samples[-1] > 1e-5:
+        scale = end_fwd / float(fwd_samples[-1])
+        fwd_samples *= scale
+        lat_samples *= scale
 
     path_m = np.stack([fwd_samples, lat_samples], axis=1).astype(np.float32)
+    path_m[:, 0] = np.maximum.accumulate(path_m[:, 0])
     return path_m
 
 

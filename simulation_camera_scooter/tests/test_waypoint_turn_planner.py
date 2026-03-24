@@ -398,6 +398,30 @@ class TestContainmentGating:
         fwd = result.path_m[:, 0]
         assert np.all(np.diff(fwd) >= -0.01), "Path forward coords should be non-decreasing"
 
+    def test_left_path_does_not_rejoin_across_centerline(self, commanded_left_bev_mask):
+        """Short-horizon left path should stay on the commanded side rather than snake back."""
+        corridor = _corridor(commanded_left_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="left",
+            bev_mask=commanded_left_bev_mask,
+        )
+        assert result.active is True
+        assert np.min(result.path_m[:, 1]) < -0.05
+        assert np.max(result.path_m[:, 1]) <= 0.05
+
+    def test_right_path_does_not_rejoin_across_centerline(self, commanded_right_bev_mask):
+        """Short-horizon right path should stay on the commanded side rather than snake back."""
+        corridor = _corridor(commanded_right_bev_mask)
+        result = plan_waypoint_turn(
+            corridor=corridor,
+            intent="right",
+            bev_mask=commanded_right_bev_mask,
+        )
+        assert result.active is True
+        assert np.max(result.path_m[:, 1]) > 0.05
+        assert np.min(result.path_m[:, 1]) >= -0.05
+
     def test_confidence_above_low_threshold_when_active(self, commanded_left_bev_mask):
         """An active (approved) result should have confidence above the
         low_confidence_threshold."""

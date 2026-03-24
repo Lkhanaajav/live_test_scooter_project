@@ -18,8 +18,26 @@ from config import (
 )
 
 
+def _draw_transparent_polyline(img, pts, color, thickness, alpha):
+    """Draw a semi-transparent polyline onto an image."""
+    if pts is None or len(pts) < 2:
+        return img
+    overlay = img.copy()
+    cv2.polylines(overlay, [pts], False, color, thickness, cv2.LINE_AA)
+    cv2.addWeighted(overlay, float(alpha), img, 1.0 - float(alpha), 0.0, dst=img)
+    return img
+
+
+def _draw_transparent_circle(img, center, radius, color, alpha):
+    """Draw a semi-transparent filled circle onto an image."""
+    overlay = img.copy()
+    cv2.circle(overlay, center, radius, color, -1, cv2.LINE_AA)
+    cv2.addWeighted(overlay, float(alpha), img, 1.0 - float(alpha), 0.0, dst=img)
+    return img
+
+
 def draw_heading_hud(img, command, angle_deg, speed_mps, color, fps, pipeline_ms,
-                     detections=None, gps_info=None, active_intent=None):
+                     detections=None, gps_info=None, active_intent=None, compute_hz=None):
     """Draw heading, speed, obstacles, and GPS on the camera view."""
     h, w = img.shape[:2]
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -88,9 +106,11 @@ def draw_heading_hud(img, command, angle_deg, speed_mps, color, fps, pipeline_ms
 
     # ---- FPS / latency at bottom left ----
     info_lines = [
-        f"FPS: {fps:.1f}",
+        f"Loop FPS: {fps:.1f}",
+        f"Fresh Seg Hz: {float(compute_hz):.1f}" if compute_hz is not None else None,
         f"Pipeline: {pipeline_ms:.0f} ms",
     ]
+    info_lines = [line for line in info_lines if line]
     for i, line in enumerate(info_lines):
         cv2.putText(img, line, (10, h - 20 - i * 25),
                     font, 0.55, (200, 200, 200), 1, cv2.LINE_AA)
@@ -114,11 +134,8 @@ def draw_bev_hud(
     suggested_slowdown=None,
     obstacle_zones_m=None,
     active_intent=None,
-    final_path_px=None,
-    candidate_path_px=None,
-    turn_containment_fail=None,
-    path_outside_ratio=None,
-    min_boundary_clearance_px=None,
+    controller_target_px=None,
+    controller_ray_px=None,
 ):
     """Draw BEV visualization with paths, heading, and speed."""
     h_bev, w_bev = bev_sidewalk.shape
@@ -132,42 +149,36 @@ def draw_bev_hud(
         skel_thick = cv2.dilate(skel, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
         vis[skel_thick > 0] = (200, 200, 200)
 
-    # Draw only the selected path — clean single line
-    selected_path = None
-    if candidate_path_px is not None and len(candidate_path_px) >= 2:
-        selected_path = np.asarray(candidate_path_px, dtype=np.int32)
-    elif paths and best_idx >= 0:
-        selected_path = np.asarray(paths[best_idx][0], dtype=np.int32)
-
-    if selected_path is not None and len(selected_path) >= 2:
-        path_np = selected_path.reshape(-1, 1, 2)
-        cv2.polylines(vis, [path_np], False, (0, 170, 255), 3, cv2.LINE_AA)
-
-    final_path = None
-    if final_path_px is not None and len(final_path_px) >= 2:
-        final_path = np.asarray(final_path_px, dtype=np.int32)
-    elif selected_path is not None:
-        final_path = selected_path
-
-    if final_path is not None and len(final_path) >= 2:
-        final_np = final_path.reshape(-1, 1, 2)
-        final_color = (0, 0, 255) if turn_containment_fail else (0, 255, 0)
-        cv2.polylines(vis, [final_np], False, final_color, 6, cv2.LINE_AA)
-        cv2.circle(vis, tuple(np.int32(final_path[0])), 8, (0, 255, 255), -1)
-        cv2.circle(vis, tuple(np.int32(final_path[-1])), 8, (0, 0, 255), -1)
+    # Draw the suggested full path as a faint guide.
+    if paths and best_idx >= 0:
+        best_path = paths[best_idx][0]
+        path_np = np.int32(best_path).reshape(-1, 1, 2)
+        _draw_transparent_polyline(vis, path_np, (90, 255, 140), 6, 0.35)
+        _draw_transparent_circle(vis, tuple(np.int32(best_path[0])), 8, (0, 255, 255), 0.45)
+        _draw_transparent_circle(vis, tuple(np.int32(best_path[-1])), 8, (0, 0, 255), 0.45)
 
     # Ego indicator at bottom center
     ego_x, ego_y = int(round(bev_ego_x_px(w_bev))), h_bev - 1
     cv2.circle(vis, (ego_x, ego_y), 10, (0, 200, 255), -1)
     cv2.circle(vis, (ego_x, ego_y), 10, (255, 255, 255), 2)
 
-    # Direction arrow from ego
-    arrow_len = 60
-    arrow_rad = math.radians(-angle_deg)
-    ax = int(ego_x + arrow_len * math.sin(arrow_rad))
-    ay = int(ego_y - arrow_len * math.cos(arrow_rad))
-    cv2.arrowedLine(vis, (ego_x, ego_y), (ax, ay), (0, 200, 255), 4,
-                    cv2.LINE_AA, tipLength=0.35)
+    # Controller-directed ray on top of the suggestion layer.
+    if controller_ray_px is not None and len(controller_ray_px) >= 2:
+        ray_np = np.int32(controller_ray_px).reshape(-1, 1, 2)
+        cv2.polylines(vis, [ray_np], False, (0, 0, 0), 8, cv2.LINE_AA)
+        cv2.polylines(vis, [ray_np], False, (0, 220, 255), 4, cv2.LINE_AA)
+    else:
+        arrow_len = 60
+        arrow_rad = math.radians(-angle_deg)
+        ax = int(ego_x + arrow_len * math.sin(arrow_rad))
+        ay = int(ego_y - arrow_len * math.cos(arrow_rad))
+        cv2.arrowedLine(vis, (ego_x, ego_y), (ax, ay), (0, 200, 255), 4,
+                        cv2.LINE_AA, tipLength=0.35)
+
+    if controller_target_px is not None:
+        ctr = tuple(np.int32(controller_target_px))
+        cv2.circle(vis, ctr, 7, (0, 0, 0), -1, cv2.LINE_AA)
+        cv2.circle(vis, ctr, 5, (255, 255, 0), -1, cv2.LINE_AA)
 
     # Semi-transparent black bar for text
     cv2.rectangle(vis, (0, 0), (w_bev, 110), (0, 0, 0), -1)
@@ -189,13 +200,6 @@ def draw_bev_hud(
         stxt = f"{float(suggested_slowdown):.2f}" if suggested_slowdown is not None else "-"
         cv2.putText(vis, f"Tpl: {ttxt} | Conf: {ctxt} | Slow: {stxt}", (10, 100),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 215, 120), 1, cv2.LINE_AA)
-    if path_outside_ratio is not None or min_boundary_clearance_px is not None:
-        outside_txt = f"{100.0 * float(path_outside_ratio):.1f}%" if path_outside_ratio is not None else "-"
-        clear_txt = f"{float(min_boundary_clearance_px):+.1f}px" if min_boundary_clearance_px is not None else "-"
-        info_y = min(h_bev - 10, 122)
-        info_color = (0, 90, 255) if turn_containment_fail else (180, 255, 180)
-        cv2.putText(vis, f"Outside: {outside_txt} | Clear: {clear_txt}", (10, info_y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, info_color, 1, cv2.LINE_AA)
     intent_text = str(active_intent or "clear").strip().lower() or "clear"
     intent_line = f"Intent: {intent_text.upper()}"
     (iw, ih), ib = cv2.getTextSize(intent_line, cv2.FONT_HERSHEY_SIMPLEX, 0.60, 2)

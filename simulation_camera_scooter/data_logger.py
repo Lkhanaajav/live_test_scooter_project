@@ -23,7 +23,7 @@ class DataLogger:
         # Timing (ms)
         "t_segmentation", "t_detection", "t_bev", "t_skeleton",
         "t_pathfinding", "t_gps_fusion", "t_command", "t_total_pipeline",
-        "fps",
+        "fps", "compute_hz",
         # Heading & control
         "heading_raw_deg", "heading_smoothed_deg", "command",
         "gps_intent_family", "planner_intent_family", "turn_lock_family",

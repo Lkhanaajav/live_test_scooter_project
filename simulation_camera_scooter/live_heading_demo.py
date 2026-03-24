@@ -36,6 +36,12 @@ from realtime_nav_core import (
     AdaptivePurePursuitController,
     PurePursuitConfig,
 )
+try:
+    from path_planners import ALL_PLANNERS
+    from path_planners.adapter import planner_result_to_path_plan_result
+except ImportError:
+    ALL_PLANNERS = {}
+    planner_result_to_path_plan_result = None
 
 # ---- Project modules ----
 from config import (
@@ -50,6 +56,7 @@ from config import (
     LOW_POWER_STRIDE, LOW_POWER_DETECTION_STRIDE, LOW_POWER_PATH_SCALE,
     NAV_BEV_FORWARD_M, NAV_BEV_LATERAL_M, NAV_WORK_GRID_BASE,
     BEV_PIXELS_PER_METER_FORWARD,
+    bev_ego_x_px,
     GPS_STEER_GAIN, GPS_STEER_BIAS_MAX_DEG,
     SPEED_TURN,
     PREDICT_ENABLED,
@@ -70,10 +77,19 @@ from visualization import draw_heading_hud, draw_bev_hud
 from bev_predictor import BEVPredictiveTracker
 
 
-KEY_LEFT = {81, 2424832}
-KEY_UP = {82, 2490368}
-KEY_RIGHT = {83, 2555904}
-KEY_DOWN = {84, 2621440}
+def _metric_point_to_bev_px(forward_m, lateral_m, bev_shape_hw):
+    """Convert a metric BEV point (forward, lateral) to BEV pixel coordinates."""
+    h_bev, w_bev = int(bev_shape_hw[0]), int(bev_shape_hw[1])
+    ego_x = int(round(bev_ego_x_px(w_bev)))
+    x = int(round(
+        ego_x + (float(lateral_m) / max(1e-6, NAV_BEV_LATERAL_M)) * max(1.0, float(w_bev - 1))
+    ))
+    y = int(round(
+        (1.0 - float(forward_m) / max(1e-6, NAV_BEV_FORWARD_M)) * max(1.0, float(h_bev - 1))
+    ))
+    x = int(np.clip(x, 0, max(0, w_bev - 1)))
+    y = int(np.clip(y, 0, max(0, h_bev - 1)))
+    return np.array([x, y], dtype=np.float32)
 
 
 def _load_intent_schedule(schedule_path: str | None) -> list[dict]:
@@ -139,12 +155,9 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
              low_power=False, seg_input_res=SEG_INPUT_RES, path_scale=1.0,
              detection_stride=1, enable_predict=PREDICT_ENABLED,
              planner_mode="dijkstra", template_planner_enabled=True,
+             use_dt_planner=True, planner_family=None,
              max_frames=None, initial_intent=None, bev_clean_mode="auto",
              model_dir=None, output_video_path=None, seg_conf_thresh=0.5,
-             enable_stabilization=STABILIZATION_ENABLED,
-             enable_seg_smoothing=True,
-             enable_bev_smoothing=True, enable_ego_anchor=True,
-             enable_ego_connected=True,
              intent_schedule_path=None):
     print("\n=== LIVE HEADING + OBJECT DETECTION + GPS DEMO ===")
     stab_radius = max(1, int(stab_radius))
@@ -157,11 +170,6 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         max(192, int(seg_input_res[0])),
         max(128, int(seg_input_res[1])),
     )
-    enable_stabilization = bool(enable_stabilization)
-    enable_seg_smoothing = bool(enable_seg_smoothing)
-    enable_bev_smoothing = bool(enable_bev_smoothing)
-    enable_ego_anchor = bool(enable_ego_anchor)
-    enable_ego_connected = bool(enable_ego_connected)
 
     if low_power:
         stride = max(stride, LOW_POWER_STRIDE)
@@ -190,6 +198,13 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         planner_mode = "dijkstra"
     print(f"[Planner] mode={planner_mode}")
     print(f"[Planner] template_planner={'on' if template_planner_enabled else 'off'}")
+    planner_family = str(planner_family or "").strip().lower()
+    valid_planner_families = {"dt_ridge", *ALL_PLANNERS.keys()}
+    if planner_family and planner_family not in valid_planner_families:
+        planner_family = ""
+    if not planner_family:
+        planner_family = "potential_field" if not use_dt_planner else "dt_ridge"
+    print(f"[Planner] family={planner_family}")
     effective_model_dir = str(model_dir).strip() if model_dir else MODEL_DIR
 
     # Initialize data logger
@@ -233,11 +248,9 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
 
     # Initialize frame stabilizer (camera shake compensation)
     stabilizer = None
-    if enable_stabilization:
+    if STABILIZATION_ENABLED:
         stabilizer = FrameStabilizer(smoothing_radius=stab_radius)
         print(f"Frame stabilization ENABLED (radius={stab_radius}).")
-    else:
-        print("Frame stabilization DISABLED.")
 
     # Initialize temporal mask smoothers
     seg_smoother = TemporalMaskSmoother(
@@ -249,38 +262,42 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         consistency_thresh=0.35,
     )
     print(f"Temporal mask smoothing ENABLED (seg={mask_alpha:.2f}, bev={bev_alpha:.2f}).")
-    if not enable_seg_smoothing:
-        print("Segmentation temporal smoothing DISABLED.")
-    if not enable_bev_smoothing:
-        print("BEV temporal smoothing DISABLED.")
-    if not enable_ego_anchor:
-        print("BEV ego anchor DISABLED.")
-    if not enable_ego_connected:
-        print("BEV ego-connected mask DISABLED.")
 
     # Initialize real-time BEV navigation stack
     work_grid = max(120, int(round(NAV_WORK_GRID_BASE * path_scale)))
-    path_cfg = PathExtractorConfig(
-        bev_forward_m=NAV_BEV_FORWARD_M,
-        bev_lateral_m=NAV_BEV_LATERAL_M,
-        work_size=(work_grid, work_grid),
-        planner_mode=planner_mode,
-        template_planner_enabled=bool(template_planner_enabled),
-    )
-    if low_power:
-        path_cfg.search_max_depth = 5
-        path_cfg.search_top_k = 4
-    path_extractor = BEVPathExtractor(path_cfg)
+    use_fast_planner = planner_family in ALL_PLANNERS
+    path_extractor = None
+    fast_planner = None
+    if use_fast_planner:
+        fast_planner = ALL_PLANNERS[planner_family](
+            bev_forward_m=NAV_BEV_FORWARD_M,
+            bev_lateral_m=NAV_BEV_LATERAL_M,
+            work_size=(work_grid, work_grid),
+        )
+        print(f"Fast BEV planner ENABLED ({planner_family}, work grid {work_grid}x{work_grid}).")
+    else:
+        path_cfg = PathExtractorConfig(
+            bev_forward_m=NAV_BEV_FORWARD_M,
+            bev_lateral_m=NAV_BEV_LATERAL_M,
+            work_size=(work_grid, work_grid),
+            planner_mode=planner_mode,
+            template_planner_enabled=bool(template_planner_enabled),
+            use_dt_planner=bool(use_dt_planner),
+        )
+        if low_power:
+            path_cfg.search_max_depth = 5
+            path_cfg.search_top_k = 4
+        path_extractor = BEVPathExtractor(path_cfg)
+        print(f"Legacy BEV planner ENABLED (dt_ridge, work grid {work_grid}x{work_grid}).")
     pp_controller = AdaptivePurePursuitController(PurePursuitConfig(dt_s=1.0 / 8.0))
     obstacle_ema = ObstacleEMAGrid(bev_h=BEV_SIZE[1], bev_w=BEV_SIZE[0])
-    print(f"BEV planner ENABLED (work grid {work_grid}x{work_grid}).")
 
     # Initialize BEV predictive frame reuse
     predictor = BEVPredictiveTracker()
     if enable_predict:
         print("BEV predictive frame reuse ENABLED.")
     else:
-        print("BEV predictive frame reuse DISABLED (except turn lock hold).")
+        print("BEV predictive frame reuse DISABLED.")
 
     # Open camera or video
     if video_path:
@@ -331,13 +348,17 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         print("ERROR: Cannot open camera/video.")
         return
 
-    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    if frame_w > 0 and frame_h > 0:
-        print(f"[Video] frame_size={frame_w}x{frame_h}")
-
-    # Load BEV calibration after capture open so it can scale to the active frame size.
-    H_mat, Hinv, src_pts = load_bev_params(current_frame_size=(frame_w, frame_h))
+    cal_frame_w = int(round(float(cap.get(cv2.CAP_PROP_FRAME_WIDTH))))
+    cal_frame_h = int(round(float(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))))
+    if cal_frame_w <= 0 or cal_frame_h <= 0:
+        ok_probe, probe = cap.read()
+        if ok_probe and probe is not None:
+            cal_frame_h, cal_frame_w = probe.shape[:2]
+            if video_path:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    # Load BEV calibration after opening the source so saved points can be
+    # rescaled when the runtime video resolution differs from calibration.
+    H_mat, Hinv, src_pts = load_bev_params(current_frame_size=(cal_frame_w, cal_frame_h))
 
     # Control smoothing buffers
     heading_buffer = deque(maxlen=3)
@@ -350,15 +371,16 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     last_min_obstacle_dist = None
     frame_id = 0
     fps_counter = deque(maxlen=30)
+    compute_counter = deque(maxlen=30)
     fps = 0.0
+    compute_hz = 0.0
     vw = None
     cached_frame_state = None
 
-    scheduled_intent_family: str | None = str(initial_intent or "").strip().lower() or None
-    if scheduled_intent_family not in {"straight", "left", "right"}:
-        scheduled_intent_family = None
-    base_intent_family = scheduled_intent_family
-    manual_intent_family: str | None = None
+    gps_intent_family: str | None = str(initial_intent or "").strip().lower() or None
+    if gps_intent_family not in {"straight", "left", "right"}:
+        gps_intent_family = None
+    manual_intent_family = gps_intent_family
     intent_schedule = _load_intent_schedule(intent_schedule_path)
     intent_schedule_idx = 0
     last_schedule_intent = "__unset__"
@@ -370,9 +392,12 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     TURN_LOCK_MIN_FRAMES = 6
     TURN_LOCK_MAX_FRAMES = 22
     TURN_LOCK_RELEASE_STREAK = 2
-    print("Running... Press q/ESC to quit | up=straight | left=left | right=right | down=clear intent\n")
-    if scheduled_intent_family is not None:
-        print(f"[Intent] initial={scheduled_intent_family}")
+    print(
+        "Running... Press q/ESC to quit | Up/s straight | Left/l left | "
+        "Right/r right | Down/c clear intent\n"
+    )
+    if gps_intent_family is not None:
+        print(f"[Intent] initial={gps_intent_family}")
     if intent_schedule:
         print(f"[IntentSchedule] loaded {len(intent_schedule)} event(s) from {intent_schedule_path}")
     print(f"{'Frame':>6} | {'Command':>12} | {'Steer':>8} | {'Speed':>7} | "
@@ -414,11 +439,11 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 intent_schedule_idx,
             )
             if scheduled_event is None:
-                scheduled_intent_family = base_intent_family
+                gps_intent_family = manual_intent_family
                 schedule_intent = None
             else:
-                scheduled_intent_family = scheduled_event["intent"]
-                schedule_intent = scheduled_intent_family
+                gps_intent_family = scheduled_event["intent"]
+                schedule_intent = gps_intent_family
             schedule_token = "clear" if schedule_intent is None else schedule_intent
             if intent_schedule and schedule_token != last_schedule_intent:
                 print(f"[IntentSchedule] frame={frame_id} intent={schedule_token}")
@@ -437,34 +462,34 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             speed_est = speed_buffer[-1] if speed_buffer else 0.0
             heading_est = heading_buffer[-1] if heading_buffer else 0.0
             obstacle_zones: list = []  # populated in compute branch; empty on skip frames
-            active_intent_family = manual_intent_family if manual_intent_family in {"straight", "left", "right"} else scheduled_intent_family
-            planner_intent_family = turn_lock_family if turn_lock_family in {"left", "right"} else active_intent_family
+            planner_intent_family = turn_lock_family if turn_lock_family in {"left", "right"} else gps_intent_family
+            turning_intent_active = planner_intent_family in {"left", "right"}
             turn_lock_active = bool(
                 turn_lock_family in {"left", "right"}
                 and predictor is not None
                 and predictor.last_bev_mask is not None
                 and predictor.last_path_model is not None
             )
-            turn_predict_blocked = bool(
-                active_intent_family in {"left", "right"}
-                or planner_intent_family in {"left", "right"}
-                or turn_lock_active
+            predict_skip = bool(
+                not turning_intent_active
+                and (
+                    turn_lock_active
+                    or (
+                        enable_predict
+                        and predictor is not None
+                        and predictor.should_skip(speed=speed_est, dt=dt_frame)
+                    )
+                )
             )
-            predict_skip = (
-                (not turn_predict_blocked)
-                and enable_predict
-                and predictor is not None
-                and predictor.should_skip(speed=speed_est, dt=dt_frame)
-            )
-            # Fallback: stride-based skip when predictor is disabled
-            run_net = (not predict_skip) and (frame_id % stride == 0 or last_mask is None)
+            # During active turn intent, force fresh segmentation/planning every frame.
+            run_net = bool(turning_intent_active or ((not predict_skip) and (frame_id % stride == 0 or last_mask is None)))
             if predict_skip:
                 run_net = False
             hold_cached_frame = bool(
                 video_path
                 and stride > 1
                 and not enable_predict
-                and not turn_predict_blocked
+                and not turning_intent_active
                 and not run_net
                 and not predict_skip
                 and cached_frame_state is not None
@@ -539,20 +564,26 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     speed=speed_est, dt=dt_frame, steer_deg=heading_est
                 )
                 bev_shift = speed_est * dt_frame * BEV_PIXELS_PER_METER_FORWARD
-                if enable_bev_smoothing:
-                    bev_sidewalk = bev_smoother.smooth(predicted_mask_255, flow_dy=bev_shift)
-                else:
-                    bev_sidewalk = predicted_mask_255
+                bev_sidewalk = bev_smoother.smooth(predicted_mask_255, flow_dy=bev_shift)
                 t_bev = (time.time() - t_bev_start) * 1000
 
-                # IMPORTANT: run graph planner on predicted BEV too, so Dijkstra/DFS
-                # remains active on skip frames (not predictor-path-only).
-                nav_out = path_extractor.process(
-                    bev_sidewalk,
-                    obstacle_zones_m=obstacle_zones if obstacle_zones else None,
-                    gps_intent_family=planner_intent_family,
-
-                )
+                # Run planner on predicted BEV too so path stays active on skip frames
+                if fast_planner is not None:
+                    work_mask = cv2.resize(
+                        bev_sidewalk, (work_grid, work_grid),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    planner_result = fast_planner.plan(work_mask, intent=planner_intent_family)
+                    nav_out = planner_result_to_path_plan_result(
+                        planner_result,
+                        bev_shape_hw=bev_sidewalk.shape[:2],
+                    )
+                else:
+                    nav_out = path_extractor.process(
+                        bev_sidewalk,
+                        obstacle_zones_m=obstacle_zones if obstacle_zones else None,
+                        gps_intent_family=planner_intent_family,
+                    )
                 t_skel = nav_out.t_skeleton_ms
                 t_path = nav_out.t_path_ms
 
@@ -582,12 +613,14 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
 
                 # --- 1) Segmentation ---
                 t_seg_start = time.time()
+                ran_fresh_seg = False
                 if run_net or last_mask is None:
                     seg, _ = seg_model.process_frame(frame, return_overlay=False)
                     if seg.shape != frame.shape[:2]:
                         seg = cv2.resize(seg, (frame.shape[1], frame.shape[0]),
                                          interpolation=cv2.INTER_NEAREST)
                     last_mask = seg
+                    ran_fresh_seg = True
                 seg = last_mask
                 if seg.ndim == 2 and seg.dtype == np.uint8:
                     sidewalk_mask = (seg > 0).astype(np.uint8) * 255
@@ -595,10 +628,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 else:
                     sidewalk_mask, road_mask = split_masks(seg)
                 sidewalk_mask = suppress_grass_in_mask(frame, sidewalk_mask)
-                if enable_seg_smoothing:
-                    sidewalk_mask, seg_iou = seg_smoother.smooth(sidewalk_mask, return_iou=True)
-                else:
-                    seg_iou = 1.0
+                sidewalk_mask, seg_iou = seg_smoother.smooth(sidewalk_mask, return_iou=True)
                 if seg_iou < SEG_IOU_FAIL:
                     seg_unstable_frames += 1
                 elif seg_iou < SEG_IOU_WARN:
@@ -644,10 +674,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     )
                 else:
                     bev_sidewalk = clean_sidewalk_mask(bev_sidewalk, DT_CORE_THRESH)
-                if enable_ego_anchor:
-                    bev_sidewalk = anchor_ego_to_mask(bev_sidewalk, bev_size=BEV_SIZE)
-                if enable_ego_connected:
-                    bev_sidewalk = ego_connected_mask(bev_sidewalk, bev_size=BEV_SIZE)
+                bev_sidewalk = anchor_ego_to_mask(bev_sidewalk, bev_size=BEV_SIZE)
+                bev_sidewalk = ego_connected_mask(bev_sidewalk, bev_size=BEV_SIZE)
 
                 # Predictor: blend predicted + real on compute frames
                 if predictor is not None:
@@ -655,8 +683,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     pass  # predictor blend happens after path extraction
 
                 bev_shift = speed_est * dt_frame * BEV_PIXELS_PER_METER_FORWARD
-                if enable_bev_smoothing:
-                    bev_sidewalk = bev_smoother.smooth(bev_sidewalk, flow_dy=bev_shift)
+                bev_sidewalk = bev_smoother.smooth(bev_sidewalk, flow_dy=bev_shift)
                 t_bev = (time.time() - t_bev_start) * 1000
 
                 # --- 4) Path extraction (medial axis + graph + spline) ---
@@ -671,12 +698,22 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     _r_m = BEV_OBSTACLE_RADIUS_PX.get(_d.get("class_name", "default"),
                                                        BEV_OBSTACLE_RADIUS_PX["default"]) / 50.0
                     obstacle_zones.append((_fwd, _lat, _r_m))
-                nav_out = path_extractor.process(
-                    bev_sidewalk,
-                    obstacle_zones_m=obstacle_zones if obstacle_zones else None,
-                    gps_intent_family=planner_intent_family,
-
-                )
+                if fast_planner is not None:
+                    work_mask = cv2.resize(
+                        bev_sidewalk, (work_grid, work_grid),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    planner_result = fast_planner.plan(work_mask, intent=planner_intent_family)
+                    nav_out = planner_result_to_path_plan_result(
+                        planner_result,
+                        bev_shape_hw=bev_sidewalk.shape[:2],
+                    )
+                else:
+                    nav_out = path_extractor.process(
+                        bev_sidewalk,
+                        obstacle_zones_m=obstacle_zones if obstacle_zones else None,
+                        gps_intent_family=planner_intent_family,
+                    )
                 t_skel = nav_out.t_skeleton_ms
                 t_path = nav_out.t_path_ms
 
@@ -702,6 +739,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 has_model_path = bool(nav_out.has_path)
                 graph_nodes = nav_out.graph_nodes
                 graph_edges = nav_out.graph_edges
+                if ran_fresh_seg:
+                    compute_counter.append(time.time())
 
             if not hold_cached_frame:
                 cached_frame_state = {
@@ -772,10 +811,10 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     turn_lock_family = None
                     turn_lock_frames = 0
                     turn_lock_release_streak = 0
-            elif active_intent_family in {"left", "right"} and nav_out.has_path:
-                desired_sign = -1.0 if active_intent_family == "left" else 1.0
+            elif gps_intent_family in {"left", "right"} and nav_out.has_path:
+                desired_sign = -1.0 if gps_intent_family == "left" else 1.0
                 if desired_sign * heading_smoothed >= TURN_LOCK_ENTRY_DEG:
-                    turn_lock_family = active_intent_family
+                    turn_lock_family = gps_intent_family
                     turn_lock_frames = 0
                     turn_lock_release_streak = 0
                     print(f"[TurnLock] engaged={turn_lock_family}")
@@ -791,6 +830,8 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             _nav_low_conf = bool(getattr(nav_out, "is_low_confidence", False))
             _nav_path_source = str(getattr(nav_out, "path_source", ""))
             if _nav_path_source in ("waypoint_turn_hold",) and _nav_low_conf:
+                # Explicit low-confidence hold from unsupported commanded turn:
+                # enforce the planner's recommended slowdown as minimum
                 _nav_slowdown = max(_nav_slowdown, 0.5)
 
             speed_raw = apply_planner_speed_limit(
@@ -820,6 +861,12 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 fps = (len(fps_counter) - 1) / (fps_counter[-1] - fps_counter[0])
             else:
                 fps = 0.0
+            if len(compute_counter) > 1:
+                compute_hz = (len(compute_counter) - 1) / (compute_counter[-1] - compute_counter[0])
+            elif len(compute_counter) == 1:
+                compute_hz = fps
+            else:
+                compute_hz = 0.0
 
             # --- 8) Log frame data ---
             if logger:
@@ -837,11 +884,12 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     t_command=round(t_cmd, 2),
                     t_total_pipeline=round(t_total, 2),
                     fps=round(fps, 2),
+                    compute_hz=round(compute_hz, 2),
                     # Heading & control
                     heading_raw_deg=round(heading_raw, 3),
                     heading_smoothed_deg=round(heading_smoothed, 3),
                     command=command,
-                    gps_intent_family=scheduled_intent_family or "",
+                    gps_intent_family=gps_intent_family or "",
                     planner_intent_family=planner_intent_family or "",
                     turn_lock_family=turn_lock_family or "",
                     speed_raw_mps=round(speed_raw, 3),
@@ -867,6 +915,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     num_graph_nodes=graph_nodes,
                     num_graph_edges=graph_edges,
                     planner_mode=planner_mode,
+                    planner_family=planner_family,
                     path_source=getattr(nav_out, "path_source", ""),
                     bev_mask_occ_ratio=round(float(getattr(nav_out, "mask_occ_ratio", 0.0)), 5),
                     approval_confidence=round(float(getattr(nav_out, "approval_confidence", 0.0)), 4),
@@ -879,13 +928,6 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     corridor_valid_ratio=round(float(getattr(nav_out, "corridor_valid_ratio", 0.0)), 4),
                     corridor_forward_span_m=round(float(getattr(nav_out, "corridor_forward_span_m", 0.0)), 4),
                     corridor_width_cv=round(float(getattr(nav_out, "corridor_width_cv", 0.0)), 4),
-                    turn_active=int(bool(getattr(nav_out, "turn_active", False))),
-                    turn_path_source=getattr(nav_out, "path_source", "") if bool(getattr(nav_out, "turn_active", False)) else "",
-                    turn_containment_fail=int(bool(getattr(nav_out, "turn_containment_fail", False))),
-                    path_outside_ratio=round(float(getattr(nav_out, "path_outside_ratio", 0.0)), 5),
-                    path_outside_count=int(getattr(nav_out, "path_outside_count", 0)),
-                    path_sample_count=int(getattr(nav_out, "path_sample_count", 0)),
-                    min_boundary_clearance_px=round(float(getattr(nav_out, "min_boundary_clearance_px", 0.0)), 3),
                     # Detections
                     num_detections=len(detections),
                     min_obstacle_dist_m=round(min_obstacle_dist, 2) if min_obstacle_dist else "",
@@ -907,32 +949,79 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             # --- 9) Visualization ---
             render_visuals = (not headless) or save_video
             if render_visuals:
+                sidewalk_mask_display = sidewalk_mask
+                if sidewalk_mask_display is not None and int(np.count_nonzero(sidewalk_mask_display)) > 0:
+                    sidewalk_mask_display = select_main_component(
+                        sidewalk_mask_display,
+                        bottom_band_px=max(35, frame_h // 16),
+                        center_weight=0.45,
+                    )
+                bev_sidewalk_display = bev_sidewalk
+                if bev_sidewalk_display is not None and int(np.count_nonzero(bev_sidewalk_display)) > 0:
+                    bev_sidewalk_display = select_main_component(
+                        bev_sidewalk_display,
+                        bottom_band_px=max(45, bev_sidewalk_display.shape[0] // 8),
+                        center_weight=0.45,
+                    )
                 cam_vis = frame.copy()
                 seg_overlay = np.zeros_like(cam_vis)
-                seg_overlay[sidewalk_mask > 0] = (0, 220, 0)
+                seg_overlay[sidewalk_mask_display > 0] = (0, 220, 0)
                 if road_mask is not None:
                     seg_overlay[road_mask > 0] = (255, 140, 0)
                 cam_vis = cv2.addWeighted(seg_overlay, 0.50, cam_vis, 0.85, 0)
 
-                display_path_px = getattr(nav_out, "control_path_px", None)
-                if display_path_px is None or len(display_path_px) < 2:
-                    display_path_px = paths[best_idx][0] if paths and best_idx >= 0 else None
+                controller_target_bev_px = None
+                controller_ray_bev_px = None
+                controller_target_cam_px = None
+                controller_ray_cam_px = None
 
-                if display_path_px is not None and len(display_path_px) >= 2:
-                    pts = np.array(display_path_px, dtype=np.float32).reshape(-1, 1, 2)
+                if ctrl_out.valid_path:
+                    controller_target_bev_px = _metric_point_to_bev_px(
+                        ctrl_out.target_x_m,
+                        ctrl_out.target_y_m,
+                        bev_sidewalk.shape[:2],
+                    )
+                    ego_bev_px = _metric_point_to_bev_px(0.0, 0.0, bev_sidewalk.shape[:2])
+                    controller_ray_bev_px = np.stack(
+                        [ego_bev_px, controller_target_bev_px], axis=0
+                    ).astype(np.float32)
+
+                    target_cam = cv2.perspectiveTransform(
+                        controller_target_bev_px.reshape(-1, 1, 2),
+                        Hinv,
+                    ).reshape(-1, 2)
+                    ego_cam = cv2.perspectiveTransform(
+                        ego_bev_px.reshape(-1, 1, 2),
+                        Hinv,
+                    ).reshape(-1, 2)
+                    controller_target_cam_px = np.int32(target_cam).reshape(-1, 2)[0]
+                    controller_ray_cam_px = np.int32(
+                        np.vstack([ego_cam, target_cam])
+                    ).reshape(-1, 1, 2)
+
+                if paths and best_idx >= 0:
+                    best_path = paths[best_idx][0]
+                    pts = np.array(best_path, dtype=np.float32).reshape(-1, 1, 2)
                     cam_pts = cv2.perspectiveTransform(pts, Hinv).reshape(-1, 2)
                     cam_pts_int = np.int32(cam_pts).reshape(-1, 1, 2)
-                    path_color = (0, 0, 255) if bool(getattr(nav_out, "turn_containment_fail", False)) else cmd_color
-                    # Draw path with glow effect (thick dark outline + bright inner)
-                    cv2.polylines(cam_vis, [cam_pts_int], False, (0, 0, 0), 14, cv2.LINE_AA)
-                    cv2.polylines(cam_vis, [cam_pts_int], False, path_color, 8, cv2.LINE_AA)
+                    overlay = cam_vis.copy()
+                    cv2.polylines(overlay, [cam_pts_int], False, cmd_color, 8, cv2.LINE_AA)
+                    cam_vis = cv2.addWeighted(overlay, 0.28, cam_vis, 0.72, 0)
+
+                if controller_ray_cam_px is not None:
+                    cv2.polylines(cam_vis, [controller_ray_cam_px], False, (0, 0, 0), 12, cv2.LINE_AA)
+                    cv2.polylines(cam_vis, [controller_ray_cam_px], False, (0, 220, 255), 6, cv2.LINE_AA)
+                if controller_target_cam_px is not None:
+                    cv2.circle(cam_vis, tuple(controller_target_cam_px), 9, (0, 0, 0), -1, cv2.LINE_AA)
+                    cv2.circle(cam_vis, tuple(controller_target_cam_px), 6, (255, 255, 0), -1, cv2.LINE_AA)
 
                 cam_vis = draw_heading_hud(cam_vis, command, heading_smoothed, speed_smoothed,
                                            cmd_color, fps, t_total,
                                            detections=detections, gps_info=gps_info,
-                                           active_intent=planner_intent_family)
+                                           active_intent=gps_intent_family,
+                                           compute_hz=compute_hz)
 
-                bev_vis = draw_bev_hud(None, paths, best_idx, skel, bev_sidewalk,
+                bev_vis = draw_bev_hud(None, paths, best_idx, skel, bev_sidewalk_display,
                                        command, heading_smoothed, speed_smoothed,
                                        path_source=getattr(nav_out, "path_source", None),
                                        mask_occ_ratio=getattr(nav_out, "mask_occ_ratio", None),
@@ -940,12 +1029,9 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                                        selected_template_family=getattr(nav_out, "selected_template_family", None),
                                        suggested_slowdown=getattr(nav_out, "suggested_slowdown", None),
                                        obstacle_zones_m=obstacle_zones if obstacle_zones else None,
-                                       active_intent=planner_intent_family,
-                                       final_path_px=getattr(nav_out, "control_path_px", None),
-                                       candidate_path_px=paths[best_idx][0] if paths and best_idx >= 0 else None,
-                                       turn_containment_fail=getattr(nav_out, "turn_containment_fail", None),
-                                       path_outside_ratio=getattr(nav_out, "path_outside_ratio", None),
-                                       min_boundary_clearance_px=getattr(nav_out, "min_boundary_clearance_px", None))
+                                       active_intent=gps_intent_family,
+                                       controller_target_px=controller_target_bev_px,
+                                       controller_ray_px=controller_ray_bev_px)
 
                 display_h = 540
                 cam_display = cv2.resize(cam_vis,
@@ -977,36 +1063,41 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 obs_str = f"{min_obstacle_dist:.1f}m" if min_obstacle_dist else "none"
                 print(f"{frame_id:6d} | {command:>12s} | {heading_smoothed:+7.1f}d | "
                       f"{speed_smoothed:5.2f}ms | {obs_str:>5s} | {t_total:5.0f} | {fps:5.1f} | "
-                      f"{seg_iou:5.2f} | {stability_mode:>7s}",
+                      f"{seg_iou:5.2f} | {stability_mode:>7s} | segHz={compute_hz:4.1f}",
                       flush=True)
 
             if not headless:
                 key = cv2.waitKeyEx(1)
-                if key == ord('q') or key == 27:
+                key_low = key & 0xFF
+                if key_low == ord('q') or key == 27:
                     break
-                elif key in KEY_UP:
+                elif key_low == ord('s') or key == 2490368:
                     manual_intent_family = 'straight'
+                    gps_intent_family = manual_intent_family
                     if turn_lock_family is not None:
                         turn_lock_family = None
                         turn_lock_frames = 0
                         turn_lock_release_streak = 0
                     print(f"[Intent] straight")
-                elif key in KEY_LEFT:
+                elif key_low == ord('l') or key == 2424832:
                     manual_intent_family = 'left'
+                    gps_intent_family = manual_intent_family
                     if turn_lock_family not in {None, 'left'}:
                         turn_lock_family = None
                         turn_lock_frames = 0
                         turn_lock_release_streak = 0
                     print(f"[Intent] left")
-                elif key in KEY_RIGHT:
+                elif key_low == ord('r') or key == 2555904:
                     manual_intent_family = 'right'
+                    gps_intent_family = manual_intent_family
                     if turn_lock_family not in {None, 'right'}:
                         turn_lock_family = None
                         turn_lock_frames = 0
                         turn_lock_release_streak = 0
                     print(f"[Intent] right")
-                elif key in KEY_DOWN:
+                elif key_low == ord('c') or key == 2621440:
                     manual_intent_family = None
+                    gps_intent_family = manual_intent_family
                     if turn_lock_family is not None:
                         turn_lock_family = None
                         turn_lock_frames = 0
@@ -1033,6 +1124,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 nav_bev_forward_m=NAV_BEV_FORWARD_M,
                 nav_bev_lateral_m=NAV_BEV_LATERAL_M,
                 planner_mode=planner_mode,
+                planner_family=planner_family,
                 template_planner_enabled=bool(template_planner_enabled),
                 max_frames=int(max_frames) if max_frames is not None else None,
                 yolo_model=YOLO_MODEL_NAME if enable_detection else "disabled",
@@ -1088,16 +1180,6 @@ if __name__ == "__main__":
                         help="Run object detection every N processed frames")
     parser.add_argument("--stab-radius", type=int, default=STAB_SMOOTHING_RADIUS,
                         help="Frame stabilizer smoothing radius (higher = smoother, slower response)")
-    parser.add_argument("--no-stabilization", action="store_true",
-                        help="Disable frame stabilization")
-    parser.add_argument("--no-seg-smoothing", action="store_true",
-                        help="Disable segmentation temporal smoothing")
-    parser.add_argument("--no-bev-smoothing", action="store_true",
-                        help="Disable BEV temporal smoothing")
-    parser.add_argument("--no-ego-anchor", action="store_true",
-                        help="Disable thin ego-to-mask bridge in BEV")
-    parser.add_argument("--no-ego-connected", action="store_true",
-                        help="Disable keeping only the ego-connected BEV component")
     parser.add_argument("--mask-alpha", type=float, default=MASK_SMOOTH_ALPHA,
                         help="Segmentation temporal EMA alpha (0-1)")
     parser.add_argument("--bev-alpha", type=float, default=BEV_SMOOTH_ALPHA,
@@ -1135,6 +1217,11 @@ if __name__ == "__main__":
                         help="Graph candidate search mode for path planner")
     parser.add_argument("--no-template-planner", action="store_true",
                         help="Disable Phase 11 template approval and use graph/fallback baseline only")
+    parser.add_argument("--legacy-planner", action="store_true",
+                        help="Backwards-compatible alias for --planner-family potential_field")
+    parser.add_argument("--planner-family", type=str, default=None,
+                        choices=["dt_ridge", "vectorized_dt", "weighted_centroid", "potential_field", "skeleton_hybrid"],
+                        help="Planner backend: dt_ridge uses the original BEV DT stack, others use the fast modular planners")
     parser.add_argument("--max-frames", type=int, default=None,
                         help="Optional maximum number of processed frames")
     parser.add_argument("--intent", type=str, default=None,
@@ -1177,16 +1264,15 @@ if __name__ == "__main__":
             enable_predict=not args.no_predict,
             planner_mode=args.planner_mode,
             template_planner_enabled=not args.no_template_planner,
+            use_dt_planner=not args.legacy_planner,
+            planner_family=("potential_field" if args.legacy_planner and not args.planner_family else args.planner_family),
             max_frames=args.max_frames,
             initial_intent=args.intent,
             bev_clean_mode=args.bev_clean,
             model_dir=args.model_dir,
             output_video_path=args.output_video,
             seg_conf_thresh=args.seg_conf_thresh,
-            enable_stabilization=not args.no_stabilization,
-            enable_seg_smoothing=not args.no_seg_smoothing,
-            enable_bev_smoothing=not args.no_bev_smoothing,
-            enable_ego_anchor=not args.no_ego_anchor,
-            enable_ego_connected=not args.no_ego_connected,
             intent_schedule_path=args.intent_schedule,
         )
+
+
