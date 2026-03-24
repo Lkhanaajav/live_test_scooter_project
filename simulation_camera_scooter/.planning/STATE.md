@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 11.1-03-PLAN.md (Waypoint-turn runtime integration with lock state and speed gating)
-last_updated: "2026-03-23T23:29:17.000Z"
-last_activity: 2026-03-23 — wired waypoint-turn planner into BEVPathExtractor.process() with maneuver lock and low-confidence speed gating
+stopped_at: Completed 11.1-04-PLAN.md (Replay evaluator and threshold tuning — Phase 11.1 COMPLETE)
+last_updated: "2026-03-24T00:03:00.000Z"
+last_activity: 2026-03-24 — three-mode replay evaluator with documented waypoint-turn thresholds; Phase 11.1 all 4 plans done
 progress:
   total_phases: 13
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 19
-  completed_plans: 11
-  percent: 58
+  completed_plans: 12
+  percent: 63
 ---
 
 ---
@@ -137,6 +137,7 @@ Progress: 3 completed phases (01, 02, 03.1); Phase 7 foundation underway under 0
 | Phase 11.1 P01 | 5 | 2 tasks | 4 files |
 | Phase 11.1 P02 | 10 | 2 tasks | 3 files |
 | Phase 11.1 P03 | 8 | 2 tasks | 4 files |
+| Phase 11.1 P04 | 3 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -173,6 +174,10 @@ Recent decisions affecting current work:
 - [Phase 11.1-03]: Override injection in _build_result: 4 optional override params inject waypoint-turn diagnostics without template_approval
 - [Phase 11.1-03]: Unsupported commanded turns emit is_low_confidence=True with slowdown to reuse existing speed safety infrastructure
 - [Phase 11.1-03]: Maneuver lock uses frame counters (not timers) for deterministic testability
+- [Phase 11.1-04]: Separate eval script per phase (eval_waypoint_turn_planner.py) preserves Phase 11 eval_template_planner.py tooling
+- [Phase 11.1-04]: Threshold provenance via _snapshot_waypoint_thresholds() embedded in evaluation JSON artifacts for reproducibility
+- [Phase 11.1-04]: All 17 WAYPOINT_* thresholds documented with BEV geometry, sidewalk dimension, and safety invariant rationale
+- [Phase 11.1-04]: Phase 11.1 COMPLETE — WPT-02 through WPT-04 satisfied, all 4 plans done, 206 tests passing
 
 ### Roadmap Evolution
 
@@ -201,8 +206,8 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-03-23T23:29:17.000Z
-Stopped at: Completed 11.1-03-PLAN.md (Waypoint-turn runtime integration with lock state and speed gating)
+Last session: 2026-03-24T00:03:00.000Z
+Stopped at: Completed 11.1-04-PLAN.md (Replay evaluator and threshold tuning — Phase 11.1 COMPLETE)
 
 ## Work Log
 
