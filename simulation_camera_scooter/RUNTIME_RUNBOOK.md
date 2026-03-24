@@ -101,12 +101,12 @@ Notes:
 
 ## Controls
 
-The live window currently uses arrow keys:
+The live window accepts both arrow keys and letter keys:
 
-- `Up` = straight
-- `Left` = left intent
-- `Right` = right intent
-- `Down` = clear intent
+- `Up` or `s` = straight
+- `Left` or `l` = left intent
+- `Right` or `r` = right intent
+- `Down` or `c` = clear intent
 - `q` or `Esc` = quit
 
 The overlay also shows the active intent.
