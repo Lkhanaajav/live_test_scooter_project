@@ -445,13 +445,16 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 and predictor.last_bev_mask is not None
                 and predictor.last_path_model is not None
             )
+            turn_predict_blocked = bool(
+                active_intent_family in {"left", "right"}
+                or planner_intent_family in {"left", "right"}
+                or turn_lock_active
+            )
             predict_skip = (
-                turn_lock_active
-                or (
-                    enable_predict
-                    and predictor is not None
-                    and predictor.should_skip(speed=speed_est, dt=dt_frame)
-                )
+                (not turn_predict_blocked)
+                and enable_predict
+                and predictor is not None
+                and predictor.should_skip(speed=speed_est, dt=dt_frame)
             )
             # Fallback: stride-based skip when predictor is disabled
             run_net = (not predict_skip) and (frame_id % stride == 0 or last_mask is None)
@@ -461,6 +464,7 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 video_path
                 and stride > 1
                 and not enable_predict
+                and not turn_predict_blocked
                 and not run_net
                 and not predict_skip
                 and cached_frame_state is not None
@@ -875,6 +879,13 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     corridor_valid_ratio=round(float(getattr(nav_out, "corridor_valid_ratio", 0.0)), 4),
                     corridor_forward_span_m=round(float(getattr(nav_out, "corridor_forward_span_m", 0.0)), 4),
                     corridor_width_cv=round(float(getattr(nav_out, "corridor_width_cv", 0.0)), 4),
+                    turn_active=int(bool(getattr(nav_out, "turn_active", False))),
+                    turn_path_source=getattr(nav_out, "path_source", "") if bool(getattr(nav_out, "turn_active", False)) else "",
+                    turn_containment_fail=int(bool(getattr(nav_out, "turn_containment_fail", False))),
+                    path_outside_ratio=round(float(getattr(nav_out, "path_outside_ratio", 0.0)), 5),
+                    path_outside_count=int(getattr(nav_out, "path_outside_count", 0)),
+                    path_sample_count=int(getattr(nav_out, "path_sample_count", 0)),
+                    min_boundary_clearance_px=round(float(getattr(nav_out, "min_boundary_clearance_px", 0.0)), 3),
                     # Detections
                     num_detections=len(detections),
                     min_obstacle_dist_m=round(min_obstacle_dist, 2) if min_obstacle_dist else "",
@@ -903,14 +914,18 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     seg_overlay[road_mask > 0] = (255, 140, 0)
                 cam_vis = cv2.addWeighted(seg_overlay, 0.50, cam_vis, 0.85, 0)
 
-                if paths and best_idx >= 0:
-                    best_path = paths[best_idx][0]
-                    pts = np.array(best_path, dtype=np.float32).reshape(-1, 1, 2)
+                display_path_px = getattr(nav_out, "control_path_px", None)
+                if display_path_px is None or len(display_path_px) < 2:
+                    display_path_px = paths[best_idx][0] if paths and best_idx >= 0 else None
+
+                if display_path_px is not None and len(display_path_px) >= 2:
+                    pts = np.array(display_path_px, dtype=np.float32).reshape(-1, 1, 2)
                     cam_pts = cv2.perspectiveTransform(pts, Hinv).reshape(-1, 2)
                     cam_pts_int = np.int32(cam_pts).reshape(-1, 1, 2)
+                    path_color = (0, 0, 255) if bool(getattr(nav_out, "turn_containment_fail", False)) else cmd_color
                     # Draw path with glow effect (thick dark outline + bright inner)
                     cv2.polylines(cam_vis, [cam_pts_int], False, (0, 0, 0), 14, cv2.LINE_AA)
-                    cv2.polylines(cam_vis, [cam_pts_int], False, cmd_color, 8, cv2.LINE_AA)
+                    cv2.polylines(cam_vis, [cam_pts_int], False, path_color, 8, cv2.LINE_AA)
 
                 cam_vis = draw_heading_hud(cam_vis, command, heading_smoothed, speed_smoothed,
                                            cmd_color, fps, t_total,
@@ -925,7 +940,12 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                                        selected_template_family=getattr(nav_out, "selected_template_family", None),
                                        suggested_slowdown=getattr(nav_out, "suggested_slowdown", None),
                                        obstacle_zones_m=obstacle_zones if obstacle_zones else None,
-                                       active_intent=planner_intent_family)
+                                       active_intent=planner_intent_family,
+                                       final_path_px=getattr(nav_out, "control_path_px", None),
+                                       candidate_path_px=paths[best_idx][0] if paths and best_idx >= 0 else None,
+                                       turn_containment_fail=getattr(nav_out, "turn_containment_fail", None),
+                                       path_outside_ratio=getattr(nav_out, "path_outside_ratio", None),
+                                       min_boundary_clearance_px=getattr(nav_out, "min_boundary_clearance_px", None))
 
                 display_h = 540
                 cam_display = cv2.resize(cam_vis,
@@ -1170,5 +1190,3 @@ if __name__ == "__main__":
             enable_ego_connected=not args.no_ego_connected,
             intent_schedule_path=args.intent_schedule,
         )
-
-

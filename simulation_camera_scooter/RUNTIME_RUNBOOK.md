@@ -3,6 +3,11 @@
 This file is the single handoff for the current BEV + segmentation runtime.
 If another AI or engineer picks this up later, start here.
 
+## Must Read First
+
+Before touching the turn planner, read [MUST_READ_TURN_CONTAINMENT.md](simulation_camera_scooter/MUST_READ_TURN_CONTAINMENT.md).
+That file is the current Phase 11.1 handoff for model choice, containment behavior, confidence meaning, validated replay behavior, and the first test command to run.
+
 ## Current Runtime Goal
 
 - Default no-intent behavior: follow the drivable corridor smoothly.
@@ -20,11 +25,21 @@ If another AI or engineer picks this up later, start here.
 
 ## Current Model
 
-Use the latest and best segmentation checkpoint (val IoU 0.9602, trained 2026-03-19):
+Use the latest and best segmentation checkpoint when it exists:
 
 - `outputs/training/binary_segformer_old400_img1931_vid017_020/best_checkpoint`
 
-This model was fine-tuned from `old400_plus_img_1931` on 1419 frames spanning 9 videos including the newest VID_017–020 1080p campus clips. It supersedes both `oneformer_teacher` (IoU 0.9437) and `all6_t400` (IoU 0.9588).
+If that checkpoint is missing on a clean checkout, use the runtime default from `config.py`.
+It now resolves the best available local checkpoint by recorded validation IoU from `training_summary.json`.
+
+In this checkout, the resolved default is:
+
+- `outputs/training/binary_segformer_all6_t400/best_checkpoint`
+
+Recorded local metric:
+
+- `val_iou=0.9587699141217626`
+- `accuracy=0.9856501555266204`
 
 ## Current BEV Geometry
 
@@ -78,7 +93,6 @@ This is the current honest debug command. It avoids predictor reuse and skip-fra
 ```powershell
 python simulation_camera_scooter\live_heading_demo.py ^
   --video simulation_camera_scooter\test_videos\VID_20260319_155939_00_017.mp4 ^
-  --model-dir outputs\training\binary_segformer_old400_img1931_vid017_020\best_checkpoint ^
   --seg-conf-thresh 0.6 ^
   --seg-width 640 ^
   --seg-height 360 ^

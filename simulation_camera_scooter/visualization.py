@@ -114,6 +114,11 @@ def draw_bev_hud(
     suggested_slowdown=None,
     obstacle_zones_m=None,
     active_intent=None,
+    final_path_px=None,
+    candidate_path_px=None,
+    turn_containment_fail=None,
+    path_outside_ratio=None,
+    min_boundary_clearance_px=None,
 ):
     """Draw BEV visualization with paths, heading, and speed."""
     h_bev, w_bev = bev_sidewalk.shape
@@ -128,12 +133,28 @@ def draw_bev_hud(
         vis[skel_thick > 0] = (200, 200, 200)
 
     # Draw only the selected path — clean single line
-    if paths and best_idx >= 0:
-        best_path = paths[best_idx][0]
-        path_np = np.int32(best_path).reshape(-1, 1, 2)
-        cv2.polylines(vis, [path_np], False, (0, 255, 0), 6, cv2.LINE_AA)
-        cv2.circle(vis, tuple(np.int32(best_path[0])), 8, (0, 255, 255), -1)
-        cv2.circle(vis, tuple(np.int32(best_path[-1])), 8, (0, 0, 255), -1)
+    selected_path = None
+    if candidate_path_px is not None and len(candidate_path_px) >= 2:
+        selected_path = np.asarray(candidate_path_px, dtype=np.int32)
+    elif paths and best_idx >= 0:
+        selected_path = np.asarray(paths[best_idx][0], dtype=np.int32)
+
+    if selected_path is not None and len(selected_path) >= 2:
+        path_np = selected_path.reshape(-1, 1, 2)
+        cv2.polylines(vis, [path_np], False, (0, 170, 255), 3, cv2.LINE_AA)
+
+    final_path = None
+    if final_path_px is not None and len(final_path_px) >= 2:
+        final_path = np.asarray(final_path_px, dtype=np.int32)
+    elif selected_path is not None:
+        final_path = selected_path
+
+    if final_path is not None and len(final_path) >= 2:
+        final_np = final_path.reshape(-1, 1, 2)
+        final_color = (0, 0, 255) if turn_containment_fail else (0, 255, 0)
+        cv2.polylines(vis, [final_np], False, final_color, 6, cv2.LINE_AA)
+        cv2.circle(vis, tuple(np.int32(final_path[0])), 8, (0, 255, 255), -1)
+        cv2.circle(vis, tuple(np.int32(final_path[-1])), 8, (0, 0, 255), -1)
 
     # Ego indicator at bottom center
     ego_x, ego_y = int(round(bev_ego_x_px(w_bev))), h_bev - 1
@@ -168,6 +189,13 @@ def draw_bev_hud(
         stxt = f"{float(suggested_slowdown):.2f}" if suggested_slowdown is not None else "-"
         cv2.putText(vis, f"Tpl: {ttxt} | Conf: {ctxt} | Slow: {stxt}", (10, 100),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 215, 120), 1, cv2.LINE_AA)
+    if path_outside_ratio is not None or min_boundary_clearance_px is not None:
+        outside_txt = f"{100.0 * float(path_outside_ratio):.1f}%" if path_outside_ratio is not None else "-"
+        clear_txt = f"{float(min_boundary_clearance_px):+.1f}px" if min_boundary_clearance_px is not None else "-"
+        info_y = min(h_bev - 10, 122)
+        info_color = (0, 90, 255) if turn_containment_fail else (180, 255, 180)
+        cv2.putText(vis, f"Outside: {outside_txt} | Clear: {clear_txt}", (10, info_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, info_color, 1, cv2.LINE_AA)
     intent_text = str(active_intent or "clear").strip().lower() or "clear"
     intent_line = f"Intent: {intent_text.upper()}"
     (iw, ih), ib = cv2.getTextSize(intent_line, cv2.FONT_HERSHEY_SIMPLEX, 0.60, 2)

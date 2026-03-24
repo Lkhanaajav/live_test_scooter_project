@@ -14,12 +14,78 @@ import numpy as np
 # =============================================================================
 ROAD_ID = 1
 SIDEWALK_ID = 2
-# Best checkpoint from benchmark (Plan 01-01): 99.3% frames stable — was: my-segformer-road_new
-MODEL_DIR = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "models",
-    "my-segformer-road",  # updated from benchmark Plan 01-01
-)
+# Runtime model resolution
+_SIM_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(_SIM_DIR)
+# Prefer the best available local checkpoint by recorded validation IoU.
+# If multiple checkpoints exist, choose the one with the highest real metric
+# from training_summary.json instead of a fixed name order.
+_MODEL_DIR_CANDIDATES = [
+    os.path.join(
+        _PROJECT_ROOT,
+        "outputs",
+        "training",
+        "binary_segformer_old400_img1931_vid017_020",
+        "best_checkpoint",
+    ),
+    os.path.join(
+        _PROJECT_ROOT,
+        "outputs",
+        "training",
+        "binary_segformer_oneformer_teacher",
+        "best_checkpoint",
+    ),
+    os.path.join(
+        _PROJECT_ROOT,
+        "outputs",
+        "training",
+        "binary_segformer_old400_plus_img_1931_t300",
+        "best_checkpoint",
+    ),
+    os.path.join(
+        _PROJECT_ROOT,
+        "outputs",
+        "training",
+        "binary_segformer_all6_t400",
+        "best_checkpoint",
+    ),
+    os.path.join(_SIM_DIR, "models", "my-segformer-road"),
+]
+
+
+def _checkpoint_val_iou(model_dir: str) -> float:
+    """Return recorded validation IoU for a checkpoint, or -1 when unavailable."""
+    summary_path = os.path.join(model_dir, "training_summary.json")
+    if not os.path.isfile(summary_path):
+        return -1.0
+    try:
+        with open(summary_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return -1.0
+    best_metrics = data.get("best_metrics") or {}
+    metrics = data.get("metrics") or {}
+    value = best_metrics.get("best_val_iou", metrics.get("iou"))
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return -1.0
+
+
+def _resolve_model_dir() -> str:
+    existing = [path for path in _MODEL_DIR_CANDIDATES if os.path.isdir(path)]
+    if not existing:
+        return _MODEL_DIR_CANDIDATES[-1]
+    ranked = []
+    for priority, path in enumerate(_MODEL_DIR_CANDIDATES):
+        if not os.path.isdir(path):
+            continue
+        ranked.append((_checkpoint_val_iou(path), -priority, path))
+    ranked.sort(reverse=True)
+    return ranked[0][2] if ranked else _MODEL_DIR_CANDIDATES[-1]
+
+
+MODEL_DIR = _resolve_model_dir()
 SEG_INPUT_RES = (640, 360)
 LOW_POWER_SEG_INPUT_RES = (512, 288)
 
@@ -45,11 +111,11 @@ DEFAULT_DST_POINTS = np.array(
 BEV_SIZE = (360, 660)
 TRIM_BOTTOM = 0           # was 20 — tier1 tuning: keep near-field BEV pixels
 CALIBRATION_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
+    _SIM_DIR,
     "bev_calibration.npy",
 )
 CALIBRATION_META_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
+    _SIM_DIR,
     "bev_calibration_meta.json",
 )
 
@@ -333,6 +399,15 @@ WAYPOINT_HOLD_SLOWDOWN = 1.0
 WAYPOINT_PATH_HORIZON_M = 6.0
 WAYPOINT_PATH_DS_M = 0.25
 WAYPOINT_EXIT_REJOIN_FACTOR = 0.6
+
+# -- Final control-path containment guard --
+# These thresholds are applied after cubic fitting / temporal smoothing on the
+# control path, not just on the raw waypoint/template polyline.
+# outside_ratio/count tolerate only tiny rasterization spill at the mask edge.
+TURN_PATH_CONTAINMENT_MAX_OUTSIDE_RATIO = 0.02
+TURN_PATH_CONTAINMENT_MAX_OUTSIDE_COUNT = 2
+TURN_PATH_MIN_SIGNED_CLEARANCE_PX = -1.0
+TURN_PATH_IGNORE_FIRST_SAMPLES = 4
 
 # -- Runtime toggle --
 # Set False to revert to Phase 11 template-only mode (disables waypoint-turn)

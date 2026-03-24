@@ -25,6 +25,10 @@ from config import (
     DT_CORRIDOR_ENABLED,
     DT_PLANNER_ENABLED,
     WAYPOINT_TURN_ENABLED,
+    TURN_PATH_CONTAINMENT_MAX_OUTSIDE_RATIO,
+    TURN_PATH_CONTAINMENT_MAX_OUTSIDE_COUNT,
+    TURN_PATH_MIN_SIGNED_CLEARANCE_PX,
+    TURN_PATH_IGNORE_FIRST_SAMPLES,
     bev_ego_x_px,
 )
 from template_path_planner import (
@@ -273,6 +277,7 @@ class PathPlanResult:
     path_model: Optional["CubicPathModel"]
     best_path_m: np.ndarray
     best_path_px: np.ndarray
+    control_path_px: np.ndarray
     candidate_paths_m: List[np.ndarray]
     candidate_paths_px: List[np.ndarray]
     candidate_lengths_m: List[float]
@@ -294,6 +299,12 @@ class PathPlanResult:
     corridor_valid_ratio: float = 0.0
     corridor_forward_span_m: float = 0.0
     corridor_width_cv: float = 0.0
+    path_outside_ratio: float = 0.0
+    path_outside_count: int = 0
+    path_sample_count: int = 0
+    min_boundary_clearance_px: float = 0.0
+    turn_active: bool = False
+    turn_containment_fail: bool = False
 
 
 @dataclass
@@ -432,6 +443,7 @@ class BEVPathExtractor:
         self,
         *,
         orig_shape_hw: Tuple[int, int],
+        mask_255: Optional[np.ndarray],
         best_path_m: np.ndarray,
         path_model: Optional["CubicPathModel"],
         cand_paths_m: List[np.ndarray],
@@ -453,6 +465,9 @@ class BEVPathExtractor:
         override_suggested_slowdown: Optional[float] = None,
         override_selected_template_family: Optional[str] = None,
         override_approval_confidence: Optional[float] = None,
+        turn_active: bool = False,
+        precomputed_control_path_px: Optional[np.ndarray] = None,
+        precomputed_path_metrics: Optional[Dict[str, float]] = None,
     ) -> PathPlanResult:
         orig_h, orig_w = orig_shape_hw
         final_best_idx = int(best_idx)
@@ -476,6 +491,13 @@ class BEVPathExtractor:
             if best_path_m is not None and len(best_path_m) >= 2
             else np.zeros((0, 2), dtype=np.int32)
         )
+        control_path_px = (
+            precomputed_control_path_px.astype(np.int32)
+            if precomputed_control_path_px is not None and len(precomputed_control_path_px) >= 2
+            else self._sample_control_path_px(path_model, (orig_h, orig_w))
+        )
+        if len(control_path_px) < 2 and len(best_path_px) >= 2:
+            control_path_px = best_path_px.copy()
         if skel_work is None:
             skel_px = np.zeros((orig_h, orig_w), dtype=np.uint8)
         else:
@@ -514,11 +536,22 @@ class BEVPathExtractor:
         if override_approval_confidence is not None:
             approval_conf = float(override_approval_confidence)
 
+        if precomputed_path_metrics is not None:
+            path_metrics = dict(precomputed_path_metrics)
+        else:
+            path_metrics = self._measure_path_containment(mask_255, control_path_px)
+        path_outside_ratio = float(path_metrics.get("path_outside_ratio", 0.0))
+        path_outside_count = int(round(float(path_metrics.get("path_outside_count", 0.0))))
+        path_sample_count = int(round(float(path_metrics.get("path_sample_count", 0.0))))
+        min_boundary_clearance_px = float(path_metrics.get("min_boundary_clearance_px", 0.0))
+        turn_containment_fail = bool(turn_active and self._turn_path_failed_containment(path_metrics))
+
         return PathPlanResult(
             has_path=bool(path_model is not None and best_path_m is not None and len(best_path_m) >= 2),
             path_model=path_model,
             best_path_m=best_path_m.astype(np.float32) if best_path_m is not None else np.zeros((0, 2), dtype=np.float32),
             best_path_px=best_path_px.astype(np.int32),
+            control_path_px=control_path_px.astype(np.int32),
             candidate_paths_m=[p.astype(np.float32) for p in final_cand_paths_m],
             candidate_paths_px=[p.astype(np.int32) for p in cand_paths_px],
             candidate_lengths_m=[float(v) for v in final_cand_lens_m],
@@ -540,6 +573,12 @@ class BEVPathExtractor:
             corridor_valid_ratio=corridor_valid_ratio,
             corridor_forward_span_m=corridor_forward_span,
             corridor_width_cv=corridor_width_cv,
+            path_outside_ratio=path_outside_ratio,
+            path_outside_count=path_outside_count,
+            path_sample_count=path_sample_count,
+            min_boundary_clearance_px=min_boundary_clearance_px,
+            turn_active=bool(turn_active),
+            turn_containment_fail=turn_containment_fail,
         )
 
     # -------------------------------------------------------------------------
@@ -571,6 +610,136 @@ class BEVPathExtractor:
         out[:, 0] = np.clip(out[:, 0], 0.0, float(w - 1))
         out[:, 1] = np.clip(out[:, 1], 0.0, float(h - 1))
         return np.round(out).astype(np.int32)
+
+    def _sample_control_path_px(
+        self,
+        path_model: Optional["CubicPathModel"],
+        shape_hw: Tuple[int, int],
+    ) -> np.ndarray:
+        if path_model is None:
+            return np.zeros((0, 2), dtype=np.int32)
+        try:
+            pts_m = path_model.sample_xy(ds_m=max(0.08, float(self.cfg.path_sample_ds_m)))
+        except Exception:
+            return np.zeros((0, 2), dtype=np.int32)
+        return self._pixel_from_metric(pts_m, shape_hw)
+
+    def _measure_path_containment(
+        self,
+        mask_255: Optional[np.ndarray],
+        path_px: np.ndarray,
+    ) -> Dict[str, float]:
+        metrics: Dict[str, float] = {
+            "path_outside_ratio": 0.0,
+            "path_outside_count": 0.0,
+            "path_sample_count": 0.0,
+            "min_boundary_clearance_px": 0.0,
+        }
+        if mask_255 is None or path_px is None or len(path_px) == 0:
+            return metrics
+
+        mask = (mask_255 > 0).astype(np.uint8)
+        h, w = mask.shape[:2]
+        pts = np.asarray(path_px, dtype=np.int32).reshape(-1, 2)
+        if len(pts) == 0:
+            return metrics
+
+        ignore_n = int(max(0, TURN_PATH_IGNORE_FIRST_SAMPLES))
+        if len(pts) > ignore_n:
+            pts = pts[ignore_n:]
+        if len(pts) == 0:
+            return metrics
+
+        xs = np.clip(pts[:, 0], 0, max(0, w - 1))
+        ys = np.clip(pts[:, 1], 0, max(0, h - 1))
+        inside = mask[ys, xs] > 0
+
+        dist_inside = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
+        dist_outside = cv2.distanceTransform((mask == 0).astype(np.uint8), cv2.DIST_L2, 3)
+        signed_clearance = np.where(inside, dist_inside[ys, xs], -dist_outside[ys, xs]).astype(np.float32)
+
+        outside_count = int(np.count_nonzero(~inside))
+        sample_count = int(len(pts))
+        metrics["path_outside_ratio"] = float(outside_count / max(1, sample_count))
+        metrics["path_outside_count"] = float(outside_count)
+        metrics["path_sample_count"] = float(sample_count)
+        metrics["min_boundary_clearance_px"] = float(np.min(signed_clearance)) if sample_count else 0.0
+        return metrics
+
+    def _turn_path_failed_containment(
+        self,
+        metrics: Dict[str, float],
+    ) -> bool:
+        sample_count = int(round(float(metrics.get("path_sample_count", 0.0))))
+        if sample_count <= 0:
+            return False
+        outside_ratio = float(metrics.get("path_outside_ratio", 0.0))
+        outside_count = int(round(float(metrics.get("path_outside_count", 0.0))))
+        min_clearance = float(metrics.get("min_boundary_clearance_px", 0.0))
+        return bool(
+            outside_ratio > float(TURN_PATH_CONTAINMENT_MAX_OUTSIDE_RATIO)
+            or outside_count > int(TURN_PATH_CONTAINMENT_MAX_OUTSIDE_COUNT)
+            or min_clearance < float(TURN_PATH_MIN_SIGNED_CLEARANCE_PX)
+        )
+
+    def _project_path_inside_mask(
+        self,
+        mask_255: np.ndarray,
+        path_px: np.ndarray,
+        shape_hw: Tuple[int, int],
+        row_search_px: int = 4,
+    ) -> np.ndarray:
+        if mask_255 is None or path_px is None or len(path_px) < 2:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        mask = (mask_255 > 0).astype(np.uint8)
+        h, w = mask.shape[:2]
+        pts = np.asarray(path_px, dtype=np.int32).reshape(-1, 2)
+        adjusted: List[Tuple[int, int]] = []
+
+        for px in pts:
+            x = int(np.clip(px[0], 0, max(0, w - 1)))
+            y = int(np.clip(px[1], 0, max(0, h - 1)))
+            if mask[y, x] > 0:
+                adjusted.append((x, y))
+                continue
+
+            best_xy = None
+            best_score = None
+            for dy in range(0, max(0, int(row_search_px)) + 1):
+                rows = [y] if dy == 0 else [y - dy, y + dy]
+                for yy in rows:
+                    if yy < 0 or yy >= h:
+                        continue
+                    cols = np.flatnonzero(mask[yy] > 0)
+                    if len(cols) == 0:
+                        continue
+                    col_idx = int(np.argmin(np.abs(cols - x)))
+                    xx = int(cols[col_idx])
+                    score = abs(xx - x) + 0.5 * abs(yy - y)
+                    if best_score is None or score < best_score:
+                        best_score = score
+                        best_xy = (xx, yy)
+                if best_xy is not None:
+                    break
+
+            adjusted.append(best_xy if best_xy is not None else (x, y))
+
+        if len(adjusted) < 2:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        adj_px = np.asarray(adjusted, dtype=np.int32)
+        keep = np.ones(len(adj_px), dtype=bool)
+        if len(adj_px) > 1:
+            keep[1:] = np.any(np.diff(adj_px, axis=0) != 0, axis=1)
+        adj_px = adj_px[keep]
+        if len(adj_px) < 2:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        pts_m = self._metric_from_pixel(adj_px, shape_hw)
+        pts_m[:, 0] = np.maximum.accumulate(pts_m[:, 0])
+        pts_m = self._anchor_path_to_ego(pts_m)
+        return _resample_polyline(pts_m, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
 
     # -------------------------------------------------------------------------
     # Preprocess
@@ -1958,25 +2127,70 @@ class BEVPathExtractor:
             prev_result=self._waypoint_turn_prev_result,
         )
 
-        # Update lock state
         if wpt_result.active:
-            self._waypoint_turn_lock_count += 1
-            self._waypoint_turn_unsupported_count = 0
-            self._waypoint_turn_prev_target = wpt_result.target
-            self._waypoint_turn_prev_result = wpt_result
-
-            # Build a valid PathPlanResult from the waypoint-turn path
             best_path_m = self._anchor_path_to_ego(
                 _resample_polyline(wpt_result.path_m, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
             )
-            path_model = self._fit_regularized_cubic(best_path_m)
+            raw_path_model = self._fit_regularized_cubic(best_path_m)
 
-            if path_model is not None:
+            if raw_path_model is not None:
                 path_model = self._apply_path_smoothing(
-                    path_model,
+                    raw_path_model,
                     float(wpt_result.confidence),
                     "waypoint_turn",
                 )
+                control_path_px = self._sample_control_path_px(path_model, (orig_h, orig_w))
+                path_metrics = self._measure_path_containment(bev_mask_255, control_path_px)
+                if self._turn_path_failed_containment(path_metrics):
+                    raw_control_path_px = self._sample_control_path_px(raw_path_model, (orig_h, orig_w))
+                    raw_path_metrics = self._measure_path_containment(bev_mask_255, raw_control_path_px)
+                    if self._turn_path_failed_containment(raw_path_metrics):
+                        snapped_path_m = self._project_path_inside_mask(
+                            bev_mask_255,
+                            raw_control_path_px,
+                            (orig_h, orig_w),
+                        )
+                        snapped_path_model = (
+                            self._fit_regularized_cubic(snapped_path_m)
+                            if len(snapped_path_m) >= 2
+                            else None
+                        )
+                        if snapped_path_model is not None:
+                            snapped_control_path_px = self._sample_control_path_px(snapped_path_model, (orig_h, orig_w))
+                            snapped_path_metrics = self._measure_path_containment(bev_mask_255, snapped_control_path_px)
+                            if not self._turn_path_failed_containment(snapped_path_metrics):
+                                best_path_m = snapped_path_m
+                                path_model = snapped_path_model
+                                control_path_px = snapped_control_path_px
+                                path_metrics = snapped_path_metrics
+                            else:
+                                wpt_result = replace(
+                                    wpt_result,
+                                    active=False,
+                                    path_m=np.zeros((0, 2), dtype=np.float32),
+                                    confidence=min(float(wpt_result.confidence), 0.25),
+                                    recommend_hold=True,
+                                    suggested_slowdown=max(0.85, float(wpt_result.suggested_slowdown)),
+                                )
+                        else:
+                            wpt_result = replace(
+                                wpt_result,
+                                active=False,
+                                path_m=np.zeros((0, 2), dtype=np.float32),
+                                confidence=min(float(wpt_result.confidence), 0.25),
+                                recommend_hold=True,
+                                suggested_slowdown=max(0.85, float(wpt_result.suggested_slowdown)),
+                            )
+                    else:
+                        path_model = raw_path_model
+                        control_path_px = raw_control_path_px
+                        path_metrics = raw_path_metrics
+
+            if wpt_result.active and raw_path_model is not None:
+                self._waypoint_turn_lock_count += 1
+                self._waypoint_turn_unsupported_count = 0
+                self._waypoint_turn_prev_target = wpt_result.target
+                self._waypoint_turn_prev_result = wpt_result
                 self._commit_selected_path(
                     best_path_m,
                     path_source="waypoint_turn",
@@ -1984,6 +2198,7 @@ class BEVPathExtractor:
                 )
                 return self._build_result(
                     orig_shape_hw=(orig_h, orig_w),
+                    mask_255=bev_mask_255,
                     best_path_m=best_path_m,
                     path_model=path_model,
                     cand_paths_m=[best_path_m.astype(np.float32)],
@@ -2003,6 +2218,9 @@ class BEVPathExtractor:
                     override_selected_template_family=normalized_intent,
                     override_approval_confidence=float(wpt_result.confidence),
                     override_suggested_slowdown=float(wpt_result.suggested_slowdown),
+                    turn_active=True,
+                    precomputed_control_path_px=control_path_px,
+                    precomputed_path_metrics=path_metrics,
                 )
 
         # Waypoint-turn was not active: commanded turn unsupported
@@ -2017,19 +2235,27 @@ class BEVPathExtractor:
             path_model = None
             best_path_m = np.zeros((0, 2), dtype=np.float32)
             path_source = "waypoint_turn_hold"
+            hold_control_path_px = None
+            hold_path_metrics = None
             if len(hold_path) >= 2:
                 hold_model = self._fit_regularized_cubic(hold_path)
                 if hold_model is not None:
-                    best_path_m = hold_path
-                    path_model = hold_model
-                    self._commit_selected_path(
-                        best_path_m,
-                        path_source="waypoint_turn_hold",
-                        template_family=normalized_intent,
-                    )
+                    hold_control_path_px = self._sample_control_path_px(hold_model, (orig_h, orig_w))
+                    hold_path_metrics = self._measure_path_containment(bev_mask_255, hold_control_path_px)
+                    if not self._turn_path_failed_containment(hold_path_metrics):
+                        best_path_m = hold_path
+                        path_model = hold_model
+                        self._commit_selected_path(
+                            best_path_m,
+                            path_source="waypoint_turn_hold",
+                            template_family=normalized_intent,
+                        )
+                    else:
+                        path_source = "none"
 
             return self._build_result(
                 orig_shape_hw=(orig_h, orig_w),
+                mask_255=bev_mask_255,
                 best_path_m=best_path_m,
                 path_model=path_model,
                 cand_paths_m=[best_path_m.astype(np.float32)] if len(best_path_m) >= 2 else [],
@@ -2050,6 +2276,9 @@ class BEVPathExtractor:
                 override_suggested_slowdown=float(wpt_result.suggested_slowdown),
                 override_selected_template_family=normalized_intent,
                 override_approval_confidence=float(wpt_result.confidence),
+                turn_active=True,
+                precomputed_control_path_px=hold_control_path_px,
+                precomputed_path_metrics=hold_path_metrics,
             )
 
         # Lock released: clear state and fall through to template/skeleton
@@ -2090,6 +2319,7 @@ class BEVPathExtractor:
             or forward_reach_m < float(self.cfg.low_evidence_min_forward_m)
         )
         t_pre = time.time()
+        turn_active = str(gps_intent_family or "").strip().lower() in {"left", "right"}
 
         # --- Phase 11.1: Waypoint-turn planner for commanded left/right ---
         waypoint_result = self._try_waypoint_turn(mask, bev_mask_255, gps_intent_family, orig_h, orig_w, mask_occ_ratio, t_pre)
@@ -2111,40 +2341,95 @@ class BEVPathExtractor:
                 best_path_m = self._anchor_path_to_ego(
                     _resample_polyline(template_approval.selected_path_m, self.cfg.path_sample_ds_m, max_len_m=self.cfg.path_horizon_m)
                 )
-                path_model = self._fit_regularized_cubic(best_path_m)
-                if path_model is not None:
+                raw_path_model = self._fit_regularized_cubic(best_path_m)
+                if raw_path_model is not None:
                     # Research impl: temporal path smoothing on cubic coefficients (Idea 3)
                     path_model = self._apply_path_smoothing(
-                        path_model,
+                        raw_path_model,
                         float(template_approval.confidence),
                         "template",
                     )
-                    self._commit_selected_path(
-                        best_path_m,
-                        path_source="template",
-                        template_family=template_approval.selected_template_family,
-                    )
-                    self.prev_first_edge_sig = None
-                    self.branch_hold_counter = 0
-                    ranked = list(template_approval.candidates[: max(1, int(template_cfg.candidate_output_top_k))])
-                    cand_paths_m = [c.template.points_m.astype(np.float32) for c in ranked]
-                    cand_lens_m = [float(c.template.length_m) for c in ranked]
-                    return self._build_result(
-                        orig_shape_hw=(orig_h, orig_w),
-                        best_path_m=best_path_m,
-                        path_model=path_model,
-                        cand_paths_m=cand_paths_m,
-                        cand_lens_m=cand_lens_m,
-                        best_idx=0,
-                        skel_work=None,
-                        graph_nodes=0,
-                        graph_edges=0,
-                        t_skeleton_ms=0.0,
-                        t_path_ms=(time.time() - t_pre) * 1000.0,
-                        path_source="template",
-                        mask_occ_ratio=mask_occ_ratio,
-                        template_approval=template_approval,
-                    )
+                    control_path_px = self._sample_control_path_px(path_model, (orig_h, orig_w))
+                    path_metrics = self._measure_path_containment(bev_mask_255, control_path_px)
+                    if turn_active and self._turn_path_failed_containment(path_metrics):
+                        raw_control_path_px = self._sample_control_path_px(raw_path_model, (orig_h, orig_w))
+                        raw_path_metrics = self._measure_path_containment(bev_mask_255, raw_control_path_px)
+                        if self._turn_path_failed_containment(raw_path_metrics):
+                            snapped_path_m = self._project_path_inside_mask(
+                                bev_mask_255,
+                                raw_control_path_px,
+                                (orig_h, orig_w),
+                            )
+                            snapped_path_model = (
+                                self._fit_regularized_cubic(snapped_path_m)
+                                if len(snapped_path_m) >= 2
+                                else None
+                            )
+                            if snapped_path_model is not None:
+                                snapped_control_path_px = self._sample_control_path_px(snapped_path_model, (orig_h, orig_w))
+                                snapped_path_metrics = self._measure_path_containment(bev_mask_255, snapped_control_path_px)
+                                if not self._turn_path_failed_containment(snapped_path_metrics):
+                                    best_path_m = snapped_path_m
+                                    path_model = snapped_path_model
+                                    control_path_px = snapped_control_path_px
+                                    path_metrics = snapped_path_metrics
+                                else:
+                                    template_approval = replace(
+                                        template_approval,
+                                        approved=False,
+                                        reuse_selected_path=False,
+                                        confidence=min(float(template_approval.confidence), 0.35),
+                                        is_low_confidence=True,
+                                        suggested_slowdown=max(0.85, float(template_approval.suggested_slowdown)),
+                                        recommend_hold=True,
+                                    )
+                                    path_model = None
+                            else:
+                                template_approval = replace(
+                                    template_approval,
+                                    approved=False,
+                                    reuse_selected_path=False,
+                                    confidence=min(float(template_approval.confidence), 0.35),
+                                    is_low_confidence=True,
+                                    suggested_slowdown=max(0.85, float(template_approval.suggested_slowdown)),
+                                    recommend_hold=True,
+                                )
+                                path_model = None
+                        else:
+                            path_model = raw_path_model
+                            control_path_px = raw_control_path_px
+                            path_metrics = raw_path_metrics
+                    if path_model is not None:
+                        self._commit_selected_path(
+                            best_path_m,
+                            path_source="template",
+                            template_family=template_approval.selected_template_family,
+                        )
+                        self.prev_first_edge_sig = None
+                        self.branch_hold_counter = 0
+                        ranked = list(template_approval.candidates[: max(1, int(template_cfg.candidate_output_top_k))])
+                        cand_paths_m = [c.template.points_m.astype(np.float32) for c in ranked]
+                        cand_lens_m = [float(c.template.length_m) for c in ranked]
+                        return self._build_result(
+                            orig_shape_hw=(orig_h, orig_w),
+                            mask_255=bev_mask_255,
+                            best_path_m=best_path_m,
+                            path_model=path_model,
+                            cand_paths_m=cand_paths_m,
+                            cand_lens_m=cand_lens_m,
+                            best_idx=0,
+                            skel_work=None,
+                            graph_nodes=0,
+                            graph_edges=0,
+                            t_skeleton_ms=0.0,
+                            t_path_ms=(time.time() - t_pre) * 1000.0,
+                            path_source="template",
+                            mask_occ_ratio=mask_occ_ratio,
+                            template_approval=template_approval,
+                            turn_active=turn_active,
+                            precomputed_control_path_px=control_path_px,
+                            precomputed_path_metrics=path_metrics,
+                        )
 
             if template_approval.recommend_hold:
                 best_path_m = np.zeros((0, 2), dtype=np.float32)
@@ -2178,6 +2463,7 @@ class BEVPathExtractor:
                     cand_lens_m = [float(_polyline_length_m(best_path_m))] + extra_lens_m
                     return self._build_result(
                         orig_shape_hw=(orig_h, orig_w),
+                        mask_255=bev_mask_255,
                         best_path_m=best_path_m,
                         path_model=path_model,
                         cand_paths_m=cand_paths_m,
@@ -2191,6 +2477,7 @@ class BEVPathExtractor:
                         path_source=path_source,
                         mask_occ_ratio=mask_occ_ratio,
                         template_approval=template_approval,
+                        turn_active=turn_active,
                     )
         t1 = time.time()
         skel_bin, dist_m = self._extract_medial_axis(mask)
@@ -2420,6 +2707,7 @@ class BEVPathExtractor:
         t4 = time.time()
         return self._build_result(
             orig_shape_hw=(orig_h, orig_w),
+            mask_255=bev_mask_255,
             best_path_m=best_path_m.astype(np.float32),
             path_model=path_model,
             cand_paths_m=cand_paths_m,
@@ -2437,6 +2725,7 @@ class BEVPathExtractor:
             corridor_valid_ratio=corridor_valid_ratio,
             corridor_forward_span_m=corridor_forward_span_m,
             corridor_width_cv=corridor_width_cv,
+            turn_active=turn_active,
         )
 
 

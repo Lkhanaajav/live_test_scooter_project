@@ -58,11 +58,11 @@ except ImportError:
 
 VALID_MODES = {"baseline", "template", "waypoint_turn"}
 
-# Default model path for replay (best current model)
-_DEFAULT_MODEL_DIR = str(
-    Path(PROJECT_DIR).parent / "outputs" / "training"
-    / "binary_segformer_old400_img1931_vid017_020" / "best_checkpoint"
-)
+import config as runtime_config
+
+# Default replay model follows the runtime resolver in config.py so a clean
+# checkout does not point at a missing local-only checkpoint.
+_DEFAULT_MODEL_DIR = str(runtime_config.MODEL_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -143,21 +143,18 @@ def mode_to_run_kwargs(mode: str) -> Dict:
         return {
             **common,
             "template_planner_enabled": False,
-            "use_dt_planner": True,
             "initial_intent": None,
         }
     elif mode == "template":
         return {
             **common,
             "template_planner_enabled": True,
-            "use_dt_planner": False,
             "initial_intent": None,
         }
     elif mode == "waypoint_turn":
         return {
             **common,
             "template_planner_enabled": True,
-            "use_dt_planner": False,
             "initial_intent": None,
         }
     else:
@@ -211,6 +208,11 @@ def _summarize_log_pandas(csv_path: str) -> Dict:
             has_path_rate=0.0,
             mean_slowdown=0.0,
             template_rate=0.0,
+            turn_containment_fail_rate=0.0,
+            mean_path_outside_ratio=0.0,
+            max_path_outside_ratio=0.0,
+            min_boundary_clearance_px=0.0,
+            mean_fps=0.0,
             path_source_counts={},
             template_family_counts={},
         )
@@ -236,6 +238,22 @@ def _summarize_log_pandas(csv_path: str) -> Dict:
 
     slowdown = pd.to_numeric(
         df.get("planner_slowdown", pd.Series(dtype=float)),
+        errors="coerce",
+    ).fillna(0.0)
+    turn_containment_fail = pd.to_numeric(
+        df.get("turn_containment_fail", pd.Series(dtype=float)),
+        errors="coerce",
+    ).fillna(0.0)
+    path_outside = pd.to_numeric(
+        df.get("path_outside_ratio", pd.Series(dtype=float)),
+        errors="coerce",
+    ).fillna(0.0)
+    min_clearance = pd.to_numeric(
+        df.get("min_boundary_clearance_px", pd.Series(dtype=float)),
+        errors="coerce",
+    ).fillna(0.0)
+    fps = pd.to_numeric(
+        df.get("fps", pd.Series(dtype=float)),
         errors="coerce",
     ).fillna(0.0)
 
@@ -266,6 +284,11 @@ def _summarize_log_pandas(csv_path: str) -> Dict:
         dt_corridor_rate=float((path_source == "dt_corridor").mean()),
         mean_approval_confidence=float(approval_conf.mean()),
         mean_bev_occ_ratio=float(occ.mean()),
+        turn_containment_fail_rate=float(turn_containment_fail.mean()),
+        mean_path_outside_ratio=float(path_outside.mean()),
+        max_path_outside_ratio=float(path_outside.max()),
+        min_boundary_clearance_px=float(min_clearance.min()) if len(min_clearance) else 0.0,
+        mean_fps=float(fps.mean()),
         path_source_switches=_switch_count(path_source.tolist()),
         path_source_counts=path_source.value_counts().to_dict(),
         template_family_counts=template_family.value_counts().to_dict(),
@@ -294,6 +317,11 @@ def _summarize_log_csv(csv_path: str) -> Dict:
             has_path_rate=0.0,
             mean_slowdown=0.0,
             template_rate=0.0,
+            turn_containment_fail_rate=0.0,
+            mean_path_outside_ratio=0.0,
+            max_path_outside_ratio=0.0,
+            min_boundary_clearance_px=0.0,
+            mean_fps=0.0,
             path_source_counts={},
             template_family_counts={},
         )
@@ -322,6 +350,34 @@ def _summarize_log_csv(csv_path: str) -> Dict:
             slowdown_vals.append(float(r.get("planner_slowdown", 0)))
         except (ValueError, TypeError):
             slowdown_vals.append(0.0)
+
+    turn_fail_vals: List[float] = []
+    for r in rows:
+        try:
+            turn_fail_vals.append(float(r.get("turn_containment_fail", 0)))
+        except (ValueError, TypeError):
+            turn_fail_vals.append(0.0)
+
+    path_outside_vals: List[float] = []
+    for r in rows:
+        try:
+            path_outside_vals.append(float(r.get("path_outside_ratio", 0)))
+        except (ValueError, TypeError):
+            path_outside_vals.append(0.0)
+
+    min_clear_vals: List[float] = []
+    for r in rows:
+        try:
+            min_clear_vals.append(float(r.get("min_boundary_clearance_px", 0)))
+        except (ValueError, TypeError):
+            min_clear_vals.append(0.0)
+
+    fps_vals: List[float] = []
+    for r in rows:
+        try:
+            fps_vals.append(float(r.get("fps", 0)))
+        except (ValueError, TypeError):
+            fps_vals.append(0.0)
 
     has_path_vals: List[float] = []
     for r in rows:
@@ -357,6 +413,11 @@ def _summarize_log_csv(csv_path: str) -> Dict:
         p95_abs_heading_deg=float(headings_sorted[p95_idx]),
         max_abs_heading_deg=float(max(headings_abs)) if headings_abs else 0.0,
         template_rate=float(tpl_count) / max(1, n),
+        turn_containment_fail_rate=float(sum(turn_fail_vals)) / max(1, n),
+        mean_path_outside_ratio=float(sum(path_outside_vals)) / max(1, n),
+        max_path_outside_ratio=float(max(path_outside_vals)) if path_outside_vals else 0.0,
+        min_boundary_clearance_px=float(min(min_clear_vals)) if min_clear_vals else 0.0,
+        mean_fps=float(sum(fps_vals)) / max(1, n),
         path_source_switches=_switch_count(path_sources),
         path_source_counts=ps_counts,
         template_family_counts=tf_counts,
@@ -429,6 +490,11 @@ def build_comparison_report(title: str, results: List[Dict]) -> str:
         lines.append(f"- Waypoint-turn hold rate: {100.0 * float(item.get('waypoint_turn_hold_rate', 0.0)):.1f}%")
         lines.append(f"- Low-confidence rate: {100.0 * float(item.get('low_confidence_rate', 0.0)):.1f}%")
         lines.append(f"- Mean slowdown: {float(item.get('mean_slowdown', 0.0)):.3f}")
+        lines.append(f"- Turn containment fail rate: {100.0 * float(item.get('turn_containment_fail_rate', 0.0)):.1f}%")
+        lines.append(f"- Mean path outside ratio: {100.0 * float(item.get('mean_path_outside_ratio', 0.0)):.2f}%")
+        lines.append(f"- Max path outside ratio: {100.0 * float(item.get('max_path_outside_ratio', 0.0)):.2f}%")
+        lines.append(f"- Min boundary clearance: {float(item.get('min_boundary_clearance_px', 0.0)):.3f} px")
+        lines.append(f"- Mean FPS: {float(item.get('mean_fps', 0.0)):.2f}")
         lines.append(f"- Template rate: {100.0 * float(item.get('template_rate', 0.0)):.1f}%")
         lines.append(f"- Maneuver-family switches: {int(item.get('maneuver_family_switches', 0))}")
         lines.append(f"- Path-source switches: {int(item.get('path_source_switches', 0))}")

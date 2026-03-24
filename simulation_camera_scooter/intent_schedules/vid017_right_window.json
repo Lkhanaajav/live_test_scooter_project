@@ -1,0 +1,11 @@
+{
+  "source": "manual_from_phase11_probe_20260324",
+  "events": [
+    {
+      "intent": "right",
+      "start_frame": 20,
+      "end_frame": 30,
+      "label": "vid017_right_turn_window"
+    }
+  ]
+}

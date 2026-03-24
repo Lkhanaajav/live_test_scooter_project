@@ -38,6 +38,8 @@ class DataLogger:
         "approval_confidence", "approval_margin", "planner_low_confidence", "planner_slowdown",
         "selected_template_id", "selected_template_family",
         "corridor_confidence", "corridor_valid_ratio", "corridor_forward_span_m", "corridor_width_cv",
+        "turn_active", "turn_path_source", "turn_containment_fail",
+        "path_outside_ratio", "path_outside_count", "path_sample_count", "min_boundary_clearance_px",
         # Object detection
         "num_detections", "min_obstacle_dist_m",
         "detection_classes", "detection_distances",

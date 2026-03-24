@@ -13,12 +13,13 @@ from typing import Optional, Tuple, Dict, List, Union
 from transformers import AutoImageProcessor, SegformerForSemanticSegmentation
 import argparse
 from stabilization import TemporalMaskSmoother
+from config import MODEL_DIR as DEFAULT_MODEL_DIR
 
 @dataclass
 class Config:
     # Basic settings
     video_path: str = "test_video_june_03_3.MOV"
-    model_dir: str = "models/my-segformer-road"
+    model_dir: str = DEFAULT_MODEL_DIR
     output_mp4: str = "result/fast_overlay.mp4"
     road_id: int = 1
     conf_thresh: float = 0.6
