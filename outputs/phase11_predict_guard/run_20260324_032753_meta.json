@@ -1,0 +1,29 @@
+{
+  "csv_file": "outputs\\phase11_predict_guard\\run_20260324_032753.csv",
+  "start_time": "2026-03-24T03:28:09.649508",
+  "total_frames": 80,
+  "camera_id": 0,
+  "video_path": "simulation_camera_scooter\\test_videos\\VID_20260319_155939_00_017.mp4",
+  "stride": 1,
+  "detection_enabled": false,
+  "detection_stride": 1,
+  "gps_device": null,
+  "gps_waypoints": null,
+  "serial_port": null,
+  "model_dir": "outputs\\training\\binary_segformer_all6_t400\\best_checkpoint",
+  "seg_resolution": [
+    640,
+    360
+  ],
+  "seg_conf_thresh": 0.6,
+  "low_power": false,
+  "path_scale": 0.7,
+  "nav_work_grid": 154,
+  "nav_bev_forward_m": 11.0,
+  "nav_bev_lateral_m": 6.0,
+  "planner_mode": "dijkstra",
+  "template_planner_enabled": true,
+  "max_frames": 80,
+  "yolo_model": "disabled",
+  "output_video_path": null
+}

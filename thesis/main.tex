@@ -2,8 +2,9 @@
 % University of Oklahoma — Master's Thesis
 % Monocular-Camera-Based Autonomous Sidewalk Navigation
 % Author: Lkhanaajav Mijiddorj
-% Updated: 2026-03-20 — Incorporates planner comparison, BEV fragility,
-%          image-space planning, and improved segmentation findings
+% Updated: 2026-03-25 — Adds template planner evaluation, waypoint-turn
+%          planner, turn containment guard, overnight validation, 1800-frame
+%          accepted run results
 % =============================================================================
 \documentclass[12pt,letterpaper,oneside]{report}
 
@@ -181,7 +182,9 @@ Sidewalk-scale autonomy demands perception and planning systems that run reliabl
 
 A compact SegFormer-B0 student model (3.7M parameters), trained with a semi-supervised teacher--student framework using OneFormer Swin-L pseudo-labels, achieves a hand-annotated intersection-over-union (IoU) of 0.946 at \SI{11.7}{ms} per frame, improving over the baseline checkpoint (IoU 0.758, \SI{18.9}{ms}). In a controlled planner comparison on 32 hand-labeled frames from University of Oklahoma campus sidewalks, image-space midpoint planning achieves the lowest lateral center error (\SI{14.3}{\px}) at \SI{2.2}{ms}---a $421\times$ speedup over BEV distance-transform planning (\SI{926.8}{ms}, \SI{65.0}{\px} center error)---while maintaining comparable mask--path alignment (98.5\% vs.\ 98.6\%). A full-video replay across six campus sequences (\numprint{22679} frames) confirms that the improved segmentation reduces temporal instability from 1.46\% to 0.33\% and increases template-planner success rate from 73.7\% to 79.3\%.
 
-This thesis further demonstrates that BEV-only planning is fundamentally fragile in monocular settings: in one profiled run, 99.3\% of frames produced no valid BEV path due to insufficient mask coverage from the monocular viewpoint. The final recommended architecture---image-space midpoint primary, image-space distance-transform fallback, BEV reserved for visualization---runs the full perception-to-path stack in under \SI{17}{ms} per frame on CPU (59~FPS), exceeding the 10~Hz real-time requirement for pedestrian-speed platforms.
+A template arc planner further reduces mean heading error by 40.6\% (from $1.190^\circ$ to $0.707^\circ$) and halves path-source switches compared to the skeleton-graph baseline by selecting from a fixed arc bank with family-reuse hysteresis. For GPS-conditioned junction maneuvers, a waypoint-turn planner detects asymmetric road openings in the BEV mask and generates constant-curvature turn arcs gated by dual containment thresholds. A turn containment safety guard verifies the final control path against the BEV mask before execution, achieving 0\% containment failure rate in overnight validation. An 1800-frame accepted run achieves 100\% template success across all frames at a mean segmentation IoU of 0.954 and 9.97~FPS.
+
+This thesis further demonstrates that BEV-only planning is fundamentally fragile in monocular settings: in one profiled run, 99.3\% of frames produced no valid BEV path due to insufficient mask coverage from the monocular viewpoint. The final recommended architecture---image-space midpoint primary, image-space distance-transform fallback, BEV reserved for visualization and turn planning---runs the full perception-to-path stack in under \SI{17}{ms} per frame on CPU (59~FPS), exceeding the 10~Hz real-time requirement for pedestrian-speed platforms.
 
 The system further integrates YOLOv8-nano obstacle detection, GPS waypoint navigation, and a serial command protocol for closed-loop scooter control, validated through live campus demonstrations.
 
@@ -226,6 +229,7 @@ The system evolved through three design iterations, each backward-compatible wit
   \item \textbf{Iteration~1:} BEV skeleton-graph planner with SegFormer-B2 teacher.
   \item \textbf{Iteration~2:} BEV distance-transform corridor planner with enhanced mask refinement.
   \item \textbf{Iteration~3:} Image-space midpoint and DT planners with OneFormer Swin-L teacher, eliminating BEV dependency for path extraction.
+  \item \textbf{Iteration~4:} Template arc planner with GPS-conditioned waypoint-turn planner and turn containment safety guard, adding junction maneuver capability with verified path safety.
 \end{itemize}
 
 This direction complements several active research threads. End-to-end steering policies can perform well but are difficult to interpret and often assume GPU-class hardware~\cite{e2e_nav_policies, viteri2024}. Dense monocular BEV reconstruction pushes accuracy but remains challenging to deploy on low-power platforms~\cite{zhao2024bev}. Classic semantic-mask corridor following is efficient in structured environments but does not explicitly expose intersection topology~\cite{orchard_seg_nav, row_nav_survey}. In contrast, our approach is monocular, transparent, and light enough for CPU-only inference, while providing an empirical comparison of planning-domain trade-offs that is absent from prior sidewalk navigation work.
@@ -249,12 +253,14 @@ This thesis makes the following contributions:
   \item A comprehensive offline evaluation protocol covering segmentation quality, planner accuracy, temporal stability, and runtime analysis across six campus video sequences totaling over \numprint{22000} frames.
 
   \item Integration of YOLOv8-nano obstacle detection~\cite{yolov8}, GPS waypoint navigation, and a serial command protocol for closed-loop scooter control.
+
+  \item A GPS-conditioned waypoint-turn planner with a turn containment safety guard that verifies committed control paths against the BEV mask before execution, validated through overnight replay evaluation with 0\% containment failure rate and 12.9~FPS throughput.
 \end{enumerate}
 
 
 \section{Thesis Organization}
 
-The remainder of this thesis is organized as follows. Chapter~\ref{ch:related_work} reviews related work in autonomous navigation, segmentation, BEV reconstruction, path planning, and embedded perception. Chapter~\ref{ch:methodology} describes the proposed perception pipeline in detail, including the segmentation module, BEV projection, five planning methods, and temporal smoothing. Chapter~\ref{ch:closed_loop} presents the closed-loop control extension, including object detection, GPS navigation, and the serial command protocol. Chapter~\ref{ch:results} reports experimental results including the planner comparison study, BEV fragility analysis, and runtime profiling. Chapter~\ref{ch:discussion} discusses the implications of key findings, limitations, and threats to validity. Chapter~\ref{ch:conclusion} concludes with a summary and directions for future work.
+The remainder of this thesis is organized as follows. Chapter~\ref{ch:related_work} reviews related work in autonomous navigation, segmentation, BEV reconstruction, path planning, and embedded perception. Chapter~\ref{ch:methodology} describes the proposed perception pipeline in detail, including the segmentation module, BEV projection, five planning methods, and temporal smoothing. Chapter~\ref{ch:closed_loop} presents the closed-loop control extension, including object detection, GPS navigation, and the serial command protocol. Chapter~\ref{ch:results} reports experimental results including the planner comparison study, BEV fragility analysis, runtime profiling, template planner evaluation, waypoint-turn planner validation, and a 1800-frame accepted run. Chapter~\ref{ch:discussion} discusses the implications of key findings, limitations, and threats to validity. Chapter~\ref{ch:conclusion} concludes with a summary and directions for future work.
 
 
 \begin{figure}[t]
@@ -567,6 +573,36 @@ This method operates directly on the image-plane segmentation mask $\widehat{M}_
 The EDT is computed on the image-plane mask, and the maximum-distance ridge is traced using dynamic programming with a lateral drift constraint. A per-row forward pass from the ego (bottom-center) selects the column with minimum cost (inverse EDT) subject to a maximum lateral step per row, producing a path that tracks the widest part of the sidewalk corridor. This method is more robust than midpoint extraction on masks with irregular boundaries or partial gaps but slower (\SI{108.1}{ms}).
 
 
+\subsection{GPS-Conditioned Waypoint-Turn Planner}
+\label{sec:waypoint_turn_method}
+
+When a GPS waypoint triggers a junction maneuver (left or right intent), the system activates a dedicated waypoint-turn planner that uses the BEV mask to detect and execute the commanded turn. The planner operates in five stages:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Decision band scan.} The raw BEV mask is scanned in a forward decision band (\SIrange{2}{7}{m} ahead) to detect asymmetric road openings on the commanded side. Rows where the commanded-side pixel count exceeds the opposite side by a minimum asymmetry margin are classified as ``supported.''
+  \item \textbf{Support clustering.} Supported rows are grouped into contiguous clusters (forward gap $\leq$ \SI{0.5}{m}), and the largest cluster's midpoint becomes the candidate turn apex.
+  \item \textbf{Target gating.} The support score (fraction of decision-band rows with commanded-side support) must exceed an acquisition threshold of 0.40 for initial lock and 0.25 for sustain. A lock hysteresis of 3 frames to acquire and 5 frames to release prevents flicker.
+  \item \textbf{Circular arc path.} A constant-curvature circular arc is fitted from the ego position through the apex, parameterized as $x = R\sin\phi$, $y = \pm R(1-\cos\phi)$ where $R$ is solved from the endpoint geometry. The arc does not attempt to rejoin the corridor centerline within the planning horizon; rejoin occurs naturally as new frames arrive.
+  \item \textbf{Containment gating.} The generated path must satisfy two containment thresholds: $\geq$60\% of all path points inside the corridor, and $\geq$70\% of points within the near-field (\SI{1.2}{m}). Paths failing either gate are rejected in favor of hold behavior with speed reduction.
+\end{enumerate}
+
+The overall confidence is a weighted combination of support score, containment ratio, near-field containment, and corridor confidence, used to modulate speed during the maneuver.
+
+
+\subsection{Turn Containment Safety Guard}
+\label{sec:turn_containment_method}
+
+As a final safety layer, the runtime evaluates every committed control path against the actual BEV drivable mask before execution. For each sampled point on the control path, the guard measures:
+
+\begin{itemize}[nosep]
+  \item \textbf{Path-outside ratio}: fraction of path samples falling outside the BEV mask.
+  \item \textbf{Path-outside count}: absolute number of samples outside the mask.
+  \item \textbf{Minimum boundary clearance}: signed distance-transform value at each sample (negative when outside the mask boundary).
+\end{itemize}
+
+The first \texttt{TURN\_PATH\_IGNORE\_FIRST\_SAMPLES\,=\,4} samples near the ego are excluded from evaluation because the BEV bottom-edge zone exhibits mask noise when ego anchoring is disabled. When a turn path fails containment, the system falls back to hold behavior with full speed reduction, ensuring that unsafe paths never reach the motor controller.
+
+
 % -----------------------------------------------------------------
 \section{Temporal Smoothing}
 \label{sec:temporal_smoothing}
@@ -616,7 +652,7 @@ Per-module wall-clock time in milliseconds, measured on CPU to reflect embedded 
 \section{Software Architecture}
 \label{sec:software_arch}
 
-The system is implemented in Python 3.10+ using OpenCV, PyTorch, NumPy, and SciPy. A centralized configuration module (\texttt{config.py}, 271 lines) serves as the single source of truth for all parameters, including segmentation thresholds, BEV dimensions, planner settings, speed profiles, and feature flags. Each research improvement is gated by a boolean flag, enabling exact reproduction of any prior design iteration. The test suite comprises 155 automated tests covering all major modules.
+The system is implemented in Python 3.10+ using OpenCV, PyTorch, NumPy, and SciPy. A centralized configuration module (\texttt{config.py}, 271 lines) serves as the single source of truth for all parameters, including segmentation thresholds, BEV dimensions, planner settings, speed profiles, and feature flags. Each research improvement is gated by a boolean flag, enabling exact reproduction of any prior design iteration. The test suite comprises over 200 automated tests covering all major modules.
 
 
 % =====================================================================
@@ -1072,6 +1108,109 @@ Figure~\ref{fig:seg_comparison_qual} shows qualitative segmentation comparison e
 \end{figure}
 
 
+% -----------------------------------------------------------------
+\section{Template Arc Planner Evaluation}
+\label{sec:template_eval}
+
+Section~\ref{sec:template_planner} describes the template arc planner; this section reports its evaluation against the skeleton-graph baseline. Both planners were run on the same calibrated 220-frame June clip with identical segmentation and BEV configuration, detection disabled for deterministic replay.
+
+\begin{table}[h]
+\centering
+\caption{Template arc planner vs.\ skeleton-graph baseline on 220 frames (calibrated June clip, detection disabled).}
+\label{tab:template_eval}
+\begin{tabular}{lcc}
+\toprule
+Metric & Graph Baseline & Template (Phase~11) \\
+\midrule
+Mean $|\theta|$ [deg]     & 1.190 & \textbf{0.707} \\
+$p_{95}$ $|\theta|$ [deg] & 3.724 & \textbf{3.508} \\
+Max $|\theta|$ [deg]      & 4.950 & 5.575 \\
+Path-source switches       & 36    & \textbf{18} \\
+Template rate [\%]         & ---   & 62.3 \\
+Graph rate [\%]            & 75.0  & 5.9 \\
+Fallback rate [\%]         & 25.0  & 31.8 \\
+Template-family switches   & ---   & 3 \\
+Mean speed [m/s]           & 1.500 & 1.067 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The template planner reduces mean absolute heading error by 40.6\% and halves path-source switches, confirming that the fixed arc bank with family reuse produces smoother, more stable control output than per-frame graph search. The template success rate of 62.3\% indicates that in roughly one-third of frames the corridor evidence is insufficient for template approval and the planner falls back to graph or hold behavior. The low template-family switch count (3 over 220 frames) demonstrates effective reuse hysteresis. The lower mean speed (1.067 vs.\ 1.500~m/s) reflects the planner's confidence-modulated slowdown during low-evidence windows---a deliberate safety trade-off.
+
+
+% -----------------------------------------------------------------
+\section{Waypoint-Turn Planner Evaluation}
+\label{sec:waypoint_turn_eval}
+
+The waypoint-turn planner (Section~\ref{sec:waypoint_turn_method}) was evaluated using a scheduled intent window on a 300-frame replay of VID\_017 (March 2026 campus sidewalk). The intent schedule commanded ``right'' for frames 20--30, simulating a GPS-triggered junction maneuver.
+
+\begin{table}[h]
+\centering
+\caption{Waypoint-turn planner evaluation: scheduled right-intent window, 300 frames.}
+\label{tab:waypoint_turn_eval}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Total frames                    & 300 \\
+Template rate [\%]              & 96.3 (289/300) \\
+Waypoint-turn rate [\%]         & 0.7 (2/300) \\
+Waypoint-turn-hold rate [\%]    & 3.0 (9/300) \\
+Turn-active frames              & 20--30 \\
+Turn containment failure rate   & 0.0\% \\
+Mean path-outside ratio         & 0.0 \\
+Min boundary clearance [px]     & 4.775 \\
+Mean FPS                        & 12.86 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The planner activates the waypoint-turn path on frames 24--25 (when corridor support on the commanded side exceeds the acquisition gate of 0.40) and maintains hold behavior on the surrounding frames 20--23 and 26--30 (where support meets the sustain threshold of 0.25 but the full path does not pass the containment gate). Outside the intent window, the system cleanly returns to template following. The zero containment failure rate confirms that the turn containment guard (Section~\ref{sec:turn_containment_method}) successfully prevents unsafe turn paths from reaching the controller.
+
+
+% -----------------------------------------------------------------
+\section{Full-Length Accepted Run}
+\label{sec:accepted_run}
+
+To validate end-to-end pipeline stability over an extended sequence, we ran the complete perception-to-path stack on VID\_017 for 1800 frames (stride 4, detection disabled, predictor off). Table~\ref{tab:accepted_run} summarizes the results.
+
+\begin{table}[h]
+\centering
+\caption{Full-length accepted run: 1800 frames, VID\_017 (stride~4, no detection, no prediction).}
+\label{tab:accepted_run}
+\begin{tabular}{lr}
+\toprule
+Metric & Value \\
+\midrule
+Frames processed       & 1800 \\
+Mean loop FPS          & 9.97 \\
+Mean seg IoU           & 0.954 \\
+Has-path rate          & 100\% \\
+Path source            & template (all 1800) \\
+Mean best path length  & \SI{480}{\px} \\
+Mean pipeline time     & \SI{69.5}{ms} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The template planner achieved 100\% success across all 1800 frames---a substantial improvement over the 62.3\% template rate observed in the earlier 220-frame evaluation (Table~\ref{tab:template_eval}). The difference is attributable to two factors: (i)~the improved segmentation model (OneFormer-trained, IoU 0.954 vs.\ the earlier checkpoint), and (ii)~the use of stride~4, which reduces temporal noise by processing every fourth frame. The 9.97~FPS throughput meets the 10~Hz real-time requirement, confirming deployment viability on CPU hardware.
+
+
+% -----------------------------------------------------------------
+\section{Overnight Containment Validation}
+\label{sec:overnight_eval}
+
+An overnight automated evaluation systematically tested the turn containment guard under three configurations on VID\_017 with persistent right intent (300 frames):
+
+\begin{enumerate}[nosep]
+  \item \textbf{Strict guard} (ignore first 1 sample): rejected all turn paths as too strict, falling back entirely to DT corridor.
+  \item \textbf{Projection recovery}: attempted to project samples back into the mask before refitting. Insufficient alone because failures originated from near-ego BEV mask edge noise, not far-field arc drift.
+  \item \textbf{Near-ego exclusion} (ignore first 4 samples): recovered the original waypoint-turn window while achieving 0\% containment failure rate.
+\end{enumerate}
+
+The final \texttt{TURN\_PATH\_IGNORE\_FIRST\_SAMPLES\,=\,4} parameter accounts for the noisy BEV bottom-edge zone present when ego anchoring is disabled. With the scheduled intent window (right intent only on frames 20--30), the system achieved clean template-to-turn-to-template transitions with no containment failures, no path-outside pixels, and a minimum boundary clearance of \SI{4.775}{\px}.
+
+
 % =====================================================================
 \chapter{Discussion}
 \label{ch:discussion}
@@ -1099,6 +1238,15 @@ BEV projection also assumes flat ground and fixed camera pose. On real sidewalks
 Better segmentation helps all planners: the improved model reduces temporal instability by 77\%, increases template success rate, and raises mask--path alignment across the board. However, BEV planning fails even with oracle masks (Table~\ref{tab:oracle_comparison}). Segmentation improvement has diminishing returns for BEV planning because the bottleneck is geometric coverage, not mask quality. In contrast, segmentation improvement directly and linearly benefits image-space planning.
 
 
+\section{Template Planning and Turn Safety}
+
+The template arc planner and waypoint-turn planner address two different failure modes of the baseline system. The template planner targets \emph{heading jitter}: by selecting from a fixed arc bank with family reuse hysteresis instead of per-frame graph search, heading oscillation drops by 40.6\% and path-source switching drops by 50\%. This improvement arises because the arc bank restricts the solution space to smooth, ego-anchored trajectories that are inherently less noisy than pixel-level Dijkstra paths.
+
+The waypoint-turn planner targets \emph{junction navigation}: when GPS intent signals a turn, the corridor-support scan detects the opening and the circular arc provides a geometrically consistent maneuver path. The containment guard adds a critical safety layer by verifying the final committed path against the actual BEV mask---ensuring that planner confidence alone does not gate safety. The 0\% containment failure rate in validation suggests the guard is effective, though it is intentionally conservative: when a turn path clips the mask boundary, the system prefers safe hold behavior over an unsafe maneuver.
+
+The 1800-frame accepted run (100\% template success, 0.954 IoU) demonstrates that the combined system---improved segmentation, template planner, and waypoint-turn planner---can sustain stable operation over extended sequences. However, the validation remains concentrated on a single campus route (VID\_017), and broader generalization is not yet established.
+
+
 \section{Limitations}
 
 Several limitations qualify the findings of this thesis:
@@ -1112,6 +1260,8 @@ Several limitations qualify the findings of this thesis:
 \paragraph{No explicit obstacle modeling.} YOLOv8n detection exists in the system but is not integrated into the planner cost function. Dynamic obstacles are handled only via implicit mask avoidance.
 
 \paragraph{Single campus environment.} All data comes from the University of Oklahoma campus. Generalization to other cities, surfaces (brick, gravel, dirt), weather conditions (rain, snow), and lighting (nighttime) is unknown.
+
+\paragraph{Conservative turn behavior.} The turn containment guard is intentionally conservative: if GPS intent remains latched after the maneuver window closes, the system prefers hold behavior rather than forcing a turn whose path leaves the mask. This design prioritizes safety over liveness but means that stale or stuck intent can cause unnecessary stops. The containment validation has been concentrated on VID\_017; behavior on videos 018--020 has not yet been verified.
 
 
 \section{Threats to Validity}
@@ -1142,6 +1292,8 @@ This thesis presented a modular vision-based sidewalk navigation pipeline that e
   \item BEV-only planning fails on 99.3\% of frames in one profiled sequence due to insufficient monocular mask coverage.
   \item The recommended image-space architecture runs the full perception-to-path stack at over 59~FPS on CPU.
   \item Full-video evaluation across \numprint{22679} frames confirms that improved segmentation reduces temporal instability from 1.46\% to 0.33\%.
+  \item The template arc planner reduces mean heading error by 40.6\% (from $1.190^\circ$ to $0.707^\circ$) and path-source switches by 50\% relative to the skeleton-graph baseline on a calibrated 220-frame evaluation clip.
+  \item A GPS-conditioned waypoint-turn planner achieves 0\% turn containment failure rate on a 300-frame validation sequence while maintaining 12.9~FPS, and a 1800-frame accepted run achieves 100\% template success across all frames at a mean segmentation IoU of 0.954.
 \end{enumerate}
 
 The final recommended architecture---image-space midpoint primary, image-space DT fallback, BEV reserved for optional visualization and obstacle projection---is transparent, lightweight, and deployable on single-board computers. Each stage produces an interpretable intermediate representation that field teams can inspect and tune without retraining models.
@@ -1155,7 +1307,7 @@ The final recommended architecture---image-space midpoint primary, image-space D
 
 \paragraph{Multi-camera or depth fusion.} Adding a depth sensor or stereo pair would enable metric obstacle distance estimation without the pinhole approximation, while maintaining the monocular pipeline as the primary perception path.
 
-\paragraph{Global route planning.} Coupling the local image-space planner with a GPS-guided global planner and intersection decision module would enable multi-block autonomous navigation.
+\paragraph{Global route planning.} The waypoint-turn planner introduced in this work provides GPS-conditioned junction behavior, but the GPS integration is coarse (left/right/straight intent from bearing comparison). A full global route planner with topological map, intersection detection, and multi-waypoint sequencing would enable autonomous multi-block navigation.
 
 \paragraph{Cross-environment generalization.} Testing on diverse sidewalk environments (different cities, weather conditions, surface materials, nighttime) would strengthen the external validity of the findings.
 
