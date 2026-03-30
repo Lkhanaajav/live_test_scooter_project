@@ -516,20 +516,24 @@ $1280{\times}720$       & 352.40 & 2.84 \\
 \section{Bird's-Eye View Projection}
 \label{sec:bev}
 
-To transform the segmented mask into a spatially consistent top-down representation, we apply a planar homography. Let $\mathbf{p} = [u, v, 1]^\top$ be a homogeneous image pixel and $\mathbf{p}' = [x, y, 1]^\top$ its BEV coordinate. The mapping is:
+Several downstream components---corridor extraction, template-arc scoring, and turn planning---require metric-scale coordinates that image-space processing cannot provide. A bird's-eye view transform addresses this need. Learned BEV methods such as Lift-Splat-Shoot~\cite{philion2020lift} and BEVFormer~\cite{li2022bevformer} assume multi-camera rigs and GPU-class hardware; neither assumption holds for the monocular embedded platform described in Section~\ref{sec:hardware}. A four-point planar homography, by contrast, costs approximately 0.9\,ms on CPU and requires only a one-time manual calibration. This work therefore adopts the classical homography approach, while acknowledging its reliance on the flat-plane assumption and a fixed camera pose---limitations whose practical impact is quantified empirically in Section~\ref{sec:bev_fragility_results}. The key design insight is that BEV is not dismissed but rather assigned to the tasks where metric-scale reasoning is essential: corridor verification and turn geometry.
+
+To transform the segmented mask into a spatially consistent top-down representation, a planar homography is applied. Let $\mathbf{p} = [u, v, 1]^\top$ be a homogeneous image pixel and $\mathbf{p}' = [x, y, 1]^\top$ its BEV coordinate. The mapping is:
 \begin{equation}
 \mathbf{p}' \sim H \mathbf{p}
 \end{equation}
 where $H$ is a $3\times3$ homography matrix estimated via four point correspondences between the camera image and a flat ground reference. The resulting BEV mask is aligned with the robot's reference frame, with the ego position at the bottom-center and forward motion along the vertical axis.
 
-The BEV grid covers a $10\text{m} \times 10\text{m}$ area at $600 \times 600$ pixels, yielding a scale of 60~px/m. Calibration is performed using an interactive tool that allows the operator to select four ground-plane correspondences for any camera mounting angle. This transformation provides metric-scale reasoning but assumes a flat plane and fixed camera pose---assumptions we test empirically in Section~\ref{sec:bev_fragility_results}.
+The BEV grid covers a $10\text{m} \times 10\text{m}$ area at $600 \times 600$ pixels, yielding a scale of 60~px/m. Calibration is performed using an interactive tool that allows the operator to select four ground-plane correspondences for any camera mounting angle. This transformation provides metric-scale reasoning but assumes a flat plane and fixed camera pose---assumptions tested empirically in Section~\ref{sec:bev_fragility_results}.
 
 
 % -----------------------------------------------------------------
 \section{BEV Mask Refinement}
 \label{sec:mask_refinement}
 
-The raw BEV mask often contains noise: thin spurs, disconnected blobs, and boundary artifacts from segmentation errors amplified by the perspective warp. We apply a multi-stage cleanup pipeline:
+The perspective warp that produces the BEV mask amplifies segmentation noise at far distances, where a single misclassified pixel in the camera frame maps to a large region in BEV coordinates. Without morphological refinement, these artifacts produce corridors with spurious branches and disconnected blobs that destabilize downstream path planning. Mask cleanup is therefore not optional but a prerequisite for usable corridor geometry.
+
+The raw BEV mask often contains noise: thin spurs, disconnected blobs, and boundary artifacts from segmentation errors amplified by the perspective warp. A multi-stage cleanup pipeline is applied:
 
 \begin{enumerate}[nosep]
   \item \textbf{Morphological closing and opening} with configurable kernel sizes suppress small gaps and spurs.
@@ -544,13 +548,17 @@ These stages are individually toggleable via configuration flags, allowing contr
 \section{Path Planning Methods}
 \label{sec:planners}
 
-We compare five path planning methods spanning two geometric domains: three operating in BEV space and two in image space. All methods receive a binary sidewalk mask and produce a centerline trajectory.
+The path planning module underwent the most significant evolution across the four design iterations described in the chapter opening. The central lesson of this progression is that the planning \emph{domain}---BEV versus image-space---matters as much as the planning \emph{algorithm}. Early iterations attempted to \emph{discover} paths by constructing geometric structures (skeletons, ridges) from noisy BEV pixels; later iterations shifted to \emph{verifying} pre-computed candidates against a clean corridor representation. This section describes all five methods evaluated in Chapter~\ref{ch:evaluation}, presented in the order they were developed.
+
+Five path planning methods spanning two geometric domains are compared: three operating in BEV space and two in image space. All methods receive a binary sidewalk mask and produce a centerline trajectory.
 
 
 \subsection{BEV Skeleton-Graph Planner}
 \label{sec:skeleton_planner}
 
-The Guo--Hall parallel thinning algorithm~\cite{guo_hall} reduces the BEV mask to a 1-pixel-wide skeleton preserving topological structure. From this skeleton, we construct an undirected graph $\mathcal{G} = (\mathcal{V}, \mathcal{E})$ where each skeleton pixel is a node and 8-neighbor connections form edges. Two-stage pruning (length-based and component filtering) suppresses spurious branches. Dijkstra's algorithm enumerates candidate paths from the ego node $v_0$, each scored by:
+The skeleton-graph planner was the first approach explored (v1), motivated by the extensive medial-axis literature in robot navigation. Medial-axis extraction is an intuitive method for finding the center of a corridor, and the resulting graph naturally encodes junction topology. In practice, however, this approach proved noise-sensitive and computationally expensive: Guo--Hall thinning on BEV masks produced unstable skeletons that changed topology with minor segmentation fluctuations, and per-pixel graph construction required approximately 380\,ms per frame (Table~\ref{tab:planner_comparison}). These limitations motivated the subsequent iterations described below.
+
+The Guo--Hall parallel thinning algorithm~\cite{guo_hall} reduces the BEV mask to a 1-pixel-wide skeleton preserving topological structure. From this skeleton, an undirected graph is constructed: $\mathcal{G} = (\mathcal{V}, \mathcal{E})$ where each skeleton pixel is a node and 8-neighbor connections form edges. Two-stage pruning (length-based and component filtering) suppresses spurious branches. Dijkstra's algorithm enumerates candidate paths from the ego node $v_0$, each scored by:
 \begin{equation}
 C(p_j) = \alpha \cdot \text{Curvature}(p_j) + \beta \cdot \text{LateralShift}(p_j)
 \end{equation}
@@ -559,6 +567,8 @@ This method explicitly exposes junction topology but is computationally expensiv
 
 \subsection{BEV Distance-Transform Ridge Planner}
 \label{sec:dt_planner}
+
+The second iteration (v2) replaced skeleton extraction with distance-transform ridge following to avoid the noise-sensitive graph construction of v1. The ridge of the EDT is inherently smoother than a thinned skeleton because it responds to the overall mask shape rather than individual pixel boundaries. However, this method still operates in BEV coordinates, inheriting the full cost of BEV computation plus the EDT and Dijkstra search---resulting in a planner latency of 926.8\,ms (Table~\ref{tab:planner_comparison}), far exceeding the real-time budget.
 
 Rather than skeletonize, this method computes the Euclidean distance transform (EDT) of the BEV mask and traces the ridge of maximum clearance. The cost field
 \begin{equation}
@@ -570,23 +580,31 @@ where $d$ is the EDT value, $\varepsilon = 0.5$, and $\alpha = 1.5$, is minimize
 \subsection{BEV Template Arc Planner}
 \label{sec:template_planner}
 
+The template arc planner (v4) represents a fundamental shift in planning philosophy: from \emph{discovering} a path by constructing geometric structures from noisy pixels, to \emph{verifying} pre-computed candidates against a clean corridor. Instead of building a skeleton or tracing a ridge, a small bank of arc templates is proposed and each is scored against the distance-transform corridor. This eliminates the noise-sensitive graph and ridge construction steps entirely. Evaluation on 220 calibrated frames (Table~\ref{tab:template_eval}) indicates a 40.6\% reduction in mean heading error and 50\% fewer path-source switches compared to the skeleton-graph baseline---confirming that the fixed arc bank with family reuse hysteresis produces more stable control output than per-frame path construction. This is the planner used in the accepted 1,800-frame deployment run.
+
 A bank of predefined arc templates (straight, gentle-left, gentle-right, sharp-left, sharp-right) is scored against a corridor extracted from the DT ridge. Each template is evaluated by its containment within the segmented corridor and its smoothness. The highest-scoring template that passes a confidence gate becomes the planned path. This method trades generality for speed and interpretability: the arc bank is fixed and small, making runtime predictable.
 
 
 \subsection{Image-Space Midpoint Planner}
 \label{sec:img_midpoint}
 
-This method operates directly on the image-plane segmentation mask $\widehat{M}_\text{img}$, bypassing BEV entirely. For each row $y$ of the mask, the left and right sidewalk boundaries are identified and the midpoint $x_\text{mid}(y) = (x_L(y) + x_R(y))/2$ is computed. Rows with fewer than a minimum number of road pixels are skipped. A connected-component filter ensures only the ego-connected mask region is used. The resulting per-row midpoints are smoothed with a Savitzky--Golay filter to produce a continuous centerline. This method is the fastest (\SI{2.2}{ms}) and produces the lowest lateral center error in our experiments.
+The third iteration (v3) emerged from the observation that for straight-ahead corridor following, perspective projection preserves the lateral ordering of mask boundaries: the left edge of the sidewalk in the camera image remains to the left of the right edge at every row, regardless of foreshortening. The midpoint of each row therefore approximates the corridor center without any BEV transform. This insight yields a 14.3\,px lateral center error at 2.2\,ms---a 421$\times$ speedup over BEV DT ridge planning (Table~\ref{tab:planner_comparison}). The result suggests that for straight-ahead path extraction, the segmentation mask itself encodes sufficient geometric information, and the BEV transform introduces cost and noise without proportional benefit.
+
+This method operates directly on the image-plane segmentation mask $\widehat{M}_\text{img}$, bypassing BEV entirely. For each row $y$ of the mask, the left and right sidewalk boundaries are identified and the midpoint $x_\text{mid}(y) = (x_L(y) + x_R(y))/2$ is computed. Rows with fewer than a minimum number of road pixels are skipped. A connected-component filter ensures only the ego-connected mask region is used. The resulting per-row midpoints are smoothed with a Savitzky--Golay filter to produce a continuous centerline. This method is the fastest (\SI{2.2}{ms}) and produces the lowest lateral center error in the experiments reported in Chapter~\ref{ch:evaluation}.
 
 
 \subsection{Image-Space Distance-Transform Planner}
 \label{sec:img_dt}
+
+The image-space DT planner provides a more robust alternative to midpoint extraction when mask boundaries are irregular or partially occluded. By tracing the maximum-clearance ridge rather than averaging left and right boundaries, it maintains 99.4\% inside-GT alignment at 108.1\,ms (Table~\ref{tab:planner_comparison}), serving as a fallback when the midpoint method encounters degraded mask quality.
 
 The EDT is computed on the image-plane mask, and the maximum-distance ridge is traced using dynamic programming with a lateral drift constraint. A per-row forward pass from the ego (bottom-center) selects the column with minimum cost (inverse EDT) subject to a maximum lateral step per row, producing a path that tracks the widest part of the sidewalk corridor. This method is more robust than midpoint extraction on masks with irregular boundaries or partial gaps but slower (\SI{108.1}{ms}).
 
 
 \subsection{GPS-Conditioned Waypoint-Turn Planner}
 \label{sec:waypoint_turn_method}
+
+While image-space methods suffice for straight-ahead corridor following, turn maneuvers require metric-scale arc geometry that only BEV coordinates can provide. The waypoint-turn planner therefore operates in BEV, using the corridor representation to fit and validate circular arcs for commanded turns. The containment guard described in the following subsection addresses the key safety concern: ensuring that the committed turn path stays within the drivable corridor before execution. Overnight validation testing achieved a 0\% containment failure rate, confirming that the guard reliably prevents off-corridor path commitment.
 
 When a GPS waypoint triggers a junction maneuver (left or right intent), the system activates a dedicated waypoint-turn planner that uses the BEV mask to detect and execute the commanded turn. The planner operates in five stages:
 
@@ -619,7 +637,7 @@ The first \texttt{TURN\_PATH\_IGNORE\_FIRST\_SAMPLES\,=\,4} samples near the ego
 \section{Temporal Smoothing}
 \label{sec:temporal_smoothing}
 
-Frame-by-frame path extraction produces jittery trajectories due to segmentation noise. We apply two temporal filters:
+Frame-by-frame inference produces unavoidable jitter in both segmentation masks and extracted paths. Without temporal filtering, this jitter propagates to steering commands, producing oscillatory control output. Exponential moving average (EMA) smoothing with reset hysteresis balances responsiveness---allowing rapid adaptation to genuine scene changes---with stability on straight segments. Three temporal filters are applied:
 
 \paragraph{Path temporal smoothing.}
 An exponential moving average (EMA) is applied to the cubic polynomial coefficients $[a_0, a_1, a_2, a_3]$ of the fitted path. The smoothing factor $\alpha$ is adaptive: higher confidence paths receive less smoothing ($\alpha \to 0.85$), while low-confidence paths receive more ($\alpha \to 0.35$). A topology-change detector resets the filter when the maximum per-coefficient jump exceeds a threshold, preventing averaging across distinct path segments.
@@ -642,11 +660,11 @@ with $\alpha = 0.65$ and consistency threshold $c_\text{thresh} = 0.20$.
 \section{Lightweight Object Detection}
 \label{sec:object_detection}
 
-Dynamic obstacles---pedestrians, cyclists, dogs, and vehicles---are a primary safety concern. We adopt YOLOv8-nano~\cite{yolov8} (3.2M parameters, $\sim$\SI{6}{MB}) from the Ultralytics framework, pretrained on COCO~\cite{coco} (80 classes). At inference, predictions are filtered to retain eight safety-relevant classes: person, bicycle, car, motorcycle, bus, truck, cat, and dog. A confidence threshold of $\tau_\text{det} = 0.35$ balances recall and false-positive suppression.
+Obstacle detection is a safety-critical requirement: the system must halt or slow for pedestrians, cyclists, and animals sharing the sidewalk. YOLOv8-nano~\cite{yolov8} was selected for its 3.2M-parameter footprint ($\sim$\SI{6}{MB}) and sub-30\,ms inference on CPU, leaving sufficient budget for all other pipeline stages within the 100\,ms frame target. The model is pretrained on COCO~\cite{coco} (80 classes). At inference, predictions are filtered to retain eight safety-relevant classes: person, bicycle, car, motorcycle, bus, truck, cat, and dog. A confidence threshold of $\tau_\text{det} = 0.35$ balances recall and false-positive suppression.
 
 \subsection{Monocular Distance Estimation}
 
-Without stereo or depth sensors, we estimate object distance from the vertical position of the bounding-box bottom edge using a pinhole-camera approximation:
+Without stereo or depth sensors, object distance is estimated from the vertical position of the bounding-box bottom edge using a pinhole-camera approximation:
 \begin{equation}
 d \approx \frac{h_c}{\tan\!\bigl(\phi_v \cdot (y_{\text{foot}}/H - 0.5)\bigr)}
 \end{equation}
@@ -668,6 +686,8 @@ v_{\text{nominal}}, & \text{otherwise}
 \section{GPS Waypoint Navigation}
 \label{sec:gps_navigation}
 
+GPS serves as an intent-conditioning signal rather than a localization source: it indicates \emph{where} the scooter should go at junctions (left, right, or straight) but does not govern local path following, which relies entirely on vision. This separation ensures that the system degrades gracefully when GPS accuracy is poor.
+
 The vision-based pipeline provides \emph{local} path-following. GPS provides the \emph{global} context for branch selection at junctions. A low-cost GNSS module streams standard NMEA-0183 sentences via USB-serial. A background thread parses \texttt{\$GPGGA} and \texttt{\$GPRMC} sentences. The operator supplies a route as a CSV file of GPS waypoints.
 
 The final heading command blends local vision heading $\theta_\text{vis}$ and global GPS correction $\theta_\text{gps}$:
@@ -679,6 +699,8 @@ When no GPS fix is available, $w_g$ falls to zero and the system reverts to pure
 
 \section{Steering and Speed Computation}
 \label{sec:steer_speed}
+
+A pure-pursuit-inspired control law is adopted for its simplicity and interpretability: the steering angle depends only on the heading to a single lookahead point, making the control behavior transparent and easy to tune for the safety constraints of sidewalk operation.
 
 The heading angle $\theta_\text{vis}$ is computed from the planned path as the angle between the forward direction and the vector from the ego to a point approximately 40\% along the path. This is converted to both a discrete command and a continuous steering angle:
 \begin{itemize}[nosep]
@@ -703,6 +725,8 @@ A watchdog on the scooter side triggers a safety stop if no valid command is rec
 \section{Safety Mechanisms}
 \label{sec:safety}
 
+The safety architecture is designed around a single principle: any individual failure mode must trigger a safe degradation rather than a catastrophic action. Because the system operates in shared pedestrian spaces, the default response to uncertainty is to slow or stop rather than to maintain speed with a degraded estimate. The following gates are non-negotiable:
+
 \begin{itemize}[nosep]
   \item \textbf{No-path stop:} Full stop if no valid path for $N$ consecutive frames.
   \item \textbf{Obstacle stop/slow:} Immediate stop within \SI{1.0}{m}; slowdown within \SI{3.0}{m}.
@@ -716,13 +740,13 @@ A watchdog on the scooter side triggers a safety stop if no valid command is rec
 \section{Evaluation Metrics}
 \label{sec:metrics}
 
-We evaluate the pipeline offline and define five quantitative metrics:
+The pipeline is evaluated offline using five quantitative metrics:
 
 \paragraph{Segmentation IoU.}
 Intersection-over-union between the predicted binary mask and hand-annotated ground truth, computed per-frame and averaged.
 
 \paragraph{Lateral path-centering error.}
-For each sample point along the planned path, we measure the lateral deviation from the geometric centerline of the ground-truth sidewalk mask. Reported in pixels.
+For each sample point along the planned path, the lateral deviation from the geometric centerline is measured of the ground-truth sidewalk mask. Reported in pixels.
 
 \paragraph{Mask--path alignment (inside-GT ratio).}
 The fraction of path pixels that fall within the ground-truth sidewalk mask:
