@@ -216,19 +216,17 @@ The scope of this work is bounded by the following constraints. All evaluation i
 
 \section{Approach Overview}
 
-We adopt a modular pipeline that maps camera frames to controller-ready waypoints through interpretable stages: (i)~semantic segmentation via a lightweight SegFormer-B0 model trained with a teacher--student framework, (ii)~optional Bird's-Eye View (BEV) projection via a fixed calibrated homography, (iii)~mask refinement and component filtering, (iv)~path extraction via one of five planning methods spanning BEV and image-space domains, and (v)~temporal smoothing and control output.
+This thesis develops a modular pipeline that maps monocular camera frames to controller-ready waypoints through interpretable stages: (i)~semantic segmentation via a lightweight SegFormer-B0 model~\cite{segformer} trained with a teacher--student framework using OneFormer Swin-L~\cite{oneformer} as the teacher, (ii)~optional bird's-eye view (BEV) projection via a fixed calibrated homography, (iii)~mask refinement and connected-component filtering, (iv)~path extraction via one of five planning methods spanning BEV and image-space domains, and (v)~temporal smoothing and control output.
 
-The system evolved through four design iterations, each backward-compatible with the previous:
+The system evolved through four design iterations, each backward-compatible with the previous, tracing an arc from expensive path \emph{discovery} to efficient path \emph{verification}:
 \begin{itemize}[nosep]
-  \item \textbf{Iteration~1:} BEV skeleton-graph planner with SegFormer-B2 teacher.
-  \item \textbf{Iteration~2:} BEV distance-transform corridor planner with enhanced mask refinement.
-  \item \textbf{Iteration~3:} Image-space midpoint and DT planners with OneFormer Swin-L teacher, eliminating BEV dependency for path extraction.
-  \item \textbf{Iteration~4:} Template arc planner with GPS-conditioned waypoint-turn planner and turn containment safety guard, adding junction maneuver capability with verified path safety.
+  \item \textbf{Iteration~1:} BEV skeleton-graph planner with SegFormer-B2 teacher---constructing navigation graphs from noisy BEV pixels.
+  \item \textbf{Iteration~2:} BEV distance-transform corridor planner with enhanced mask morphology---replacing graph construction with ridge-based path extraction.
+  \item \textbf{Iteration~3:} Image-space midpoint and distance-transform planners with OneFormer Swin-L teacher---eliminating BEV dependency for straight-ahead path following.
+  \item \textbf{Iteration~4:} Template arc planner with GPS-conditioned waypoint-turn planner and containment safety guard---scoring pre-computed arc templates against BEV corridors rather than building paths from scratch.
 \end{itemize}
 
-This direction complements several active research threads. End-to-end steering policies can perform well but are difficult to interpret and often assume GPU-class hardware~\cite{e2e_nav_policies, viteri2024}. Dense monocular BEV reconstruction pushes accuracy but remains challenging to deploy on low-power platforms~\cite{zhao2024bev}. Classic semantic-mask corridor following is efficient in structured environments but does not explicitly expose intersection topology~\cite{orchard_seg_nav, row_nav_survey}. In contrast, our approach is monocular, transparent, and light enough for CPU-only inference, while providing an empirical comparison of planning-domain trade-offs that is absent from prior sidewalk navigation work.
-
-In this thesis, we focus on validating the perception and path-generation pipeline offline using video recorded from a forward-facing camera mounted on an electric scooter (Figure~\ref{fig:scooter_hw}). We apply the full pipeline frame by frame and evaluate the resulting paths without closing the loop on the vehicle. This isolates perception and planning, enabling detailed analysis of segmentation quality, planner accuracy, runtime efficiency, and the BEV-versus-image-space trade-off.
+This work complements several active research threads while addressing gaps that each leaves open. End-to-end steering policies can achieve strong performance but are difficult to interpret and typically assume GPU-class hardware~\cite{e2e_nav_policies, viteri2024}. Dense monocular BEV reconstruction methods push accuracy but remain challenging to deploy on low-power platforms~\cite{zhao2024bev}. Classic semantic-mask corridor following is efficient in structured environments such as agricultural rows but does not explicitly expose intersection topology~\cite{orchard_seg_nav, row_nav_survey}. The approach taken in this thesis is monocular, transparent, and computationally light enough for CPU-only inference. To the author's knowledge, no prior work provides a systematic comparison of BEV-domain and image-space path planning for monocular sidewalk navigation, which is the primary empirical contribution of this thesis.
 
 
 \section{Contributions}
@@ -236,25 +234,21 @@ In this thesis, we focus on validating the perception and path-generation pipeli
 This thesis makes the following contributions:
 
 \begin{enumerate}[leftmargin=*]
-  \item A modular monocular sidewalk navigation pipeline that is transparent, lightweight, and designed for embedded hardware, progressing through four design iterations with backward-compatible improvements.
+  \item A systematic comparison of five path-planning methods across BEV and image-space domains, providing evidence that image-space midpoint planning achieves approximately 14.3~px lateral error at 2.2~ms per frame versus 65.0~px at 926.8~ms for the best BEV method---an approximately $421\times$ speedup with $4.5\times$ lower lateral error on the tested sidewalk sequences (Chapter~\ref{ch:evaluation}).
 
-  \item A semi-supervised segmentation training recipe using a high-capacity OneFormer Swin-L teacher~\cite{oneformer} to generate pseudo-labels for a compact SegFormer-B0 student~\cite{segformer}, achieving hand-annotated IoU of 0.946 at \SI{11.7}{ms} on CPU.
+  \item A template-approval planning architecture that replaces fragile skeleton-graph construction with efficient verification of pre-computed arc templates against distance-transform corridors, reducing per-frame planning cost from approximately 109~ms to 69~ms while eliminating noise-sensitive graph construction. The BEV domain is retained for corridor extraction and turn validation rather than being discarded (Chapter~\ref{ch:system_design}).
 
-  \item A systematic comparison of five path-planning methods across BEV and image-space domains, demonstrating that image-space midpoint planning achieves a $421\times$ speedup over BEV distance-transform planning with lower lateral error.
+  \item A semi-supervised segmentation training recipe using a high-capacity OneFormer Swin-L teacher~\cite{oneformer} to generate pseudo-labels for a compact SegFormer-B0 student~\cite{segformer}, achieving IoU of 0.946 at 11.7~ms on CPU (Chapter~\ref{ch:evaluation}).
 
-  \item Empirical evidence that BEV-only planning is fragile in monocular sidewalk settings, with 99.3\% of frames failing to produce a valid BEV path in one profiled sequence, motivating image-space planning as the primary domain.
+  \item A comprehensive offline evaluation protocol covering segmentation quality, planner accuracy, temporal stability, runtime analysis, and an 1800-frame accepted run across six campus video sequences totaling over \numprint{22000} frames (Chapter~\ref{ch:evaluation}).
 
-  \item A comprehensive offline evaluation protocol covering segmentation quality, planner accuracy, temporal stability, and runtime analysis across six campus video sequences totaling over \numprint{22000} frames.
-
-  \item Integration of YOLOv8-nano obstacle detection~\cite{yolov8}, GPS waypoint navigation, and a serial command protocol for closed-loop scooter control.
-
-  \item A GPS-conditioned waypoint-turn planner with a turn containment safety guard that verifies committed control paths against the BEV mask before execution, validated through overnight replay evaluation with 0\% containment failure rate and 12.9~FPS throughput.
+  \item A GPS-conditioned waypoint-turn planner with a containment safety guard that verifies committed paths against the BEV corridor before execution, validated with a 0\% containment failure rate (Chapter~\ref{ch:system_design}, Chapter~\ref{ch:evaluation}).
 \end{enumerate}
 
 
 \section{Thesis Organization}
 
-The remainder of this thesis is organized as follows. Chapter~\ref{ch:background} reviews related work in autonomous navigation, segmentation, BEV reconstruction, path planning, and embedded perception. Chapter~\ref{ch:system_design} describes the complete system design, including the segmentation module, BEV projection, five planning methods, temporal smoothing, obstacle detection, GPS navigation, steering computation, and safety mechanisms. Chapter~\ref{ch:evaluation} reports experimental results including the planner comparison study, BEV fragility analysis, runtime profiling, template planner evaluation, waypoint-turn planner validation, and an 1800-frame accepted run. Chapter~\ref{ch:discussion} discusses the implications of key findings, limitations, and threats to validity. Chapter~\ref{ch:conclusion} concludes with a summary and directions for future work.
+The remainder of this thesis is organized as follows. Chapter~\ref{ch:background} reviews prior work in autonomous micro-mobility navigation, semantic segmentation, BEV projection, path planning, distance-transform methods, skeletonization, teacher--student learning, and embedded perception, identifying the research gaps that motivate this work. Chapter~\ref{ch:system_design} describes the complete system design, including the segmentation module, BEV projection, five planning methods, temporal smoothing, obstacle detection, GPS navigation, steering computation, and safety mechanisms. Chapter~\ref{ch:evaluation} presents experimental results including the five-method planner comparison, BEV fragility analysis, runtime profiling, template planner evaluation, waypoint-turn planner validation, and an 1800-frame accepted run. Chapter~\ref{ch:discussion} discusses the implications of key findings, examines limitations, and considers threats to validity. Chapter~\ref{ch:conclusion} summarizes the contributions and outlines directions for future work. Figure~\ref{fig:scooter_hw} shows the hardware platform used for data collection throughout this thesis.
 
 
 \begin{figure}[t]
