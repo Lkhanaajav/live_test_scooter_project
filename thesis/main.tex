@@ -371,7 +371,7 @@ Prior work in sidewalk navigation has primarily focused on either end-to-end app
 \label{ch:methodology}
 % =====================================================================
 
-This chapter describes the perception pipeline that transforms monocular RGB frames into controller-ready waypoints. The system avoids reliance on GPS or external localization for local path following, leveraging a modular pipeline of interpretable geometric and learning-based modules. Figure~\ref{fig:pipeline_diagram} illustrates the overall architecture.
+This chapter describes the complete navigation system, from monocular RGB perception through path planning to closed-loop vehicle control. The system avoids reliance on GPS or external localization for local path following, leveraging a modular pipeline of interpretable geometric and learning-based modules. Sections~\ref{sec:hardware}--\ref{sec:temporal_smoothing} cover perception and planning; Sections~\ref{sec:object_detection}--\ref{sec:safety} cover obstacle detection, GPS integration, steering, and safety mechanisms. Figure~\ref{fig:pipeline_diagram} illustrates the overall architecture.
 
 \begin{figure}[t]
   \centering
