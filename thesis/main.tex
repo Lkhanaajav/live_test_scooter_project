@@ -260,7 +260,7 @@ This thesis makes the following contributions:
 
 \section{Thesis Organization}
 
-The remainder of this thesis is organized as follows. Chapter~\ref{ch:related_work} reviews related work in autonomous navigation, segmentation, BEV reconstruction, path planning, and embedded perception. Chapter~\ref{ch:methodology} describes the proposed perception pipeline in detail, including the segmentation module, BEV projection, five planning methods, and temporal smoothing. Chapter~\ref{ch:closed_loop} presents the closed-loop control extension, including object detection, GPS navigation, and the serial command protocol. Chapter~\ref{ch:results} reports experimental results including the planner comparison study, BEV fragility analysis, runtime profiling, template planner evaluation, waypoint-turn planner validation, and a 1800-frame accepted run. Chapter~\ref{ch:discussion} discusses the implications of key findings, limitations, and threats to validity. Chapter~\ref{ch:conclusion} concludes with a summary and directions for future work.
+The remainder of this thesis is organized as follows. Chapter~\ref{ch:background} reviews related work in autonomous navigation, segmentation, BEV reconstruction, path planning, and embedded perception. Chapter~\ref{ch:system_design} describes the complete system design, including the segmentation module, BEV projection, five planning methods, temporal smoothing, obstacle detection, GPS navigation, steering computation, and safety mechanisms. Chapter~\ref{ch:evaluation} reports experimental results including the planner comparison study, BEV fragility analysis, runtime profiling, template planner evaluation, waypoint-turn planner validation, and an 1800-frame accepted run. Chapter~\ref{ch:discussion} discusses the implications of key findings, limitations, and threats to validity. Chapter~\ref{ch:conclusion} concludes with a summary and directions for future work.
 
 
 \begin{figure}[t]
@@ -376,7 +376,7 @@ This chapter describes the complete navigation system, from monocular RGB percep
 \begin{figure}[t]
   \centering
   \includegraphics[width=\textwidth]{pipeline/pipeline_graph.jpg}
-  \caption{Overview of the sidewalk navigation pipeline. Hand-annotated and pseudo-labeled data are merged to train a student segmentation model, followed by geometric processing to extract traversable paths. The system supports both BEV-domain and image-space planning; the experiments in Chapter~\ref{ch:results} compare five methods across both domains.}
+  \caption{Overview of the sidewalk navigation pipeline. Hand-annotated and pseudo-labeled data are merged to train a student segmentation model, followed by geometric processing to extract traversable paths. The system supports both BEV-domain and image-space planning; the experiments in Chapter~\ref{ch:evaluation} compare five methods across both domains.}
   \label{fig:pipeline_diagram}
 \end{figure}
 
