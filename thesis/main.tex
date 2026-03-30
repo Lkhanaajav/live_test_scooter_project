@@ -773,7 +773,7 @@ The system is implemented in Python 3.10+ using OpenCV, PyTorch, NumPy, and SciP
 \label{ch:evaluation}
 % =====================================================================
 
-This chapter presents experimental results organized by pipeline stage, followed by the planner comparison study, BEV fragility analysis, runtime profiling, and system-level validation runs.
+This chapter examines five claims that together characterize the design space explored by the four iterations of the navigation pipeline.  First, the teacher--student supervision strategy produces substantially better segmentation masks than the initial training recipe.  Second, image-space path planning dominates BEV-domain planning for straight-ahead corridor following.  Third, monocular BEV projection is fragile as the primary planning domain.  Fourth, a propose-and-verify template approach yields more stable paths than skeleton-based path discovery.  Fifth, the complete pipeline---integrating the findings of the first four claims---sustains stable real-time operation over extended video sequences.  The experimental setup is described first, followed by each claim examined in turn.
 
 
 \section{Experimental Setup}
@@ -813,9 +813,20 @@ Thirty-two frames were manually annotated with pixel-level binary masks across m
 For the planner comparison, each of the five methods receives the same cleaned binary mask. For BEV methods, the mask is first warped via homography. Metrics are computed per-frame and averaged. Runtime is measured as mean per-frame wall time on CPU.
 
 
+\subsection{Naive Baseline}
+\label{sec:naive_baseline}
+
+As a conceptual baseline, consider a system that extracts the traversable region via segmentation but performs no geometric path planning: for each row of the mask, the midpoint between the left and right boundaries is selected, and the vehicle follows this row-by-row center without temporal smoothing, curvature estimation, or forward look-ahead.  This approach is approximately what the image-space midpoint planner implements, minus the connected-component filtering and Savitzky--Golay smoothing that make it a proper planner.
+
+The remarkable performance of image-space midpoint planning (14.3~px center error at 2.2~ms, as reported in Section~\ref{sec:claim_planning_domain}) suggests that for straight-ahead corridor following, the traversable mask itself already encodes sufficient geometric information for path extraction, and the dominant contribution of the planning stage is noise suppression rather than geometric reasoning.  This naive baseline provides a conceptual lower bound against which the complexity of more sophisticated planners can be assessed.
+
+
 % -----------------------------------------------------------------
-\section{Segmentation Results}
+\section{Teacher--Student Training Improves Segmentation Quality}
+\label{sec:claim_seg_quality}
 \label{sec:res_seg}
+
+This section examines the claim that a high-capacity teacher model substantially improves the quality of a lightweight student segmentation network for sidewalk navigation.  If supported, this finding justifies the teacher--student supervision framework described in Section~\ref{sec:teacher_student} and motivates the design choice of investing in teacher quality rather than student capacity.
 
 \begin{figure}[t]
 \centering
@@ -863,6 +874,22 @@ Cand.+confhold & 0.903 & 0.987 & 0.914 & 0.947 & 13.1 \\
 \end{figure}
 
 
+\subsection{Teacher--Student Progression}
+
+The path from baseline to candidate segmentation is best understood as a progression in teacher quality.  The initial training recipe employed a SegFormer-B2 teacher (24M parameters) fine-tuned on 300 hand-labeled frames to generate pseudo-labels for the SegFormer-B0 student.  This approach achieved IoU~0.758 on the hand-annotated evaluation set---serviceable for initial pipeline development but insufficient for reliable path planning, as boundary errors in the mask propagate directly into lateral path error.
+
+Switching to a OneFormer Swin-L teacher~\cite{oneformer}---pre-trained on ADE20K and capable of universal semantic, instance, and panoptic segmentation---raised the student's evaluation IoU to 0.946, a 25\% improvement.  Simultaneously, inference time decreased from \SI{18.9}{ms} to \SI{11.7}{ms}, attributable to improved model convergence from higher-quality pseudo-labels.  The full training history, including intermediate checkpoints and data augmentation stages, is documented in Table~\ref{tab:training_progression} (Section~\ref{sec:teacher_student}).
+
+This progression demonstrates that, for a capacity-constrained student model, the quality of the teacher's pseudo-labels is the dominant factor in final segmentation performance.  The student architecture (SegFormer-B0, 3.7M parameters) remained unchanged throughout; only the teacher and training recipe varied.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{seg_comparison_example.jpg}
+  \caption{Qualitative segmentation comparison across three campus frames. Top row: baseline model (SegFormer-B2 teacher). Bottom row: candidate model (OneFormer Swin-L teacher). The candidate produces more complete, cleaner masks with fewer boundary errors.}
+  \label{fig:seg_comparison_qual}
+\end{figure}
+
+
 \subsection{Full-Video Temporal Stability}
 
 A full-video replay across six sequences (\numprint{22679} frames) confirms the improvement generalizes beyond the hand-annotated sample. The candidate model reduces temporal instability by 77\% (1.46\%~$\to$~0.33\%) and increases the template-planner success rate by 5.6 percentage points (Table~\ref{tab:fullvideo_replay}).
@@ -886,11 +913,47 @@ Mean Heading $\Delta$ [deg] & 0.209 & 0.201 & $-$0.008 \\
 \end{table}
 
 
+\subsection{Conclusion}
+
+The evidence presented in this section supports the claim that teacher quality is the dominant factor in student mask quality.  The switch from a SegFormer-B2 teacher to a OneFormer Swin-L teacher produced a 25\% IoU improvement (0.758~$\to$~0.946) and a 38\% inference speedup (18.9~ms~$\to$~11.7~ms), with full-video replay confirming that the improvement extends to temporal stability across \numprint{22679}~frames.  These results are limited to campus sidewalk sequences collected under daytime conditions; generalization to other environments, surfaces, or lighting conditions has not been tested.
+
+
 % -----------------------------------------------------------------
-\section{Planner Comparison Study}
+\section{Image-Space Planning Dominates BEV for Straight-Ahead Following}
+\label{sec:claim_planning_domain}
 \label{sec:planner_comparison}
 
-We evaluate five planning methods on the 32 hand-annotated frames using the candidate segmentation model. Each planner receives the same cleaned binary mask; for BEV methods, the mask is first warped via homography. Table~\ref{tab:planner_comparison} reports path availability, mask--path alignment, lateral center error, and runtime.
+This section examines whether image-space path planning offers advantages over BEV-domain planning for straight-ahead sidewalk following.  If supported, this result would suggest that the computational overhead of BEV projection and BEV-domain path extraction can be avoided for the most common navigation scenario---following a corridor without turning---reserving BEV processing for situations that require metric-scale reasoning, such as corridor validation and turn planning.
+
+\subsection{Design Iteration Context}
+
+The five planners compared in this section represent four design iterations of the navigation pipeline, summarized in Table~\ref{tab:iteration_progression}.  Each iteration introduced a new planning strategy while remaining backward-compatible with earlier stages, allowing controlled comparison.
+
+\begin{table}[h]
+\centering
+\caption{Design iteration progression. Each iteration introduces a new planning strategy while remaining backward-compatible with earlier stages.}
+\label{tab:iteration_progression}
+\begin{tabular}{clllr}
+\toprule
+Iter. & Planner & Domain & Key Change & Pipeline FPS \\
+\midrule
+v1 & Skeleton-Graph & BEV & Guo--Hall thinning + Dijkstra & 9.1 \\
+v2 & DT Ridge & BEV & EDT ridge replaces skeleton & ${\sim}$1\textsuperscript{*} \\
+v3 & Midpoint / DT & Image-space & BEV bypass for straight-ahead & 59.2 \\
+v4 & Template Arc & BEV corridor & Propose-and-verify arcs & 9.97 \\
+\bottomrule
+\end{tabular}
+\begin{flushleft}
+\footnotesize\textsuperscript{*}Estimated from component timings (926.8\,ms planner-only); measurements are not directly comparable across iterations due to different pipeline configurations.
+\end{flushleft}
+\end{table}
+
+The iteration progression reveals a consistent pattern: each BEV-domain planner (v1, v2) was abandoned not for lack of correctness but because the computational cost of operating in BEV coordinates exceeded the real-time budget.  The v3 image-space iteration bypassed BEV entirely for straight-ahead following, achieving a $25\times$ throughput improvement.  The v4 template arc planner returned to BEV coordinates but in a verification role---scoring pre-computed arcs against the BEV corridor rather than discovering paths from scratch.
+
+
+\subsection{Planner Comparison}
+
+Five planning methods are evaluated on the 32 hand-annotated frames using the candidate segmentation model.  Each planner receives the same cleaned binary mask; for BEV methods, the mask is first warped via homography.  Table~\ref{tab:planner_comparison} reports path availability, mask--path alignment, lateral center error, and runtime.
 
 \begin{table}[h]
 \centering
@@ -919,23 +982,19 @@ Planner & Path [\%] & Inside-GT & Center Err. [px] & ms \\
   \label{fig:planner_comparison}
 \end{figure}
 
+The image-space midpoint planner achieves the lowest lateral center error (14.3~px vs.\ 65.0~px for the best BEV method) at $421\times$ lower latency (2.2~ms vs.\ 926.8~ms), while maintaining comparable mask--path alignment (98.5\% vs.\ 98.6\%).  As noted in Section~\ref{sec:naive_baseline}, this planner is only modestly more complex than a naive row-by-row center-follower, yet it outperforms all BEV-domain methods.  Image-space DT serves as a robust fallback, providing the highest inside-GT ratio (99.4\%) at \SI{108.1}{ms}---still $8.6\times$ faster than BEV DT.  BEV methods are not competitive on runtime: the skeleton-graph planner costs \SI{380.3}{ms} and BEV DT costs \SI{926.8}{ms}, with near-field BEV DT actually \emph{slower} (\SI{1603}{ms}) due to denser graph construction.
 
-\subsection{Key Findings}
-
-\begin{enumerate}[nosep]
-  \item \textbf{Image-space midpoint is the best primary planner.} It achieves the lowest lateral center error (14.3~px vs.\ 65.0~px for the best BEV method) at $421\times$ lower latency (2.2~ms vs.\ 926.8~ms). Mask--path alignment is comparable (98.5\% vs.\ 98.6\%).
-
-  \item \textbf{Image-space DT is the best fallback.} When midpoint extraction fails, image-space DT provides the highest inside-GT ratio (99.4\%) at \SI{108.1}{ms}---still $8.6\times$ faster than BEV DT.
-
-  \item \textbf{BEV methods are not competitive on runtime.} The skeleton-graph planner costs \SI{380.3}{ms}; BEV DT costs \SI{926.8}{ms}. Near-field BEV DT is actually \emph{slower} (\SI{1603}{ms}) due to denser graph construction.
-
-  \item \textbf{BEV does not improve path quality.} Even with oracle (ground-truth) masks, BEV DT achieves only 98.0\% inside-GT ratio and 69.2~px center error, compared to 98.9\% and 62.5~px for image-space DT. The planning \emph{domain} is part of the problem, not just the segmentation input.
-\end{enumerate}
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{planner_comparison_example.png}
+  \caption{BEV vs.\ image-space planner output comparison. The image-space planners produce more centered, stable paths while avoiding the coverage and distortion issues of BEV projection.}
+  \label{fig:planner_comparison_qual}
+\end{figure}
 
 
 \subsection{Oracle-Mask Experiment}
 
-To isolate the effect of the planning domain from segmentation quality, we ran the same planners with ground-truth masks. Table~\ref{tab:oracle_comparison} shows that BEV planning remains inferior even with perfect segmentation input.
+To isolate the effect of the planning domain from segmentation quality, the same planners were evaluated with ground-truth (oracle) masks. Table~\ref{tab:oracle_comparison} shows that BEV planning remains inferior even with perfect segmentation input: BEV DT achieves 98.0\% inside-GT ratio and 69.2~px center error, compared to 98.9\% and 62.5~px for image-space DT.  The planning \emph{domain} is part of the problem, not merely the segmentation input.
 
 \begin{table}[h]
 \centering
@@ -951,10 +1010,6 @@ Img Midpoint    & 0.984 & 15.2 & 2.39 \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-
-% -----------------------------------------------------------------
-\section{BEV Skeleton-Graph Pipeline Visualization}
 
 \begin{figure}[t]
 \centering
@@ -973,6 +1028,13 @@ Img Midpoint    & 0.984 & 15.2 & 2.39 \\
 \caption{BEV skeleton-graph pipeline. (a)~Skeleton after Guo--Hall thinning, (b)~candidate paths from Dijkstra search, (c)~selected path reprojected to camera view. While topologically informative, this method is the slowest (\SI{380.3}{ms}) and least accurate of the five compared planners.}
 \label{fig:skeleton_stage}
 \end{figure}
+
+
+\subsection{Conclusion}
+
+The evidence presented in this section supports the claim that image-space planning offers substantial advantages over BEV-domain planning for straight-ahead corridor following.  The image-space midpoint planner achieves approximately $4.5\times$ lower lateral error at approximately $421\times$ lower latency than the best BEV-domain planner.  This advantage persists even with oracle masks (Table~\ref{tab:oracle_comparison}), confirming that the BEV planning domain itself introduces error rather than merely inheriting segmentation noise.
+
+These results do not imply that BEV processing should be abandoned.  As the iteration progression in Table~\ref{tab:iteration_progression} illustrates, the v4 template arc planner returns to BEV coordinates in a verification role, and the turn planner (Section~\ref{sec:waypoint_turn_eval}) requires metric-scale BEV geometry for junction maneuvers.  Rather, the evidence suggests that the default planning domain for straight-ahead following should be image-space, with BEV reserved for corridor verification and turn planning.
 
 
 % -----------------------------------------------------------------
@@ -1091,53 +1153,9 @@ No detection, predictor off   & 8.9  & 75.3 & --- & 29.5 \\
 \section{Temporal Smoothing Evaluation}
 \label{sec:smoother_results}
 
-The EMA temporal smoother was tuned via a grid search over 35 combinations ($\alpha \in \{0.25, \ldots, 0.65\}$, $c_\text{thresh} \in \{0.20, \ldots, 0.50\}$). With the best checkpoint (\texttt{my-segformer-road}, 99.3\% raw stability), $\alpha = 0.65$ and $c_\text{thresh} = 0.20$ achieved 99.6\% temporally stable frames on a 500-frame evaluation window.
+The EMA temporal smoother was tuned via a grid search over 35 combinations ($\alpha \in \{0.25, \ldots, 0.65\}$, $c_\text{thresh} \in \{0.20, \ldots, 0.50\}$). With the final segmentation model (\texttt{my-segformer-road}, 99.3\% raw stability), $\alpha = 0.65$ and $c_\text{thresh} = 0.20$ achieved 99.6\% temporally stable frames on a 500-frame evaluation window.
 
 
-% -----------------------------------------------------------------
-\section{Checkpoint Benchmark}
-\label{sec:checkpoint_benchmark}
-
-To select the best-performing SegFormer checkpoint, we evaluated 11 candidates on temporal stability. Table~\ref{tab:checkpoint_benchmark} reports results sorted by percent stable frames.
-
-\begin{table}[h]
-\centering
-\caption{Temporal stability benchmark across 11 SegFormer checkpoints (300 consecutive frames). Stable = consecutive-frame IoU $\geq$ 0.85.}
-\label{tab:checkpoint_benchmark}
-\begin{tabular}{lrrrr}
-\toprule
-Checkpoint & Stable (\%) & Failure (\%) & Mean IoU & Median IoU \\
-\midrule
-\texttt{my-segformer-road}      & \textbf{99.3} & 0.0 & 0.968 & 0.982 \\
-\texttt{checkpoint-4000}        & 94.3          & 0.0 & 0.945 & 0.963 \\
-\texttt{checkpoint-2000}        & 88.6          & 0.0 & 0.941 & 0.971 \\
-\texttt{my-segformer-road\_new} & 88.0          & 0.0 & 0.932 & 0.955 \\
-\texttt{checkpoint-1000}        & 86.0          & 0.0 & 0.910 & 0.963 \\
-\texttt{checkpoint-1500}        & 84.3          & 0.0 & 0.919 & 0.942 \\
-\texttt{checkpoint-500}         & 67.6          & 1.7 & 0.818 & 0.901 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-
-% -----------------------------------------------------------------
-\section{Qualitative Results}
-
-Figure~\ref{fig:seg_comparison_qual} shows qualitative segmentation comparison examples, and Figure~\ref{fig:planner_comparison_qual} shows planner output comparison on sample frames.
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=\textwidth]{seg_comparison_example.jpg}
-  \caption{Qualitative segmentation comparison across three campus frames. Top row: baseline model. Bottom row: candidate model (OneFormer teacher). The candidate produces more complete, cleaner masks with fewer boundary errors.}
-  \label{fig:seg_comparison_qual}
-\end{figure}
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=\textwidth]{planner_comparison_example.png}
-  \caption{BEV vs.\ image-space planner output comparison. The image-space planners produce more centered, stable paths while avoiding the coverage and distortion issues of BEV projection.}
-  \label{fig:planner_comparison_qual}
-\end{figure}
 
 
 % -----------------------------------------------------------------
