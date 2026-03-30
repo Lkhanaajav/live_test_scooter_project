@@ -82,6 +82,13 @@ Plans:
 
 **Requirements:** WRIT-01, WRIT-02, WRIT-03, WRIT-04, DISC-01, DISC-02, DISC-03
 
+**Plans:** 3 plans
+
+Plans:
+- [ ] 04-01-PLAN.md — Rewrite Discussion (Ch.5) and Conclusion (Ch.6) with failure analysis, broader implications, and contribution mapping
+- [ ] 04-02-PLAN.md — Rewrite Abstract, standardize terminology, make captions self-contained
+- [ ] 04-03-PLAN.md — Full prose review pass across all 6 chapters for tone consistency
+
 **Success Criteria:**
 1. Active voice used throughout; no passive "was performed" constructions
 2. All figure/table captions are self-contained (understandable without reading body text)
@@ -116,4 +123,4 @@ All phases are sequential — each builds on the previous rewrite.
 
 ---
 *Roadmap created: 2026-03-30*
-*Last updated: 2026-03-30 after Phase 3 planning*
+*Last updated: 2026-03-30 after Phase 4 planning*
