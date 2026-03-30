@@ -445,26 +445,7 @@ where $\mathcal{L}_{\text{CE}}$ is binary cross-entropy, $\mathcal{L}_{\text{Dic
 
 Table~\ref{tab:training_progression} summarizes the segmentation model iterations. The OneFormer teacher with expanded data yields the highest validation IoU (0.960), while the hand-annotated evaluation (Section~\ref{sec:res_seg}) confirms a large improvement over the baseline (IoU 0.758~$\to$~0.946).
 
-\begin{table}[h]
-\centering
-\caption{Segmentation model training progression. All students are SegFormer-B0; validation IoU is on held-out splits.}
-\label{tab:training_progression}
-\begin{threeparttable}
-\begin{tabular}{lccc}
-\toprule
-Iteration & Teacher & Train Pairs & Val IoU \\
-\midrule
-Baseline & SegFormer-B2 & 300 + 2,300 & 0.758\tnote{$\dagger$} \\
-OneFormer (4 vid) & OneFormer Swin-L & 400 & 0.944 \\
-OneFormer (mixed) & OneFormer Swin-L & 1,419 & \textbf{0.960} \\
-\bottomrule
-\end{tabular}
-\begin{tablenotes}
-\small
-\item[$\dagger$] Hand-annotated IoU (external evaluation, not internal validation split).
-\end{tablenotes}
-\end{threeparttable}
-\end{table}
+\input{tables/generated/training_progression.tex}
 
 
 % -----------------------------------------------------------------
@@ -624,44 +605,8 @@ with $\alpha = 0.65$ and consistency threshold $c_\text{thresh} = 0.20$.
 
 
 % -----------------------------------------------------------------
-\section{Evaluation Metrics}
-\label{sec:metrics}
-
-We evaluate the pipeline offline and define five quantitative metrics:
-
-\paragraph{Segmentation IoU.}
-Intersection-over-union between the predicted binary mask and hand-annotated ground truth, computed per-frame and averaged.
-
-\paragraph{Lateral path-centering error.}
-For each sample point along the planned path, we measure the lateral deviation from the geometric centerline of the ground-truth sidewalk mask. Reported in pixels.
-
-\paragraph{Mask--path alignment (inside-GT ratio).}
-The fraction of path pixels that fall within the ground-truth sidewalk mask:
-\begin{equation}
-\text{Alignment} = \frac{L_{\text{in}}}{L_{\text{total}}} \times 100\%
-\end{equation}
-
-\paragraph{Temporal stability.}
-Frame-to-frame IoU between consecutive cleaned masks. Frames below a threshold are flagged as ``unstable.'' The unstable rate captures temporal flicker.
-
-\paragraph{Runtime.}
-Per-module wall-clock time in milliseconds, measured on CPU to reflect embedded deployment conditions.
-
-
+% --- Sections below merged from former Closed-Loop chapter --------
 % -----------------------------------------------------------------
-\section{Software Architecture}
-\label{sec:software_arch}
-
-The system is implemented in Python 3.10+ using OpenCV, PyTorch, NumPy, and SciPy. A centralized configuration module (\texttt{config.py}, 271 lines) serves as the single source of truth for all parameters, including segmentation thresholds, BEV dimensions, planner settings, speed profiles, and feature flags. Each research improvement is gated by a boolean flag, enabling exact reproduction of any prior design iteration. The test suite comprises over 200 automated tests covering all major modules.
-
-
-% =====================================================================
-\chapter{Closed-Loop Control and System Integration}
-\label{ch:closed_loop}
-% =====================================================================
-
-This chapter extends the offline perception pipeline to a real-time system capable of autonomous sidewalk navigation. We describe four additions: obstacle detection, GPS waypoint navigation, steering and speed computation, and the serial command protocol.
-
 
 \section{Lightweight Object Detection}
 \label{sec:object_detection}
@@ -734,6 +679,38 @@ A watchdog on the scooter side triggers a safety stop if no valid command is rec
   \item \textbf{Manual override:} Emergency stop via hardware button or keyboard.
   \item \textbf{Segmentation instability gate:} Speed cap (\SI{0.2}{m/s}) when segmentation IoU drops below threshold for multiple consecutive frames.
 \end{itemize}
+
+
+% -----------------------------------------------------------------
+\section{Evaluation Metrics}
+\label{sec:metrics}
+
+We evaluate the pipeline offline and define five quantitative metrics:
+
+\paragraph{Segmentation IoU.}
+Intersection-over-union between the predicted binary mask and hand-annotated ground truth, computed per-frame and averaged.
+
+\paragraph{Lateral path-centering error.}
+For each sample point along the planned path, we measure the lateral deviation from the geometric centerline of the ground-truth sidewalk mask. Reported in pixels.
+
+\paragraph{Mask--path alignment (inside-GT ratio).}
+The fraction of path pixels that fall within the ground-truth sidewalk mask:
+\begin{equation}
+\text{Alignment} = \frac{L_{\text{in}}}{L_{\text{total}}} \times 100\%
+\end{equation}
+
+\paragraph{Temporal stability.}
+Frame-to-frame IoU between consecutive cleaned masks. Frames below a threshold are flagged as ``unstable.'' The unstable rate captures temporal flicker.
+
+\paragraph{Runtime.}
+Per-module wall-clock time in milliseconds, measured on CPU to reflect embedded deployment conditions.
+
+
+% -----------------------------------------------------------------
+\section{Software Architecture}
+\label{sec:software_arch}
+
+The system is implemented in Python 3.10+ using OpenCV, PyTorch, NumPy, and SciPy. A centralized configuration module (\texttt{config.py}, 271 lines) serves as the single source of truth for all parameters, including segmentation thresholds, BEV dimensions, planner settings, speed profiles, and feature flags. Each research improvement is gated by a boolean flag, enabling exact reproduction of any prior design iteration. The test suite comprises over 200 automated tests covering all major modules.
 
 
 % =====================================================================
