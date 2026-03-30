@@ -58,6 +58,12 @@ Plans:
 
 **Requirements:** NARR-03, NARR-04, EVAL-01, EVAL-02, EVAL-03, EVAL-04, STRUCT-02
 
+**Plans:** 2 plans
+
+Plans:
+- [ ] 03-01-PLAN.md — Rewrite System Design with WHY-before-WHAT design rationale for all components
+- [ ] 03-02-PLAN.md — Restructure Evaluation into 5 claim-driven sections with iteration table and merged runtime
+
 **Success Criteria:**
 1. Every methodology section explains WHY before WHAT (design rationale present for all 5 planners, teacher-student choice, BEV parameters)
 2. Checkpoint benchmark removed; replaced with teacher-student comparison narrative
@@ -110,4 +116,4 @@ All phases are sequential — each builds on the previous rewrite.
 
 ---
 *Roadmap created: 2026-03-30*
-*Last updated: 2026-03-30 after Phase 2 planning*
+*Last updated: 2026-03-30 after Phase 3 planning*
