@@ -284,8 +284,8 @@ The remainder of this thesis is organized as follows. Chapter~\ref{ch:related_wo
 
 
 % =====================================================================
-\chapter{Literature Review}
-\label{ch:related_work}
+\chapter{Background and Related Work}
+\label{ch:background}
 % =====================================================================
 
 This chapter reviews prior work organized into eight themes, emphasizing what each direction offers in practice---what runs fast, what transfers, and what stays explainable.
@@ -367,8 +367,8 @@ Prior work in sidewalk navigation has primarily focused on either end-to-end app
 
 
 % =====================================================================
-\chapter{System Design and Methodology}
-\label{ch:methodology}
+\chapter{System Design}
+\label{ch:system_design}
 % =====================================================================
 
 This chapter describes the complete navigation system, from monocular RGB perception through path planning to closed-loop vehicle control. The system avoids reliance on GPS or external localization for local path following, leveraging a modular pipeline of interpretable geometric and learning-based modules. Sections~\ref{sec:hardware}--\ref{sec:temporal_smoothing} cover perception and planning; Sections~\ref{sec:object_detection}--\ref{sec:safety} cover obstacle detection, GPS integration, steering, and safety mechanisms. Figure~\ref{fig:pipeline_diagram} illustrates the overall architecture.
@@ -714,8 +714,8 @@ The system is implemented in Python 3.10+ using OpenCV, PyTorch, NumPy, and SciP
 
 
 % =====================================================================
-\chapter{Experiments and Results}
-\label{ch:results}
+\chapter{Experimental Evaluation}
+\label{ch:evaluation}
 % =====================================================================
 
 This chapter presents results organized by pipeline stage, followed by the planner comparison study, BEV fragility analysis, and runtime profiling.
