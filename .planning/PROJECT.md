@@ -24,8 +24,8 @@ A professional, cohesive thesis that tells a clear scientific story: simple imag
 - [ ] Rewrite evaluation to show design iteration progression (v1 skeleton → v2 DT → v3 image-space → v4 template arc)
 - [ ] Add proper baseline comparison (full pipeline vs. raw segmentation / naive approach)
 - [ ] Remove checkpoint-vs-checkpoint benchmark (Table 7) — replace with meaningful evaluation
-- [ ] Strengthen Introduction with clearer motivation, sharper problem statement, and stronger contribution framing
-- [ ] Rewrite Literature Review to better position our work relative to the field
+- [x] Strengthen Introduction with clearer motivation, sharper problem statement, and stronger contribution framing — Validated in Phase 2
+- [x] Rewrite Literature Review to better position our work relative to the field — Validated in Phase 2
 - [ ] Rewrite Methodology chapter with clearer design rationale (WHY each decision was made)
 - [ ] Restructure Results chapter to tell a progression story, not a list of experiments
 - [ ] Strengthen Discussion with deeper analysis and clearer implications
@@ -108,4 +108,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-30 after Phase 1 completion*
+*Last updated: 2026-03-30 after Phase 2 completion*
