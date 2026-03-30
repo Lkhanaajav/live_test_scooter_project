@@ -1351,40 +1351,39 @@ Several limitations qualify the findings of this thesis:
 \label{ch:conclusion}
 % =====================================================================
 
+This thesis traced the development and evaluation of a monocular-camera sidewalk navigation pipeline through four design iterations---from a skeleton-graph baseline through distance-transform corridor planning and image-space midpoint extraction to a template-approval architecture with GPS-conditioned turn planning.  Through systematic offline evaluation on University of Oklahoma campus sidewalk video, five specific contributions were examined, each supported by quantitative evidence across multiple evaluation scales.
+
 
 \section{Summary of Contributions}
 
-This thesis presented a modular vision-based sidewalk navigation pipeline that evolves through four design iterations, from a skeleton-graph baseline through distance-transform corridor planning and a lightweight image-space architecture to a template arc planner with GPS-conditioned turn planning and containment safety verification. Through systematic comparison of five planning methods, we arrive at a result that is both an engineering improvement and a scientific finding: \emph{for monocular sidewalk navigation on embedded platforms, simple image-space geometry consistently outperforms the more complex BEV pipeline in accuracy, reliability, and latency.}
+\textbf{Contribution~1} established a systematic comparison of five path-planning methods across both BEV and image-space domains (Chapter~\ref{ch:evaluation}).  The data indicate that image-space midpoint planning achieves approximately 14.3~px lateral center error at 2.2~ms per frame---an approximately $421\times$ speedup over the best BEV method (65.0~px at 926.8~ms)---while BEV-only planning fails to produce valid paths on 99.3\% of frames in the profiled sequence (Table~\ref{tab:planner_comparison}).  These results suggest that, for monocular sidewalk following, the image-space domain offers a more favorable accuracy--latency trade-off than the BEV domain.
 
+\textbf{Contribution~2} introduced a template-approval planning architecture that replaces fragile skeleton-graph construction with efficient verification of pre-computed arc templates against distance-transform corridors (Chapter~\ref{ch:system_design}).  On a calibrated 220-frame evaluation clip, the template-approval planner reduces mean heading error by 40.6\% (from $1.190^\circ$ to $0.707^\circ$) and halves path-source switches relative to the skeleton-graph baseline (Table~\ref{tab:template_eval}).  This evidence suggests that constraining the solution space to smooth, ego-anchored trajectories improves temporal stability compared to unconstrained per-frame graph search.
 
-\section{Key Findings}
+\textbf{Contribution~3} presented a semi-supervised segmentation training recipe in which a high-capacity OneFormer Swin-L teacher generates pseudo-labels for a compact SegFormer-B0 student (Chapter~\ref{ch:evaluation}).  The student model achieves an IoU of 0.946 at 11.7~ms on CPU, while reducing temporal segmentation instability by 77\% relative to the baseline model (Table~\ref{tab:seg_comparison}).  These results indicate that large vision models can effectively supervise compact deployment models for domain-specific tasks, enabling high segmentation quality within the real-time budget of embedded platforms.
 
-\begin{enumerate}[nosep]
-  \item The OneFormer-trained SegFormer-B0 student achieves hand-annotated IoU of 0.946 at \SI{11.7}{ms}, improving over the baseline (0.758, \SI{18.9}{ms}).
-  \item Image-space midpoint planning achieves 14.3~px lateral center error at \SI{2.2}{ms}---$421\times$ faster than BEV DT planning (65.0~px, \SI{926.8}{ms}).
-  \item BEV-only planning fails on 99.3\% of frames in one profiled sequence due to insufficient monocular mask coverage.
-  \item The recommended image-space architecture runs the full perception-to-path stack at over 59~FPS on CPU.
-  \item Full-video evaluation across \numprint{22679} frames confirms that improved segmentation reduces temporal instability from 1.46\% to 0.33\%.
-  \item The template arc planner reduces mean heading error by 40.6\% (from $1.190^\circ$ to $0.707^\circ$) and path-source switches by 50\% relative to the skeleton-graph baseline on a calibrated 220-frame evaluation clip.
-  \item A GPS-conditioned waypoint-turn planner achieves 0\% turn containment failure rate on a 300-frame validation sequence while maintaining 12.9~FPS, and a 1800-frame accepted run achieves 100\% template success across all frames at a mean segmentation IoU of 0.954.
-\end{enumerate}
+\textbf{Contribution~4} developed a comprehensive offline evaluation protocol spanning three complementary scales: 32 hand-annotated frames for planner accuracy, full-video replay across \numprint{22679} frames for temporal stability, and an 1800-frame accepted run for sustained system validation (Chapter~\ref{ch:evaluation}).  Consistent trends across all three evaluation scales suggest that multi-scale offline evaluation partially compensates for the absence of closed-loop deployment testing, though it does not fully substitute for on-platform validation.
 
-The final recommended architecture---image-space midpoint primary, image-space DT fallback, BEV reserved for optional visualization and obstacle projection---is transparent, lightweight, and deployable on single-board computers. Each stage produces an interpretable intermediate representation that field teams can inspect and tune without retraining models.
+\textbf{Contribution~5} introduced a GPS-conditioned waypoint-turn planner with a dual-threshold containment safety guard that verifies committed paths against the BEV corridor before execution (Chapter~\ref{ch:system_design}, Chapter~\ref{ch:evaluation}).  Validation on a 300-frame turn sequence demonstrates a 0\% containment failure rate at 12.9~FPS (Table~\ref{tab:waypoint_turn_eval}), and the 1800-frame accepted run achieves 100\% template success across all frames at a mean segmentation IoU of 0.954.  These results suggest that dual-threshold containment gating provides a practical safety mechanism for GPS-directed maneuvers on embedded platforms.
 
 
 \section{Future Work}
 
-\paragraph{Closed-loop deployment.} The most critical next step is deploying the complete stack on the physical scooter with real-time obstacle detection, measuring actual tracking error with ground-truth trajectories, and studying failure modes at scale.
+\paragraph{Closed-loop deployment.}  The most critical next step is deploying the complete stack on the physical scooter with real-time obstacle detection, measuring actual tracking error against ground-truth trajectories, and characterizing failure modes at scale.
 
-\paragraph{Temporal video segmentation.} Video-level consistency mechanisms (temporal attention, optical flow guidance) could further reduce frame-to-frame segmentation flicker beyond what EMA smoothing achieves.
+\paragraph{Temporal video segmentation.}  Video-level consistency mechanisms such as temporal attention or optical-flow guidance could further reduce frame-to-frame segmentation flicker beyond what EMA smoothing achieves.
 
-\paragraph{Multi-camera or depth fusion.} Adding a depth sensor or stereo pair would enable metric obstacle distance estimation without the pinhole approximation, while maintaining the monocular pipeline as the primary perception path.
+\paragraph{Multi-camera or depth fusion.}  Adding a depth sensor or stereo pair would enable metric obstacle distance estimation without the pinhole approximation, while retaining the monocular pipeline as the primary perception path.
 
-\paragraph{Global route planning.} The waypoint-turn planner introduced in this work provides GPS-conditioned junction behavior, but the GPS integration is coarse (left/right/straight intent from bearing comparison). A full global route planner with topological map, intersection detection, and multi-waypoint sequencing would enable autonomous multi-block navigation.
+\paragraph{Global route planning.}  The waypoint-turn planner introduced in this work provides GPS-conditioned junction behavior, but the GPS integration remains coarse (left/right/straight intent derived from bearing comparison).  A full global route planner with a topological map, intersection detection, and multi-waypoint sequencing would enable autonomous multi-block navigation.
 
-\paragraph{Cross-environment generalization.} Testing on diverse sidewalk environments (different cities, weather conditions, surface materials, nighttime) would strengthen the external validity of the findings.
+\paragraph{Cross-environment generalization.}  Evaluation on diverse sidewalk environments---different cities, weather conditions, surface materials, and nighttime illumination---would strengthen the external validity of the findings reported here.
 
-\paragraph{Larger annotated benchmark.} Expanding the hand-annotated evaluation set from 32 to 100+ frames, with additional annotators for inter-rater agreement, would provide stronger statistical evidence for the planner comparison.
+\paragraph{Larger annotated benchmark.}  Expanding the hand-annotated evaluation set from 32 to 100 or more frames, with additional annotators for inter-rater agreement, would provide stronger statistical evidence for the planner comparison.
+
+\medskip
+
+The geometric coverage insight at the core of this work---that monocular perspective images preserve denser planning information than BEV projections---applies to corridor-following tasks beyond sidewalk navigation.  The modular, interpretable architecture presented in this thesis enables incremental improvement, as each component (segmentation, planning, temporal smoothing, turn handling) can be independently upgraded or replaced without disrupting the overall pipeline.
 
 
 % ======================== BACK MATTER ========================
