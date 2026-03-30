@@ -21,13 +21,13 @@ A professional, cohesive thesis that tells a clear scientific story: simple imag
 
 - [x] Complete restructure of thesis organization for logical flow and professional narrative — Validated in Phase 1: Structural Reorganization
 - [ ] Full rewrite of all prose — authoritative academic tone, not lab-notes style
-- [ ] Rewrite evaluation to show design iteration progression (v1 skeleton → v2 DT → v3 image-space → v4 template arc)
-- [ ] Add proper baseline comparison (full pipeline vs. raw segmentation / naive approach)
-- [ ] Remove checkpoint-vs-checkpoint benchmark (Table 7) — replace with meaningful evaluation
+- [x] Rewrite evaluation to show design iteration progression (v1 skeleton → v2 DT → v3 image-space → v4 template arc) — Validated in Phase 3
+- [x] Add proper baseline comparison (full pipeline vs. raw segmentation / naive approach) — Validated in Phase 3
+- [x] Remove checkpoint-vs-checkpoint benchmark (Table 7) — replace with meaningful evaluation — Validated in Phase 3
 - [x] Strengthen Introduction with clearer motivation, sharper problem statement, and stronger contribution framing — Validated in Phase 2
 - [x] Rewrite Literature Review to better position our work relative to the field — Validated in Phase 2
-- [ ] Rewrite Methodology chapter with clearer design rationale (WHY each decision was made)
-- [ ] Restructure Results chapter to tell a progression story, not a list of experiments
+- [x] Rewrite Methodology chapter with clearer design rationale (WHY each decision was made) — Validated in Phase 3
+- [x] Restructure Results chapter to tell a progression story, not a list of experiments — Validated in Phase 3
 - [ ] Strengthen Discussion with deeper analysis and clearer implications
 - [ ] Ensure all figures are properly referenced and contribute to the narrative
 - [ ] Verify 60-80 page target length when compiled
@@ -108,4 +108,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-30 after Phase 2 completion*
+*Last updated: 2026-03-30 after Phase 3 completion*
