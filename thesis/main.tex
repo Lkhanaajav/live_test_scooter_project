@@ -392,7 +392,9 @@ The gaps identified in this chapter motivate the system design described in Chap
 \label{ch:system_design}
 % =====================================================================
 
-This chapter describes the complete navigation system, from monocular RGB perception through path planning to closed-loop vehicle control. The system avoids reliance on GPS or external localization for local path following, leveraging a modular pipeline of interpretable geometric and learning-based modules. Sections~\ref{sec:hardware}--\ref{sec:temporal_smoothing} cover perception and planning; Sections~\ref{sec:object_detection}--\ref{sec:safety} cover obstacle detection, GPS integration, steering, and safety mechanisms. Figure~\ref{fig:pipeline_diagram} illustrates the overall architecture.
+This chapter describes a modular sidewalk-navigation pipeline that evolved through four design iterations, each driven by a specific failure mode or constraint discovered in the preceding one. The first iteration (v1) constructed paths from a medial-axis skeleton in BEV coordinates---an intuitive approach that proved noise-sensitive and computationally expensive. The second (v2) replaced skeleton extraction with distance-transform ridge following, eliminating graph construction but inheriting the full cost of BEV computation. The third (v3) bypassed BEV entirely for straight-ahead corridor following, exploiting the observation that perspective projection preserves the lateral ordering of mask boundaries in image space. The fourth (v4) returned to BEV for corridor verification, scoring a small bank of pre-computed template arcs against the distance-transform corridor rather than constructing paths from noisy pixels.
+
+Two domains therefore coexist in the final system: BEV provides the metric-scale coordinates needed for corridor extraction and turn planning, while image-space processing offers efficient straight-ahead path following. The chapter presents each pipeline component with its design rationale---the constraint or trade-off that motivated the chosen approach---before describing the technical details. Sections~\ref{sec:hardware}--\ref{sec:temporal_smoothing} cover perception and planning; Sections~\ref{sec:object_detection}--\ref{sec:safety} cover obstacle detection, GPS integration, steering, and safety mechanisms. Figure~\ref{fig:pipeline_diagram} illustrates the overall architecture.
 
 \begin{figure}[t]
   \centering
@@ -406,6 +408,8 @@ This chapter describes the complete navigation system, from monocular RGB percep
 \section{Hardware Platform}
 \label{sec:hardware}
 
+The hardware platform imposes the root constraint from which all subsequent design choices cascade. A single monocular camera operating under a 15\,W power budget limits the model size, inference strategy, and sensing modality available to the system. The absence of a depth sensor, stereo camera, LiDAR, or IMU means that all three-dimensional reasoning must be derived from calibrated geometry---specifically, a planar homography---rather than from direct depth measurement.
+
 The experimental platform is an electric scooter equipped with a single forward-facing monocular RGB camera rigidly mounted to the handlebar stem (Figure~\ref{fig:scooter_hw}). The camera captures 1920$\times$1080 video at 30~FPS. No depth sensor, stereo camera, LiDAR, or IMU is used. The target deployment hardware is a Raspberry Pi~4 or Rock~5B class single-board computer; all development and evaluation were conducted on a workstation with an Intel Core~i7 CPU and NVIDIA GPU, with runtime measurements reported for CPU-only inference to reflect embedded deployment conditions.
 
 
@@ -413,15 +417,19 @@ The experimental platform is an electric scooter equipped with a single forward-
 \section{Segmentation Module and Supervision Strategy}
 \label{sec:segmentation}
 
+The real-time constraint described in Section~\ref{sec:hardware}---sustaining at least 10\,Hz on a Raspberry Pi~4---imposes a strict parameter budget on the segmentation model. SegFormer-B0 (3.7M parameters) achieves sub-50\,ms inference on CPU, leaving approximately 50\,ms for all downstream processing (BEV projection, path planning, obstacle detection, and control). Larger variants in the SegFormer family, such as B2 (24M parameters) and B5 (84.7M parameters), consume the entire per-frame budget on segmentation alone and are therefore not viable for embedded deployment. The choice of SegFormer-B0 is therefore not a preference but a constraint imposed by the hardware platform.
+
+A second challenge arises from the limited training data available for sidewalk segmentation. Small models trained on a few hundred hand-labeled frames tend to produce noisy masks with inconsistent boundaries. Early iterations of this work addressed this limitation through a teacher--student knowledge distillation framework, initially using a SegFormer-B2 teacher. That configuration yielded a student IoU of 0.758 on hand-annotated evaluation frames (Table~\ref{tab:seg_comparison}). Switching the teacher to a high-capacity OneFormer Swin-L~\cite{oneformer} model pre-trained on ADE20K raised the student IoU to 0.946 while simultaneously reducing inference latency from 18.9\,ms to 11.7\,ms---a consequence of improved pseudo-label quality enabling the student to learn cleaner decision boundaries. This teacher--student progression motivates the supervision strategy described in the subsections that follow.
+
 The first stage performs pixel-wise segmentation of sidewalk regions from monocular RGB input. This module is critical for all downstream steps and must balance segmentation quality with real-time efficiency on embedded systems.
 
-We adopt \textbf{SegFormer}~\cite{segformer} as our backbone architecture due to its strong performance on urban benchmarks and adaptability across model scales. Unlike conventional encoder--decoder networks, SegFormer combines a hierarchical Transformer-based encoder with a multi-scale MLP decoder, achieving competitive accuracy without positional encodings or complex upsampling. For deployment, we use \textbf{SegFormer-B0} (3.7M parameters) for its low latency and memory footprint.
+\textbf{SegFormer}~\cite{segformer} serves as the backbone architecture due to its strong performance on urban benchmarks and adaptability across model scales. Unlike conventional encoder--decoder networks, SegFormer combines a hierarchical Transformer-based encoder with a multi-scale MLP decoder, achieving competitive accuracy without positional encodings or complex upsampling. For deployment, \textbf{SegFormer-B0} (3.7M parameters) is used for its low latency and memory footprint.
 
 
 \subsection{Teacher--Student Supervision}
 \label{sec:teacher_student}
 
-Small models trained on limited data often produce noisy masks. To mitigate this, we employ a semi-supervised teacher--student framework. We explored two teacher architectures across our design iterations:
+Small models trained on limited data often produce noisy masks. To mitigate this, a semi-supervised teacher--student framework is employed. Two teacher architectures were explored across the design iterations:
 
 \begin{itemize}[nosep]
   \item \textbf{Iteration~1:} A SegFormer-B2 teacher (24M parameters) fine-tuned on 300 hand-labeled frames, generating pseudo-labels on 2,300 unlabeled frames.
@@ -450,7 +458,7 @@ y_i^{\text{hand}}, & \text{if hand-labeled} \\
 \tilde{y}_i^{\text{pseudo}}, & \text{otherwise}
 \end{cases}
 \end{equation}
-Our best-performing student was trained on 1,419 image--mask pairs (699 from earlier sequences plus 720 newly extracted frames from four additional campus videos).
+The best-performing student was trained on 1,419 image--mask pairs (699 from earlier sequences plus 720 newly extracted frames from four additional campus videos).
 
 
 \subsection{Loss Function}
@@ -473,7 +481,9 @@ Table~\ref{tab:training_progression} summarizes the segmentation model iteration
 \section{Resolution Trade-Off Analysis}
 \label{sec:resolution}
 
-To balance accuracy and real-time performance, we conducted a resolution sweep using SegFormer-B0 on CPU. Table~\ref{tab:segformer_fps} reports latency and throughput. Lower resolutions ($320{\times}180$ and below) produced masks that were overly coarse, fragmenting continuous sidewalk segments. Higher resolutions ($960{\times}540$+) incurred prohibitive latency. We selected $640{\times}360$ as a practical operating point: accurate segmentation at sub-\SI{50}{ms} inference.
+Input resolution directly trades segmentation quality against inference latency, and in a real-time pipeline this trade-off propagates to every downstream module: a coarser mask degrades BEV corridor extraction, while a finer mask may consume the entire frame budget before path planning begins. Identifying the resolution sweet spot is therefore a prerequisite for the rest of the system design.
+
+To balance accuracy and real-time performance, a resolution sweep was conducted using SegFormer-B0 on CPU. Table~\ref{tab:segformer_fps} reports latency and throughput. Lower resolutions ($320{\times}180$ and below) produced masks that were overly coarse, fragmenting continuous sidewalk segments. Higher resolutions ($960{\times}540$+) incurred prohibitive latency. The selected operating point is $640{\times}360$: accurate segmentation at sub-\SI{50}{ms} inference.
 
 \begin{table}[h]
 \centering
