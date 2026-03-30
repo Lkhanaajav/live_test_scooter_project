@@ -1038,10 +1038,13 @@ These results do not imply that BEV processing should be abandoned.  As the iter
 
 
 % -----------------------------------------------------------------
-\section{BEV Fragility Analysis}
+\section{Monocular BEV Projection is Fragile as Primary Planning Domain}
+\label{sec:claim_bev_fragility}
 \label{sec:bev_fragility_results}
 
-Beyond the latency disadvantage, BEV-only planning exhibits a critical reliability failure in monocular settings. In a profiled run of 4,407 frames with the baseline segmentation model and full BEV pipeline, 99.3\% of frames produced no valid BEV path (Table~\ref{tab:bev_fragility}).
+This section examines the claim that monocular BEV projection, while useful for metric-scale reasoning, is unreliable as the primary planning domain for straight-ahead sidewalk following.  If supported, this finding motivates the dual-domain architecture adopted in v4: BEV for corridor validation and turn geometry, image-space for primary path following.
+
+In a profiled run of 4,407 frames with the baseline segmentation model and the full BEV pipeline, 99.3\% of frames produced no valid BEV path (Table~\ref{tab:bev_fragility}).  The mean BEV mask occupancy ratio was 0.0002---effectively empty.
 
 \begin{table}[h]
 \centering
@@ -1066,103 +1069,23 @@ Mean BEV mask occupancy ratio & 0.0002 \\
   \label{fig:bev_fragility}
 \end{figure}
 
-The root cause is geometric: monocular perspective projection maps a narrow forward-view strip into the BEV grid, leaving most of the BEV frame empty. The distance transform and skeleton algorithms then operate on a tiny sliver of occupied pixels, frequently failing to produce a connected path of sufficient length. This fragility is fundamental to the monocular viewpoint---it cannot be resolved by better segmentation alone, as the oracle-mask experiments confirm.
+The root cause is geometric: monocular perspective projection maps a narrow forward-view strip into the BEV grid, leaving most of the BEV frame empty.  The distance transform and skeleton algorithms then operate on a tiny sliver of occupied pixels, frequently failing to produce a connected path of sufficient length.  This fragility is fundamental to the monocular viewpoint---it cannot be resolved by better segmentation alone, as the oracle-mask experiments in Section~\ref{sec:claim_planning_domain} confirm: even with ground-truth masks, BEV planning produces higher lateral error and lower inside-GT ratio than image-space methods.
+
+\subsection{Conclusion}
+
+The evidence presented in this section supports the claim that monocular BEV projection is fragile as the primary planning domain.  A 99.3\% frame failure rate in a representative profiled sequence, combined with the oracle-mask results from Section~\ref{sec:claim_planning_domain}, indicates that the BEV domain introduces systematic error beyond what can be attributed to segmentation quality.
+
+This fragility does not render BEV processing without value.  As Claim~5 demonstrates, the final pipeline retains BEV projection for corridor extraction and turn validation, where metric-scale reasoning is essential.  The evidence suggests that the role of BEV should be verification of pre-computed candidates rather than primary path discovery.
 
 
 % -----------------------------------------------------------------
-\section{System Runtime Analysis}
-\label{sec:res_runtime}
-
-Table~\ref{tab:runtime_comparison} compares per-module runtimes for the BEV pipeline and the recommended image-space pipeline. The image-space architecture eliminates BEV warp and runs the planner in \SI{2.2}{ms} instead of \SI{380.3}{ms}, achieving over 59~FPS on CPU.
-
-\begin{table}[h]
-\centering
-\caption{Per-module runtime comparison at $640{\times}360$ (CPU-only).}
-\label{tab:runtime_comparison}
-\begin{threeparttable}
-\begin{tabular}{lcc}
-\toprule
-Module & BEV Skeleton & Image-Space \\
-\midrule
-SegFormer Inference   & 11.7\,ms & 11.7\,ms \\
-Mask Refinement       & 8.5\,ms & 3.0\,ms\tnote{$\dagger$} \\
-BEV Projection        & 0.9\,ms & ---      \\
-BEV Cleanup           & 14.6\,ms & ---     \\
-Planner               & 380.3\,ms & 2.2\,ms \\
-\midrule
-Total                 & 416.0\,ms & 16.9\,ms \\
-FPS                   & 2.4       & \textbf{59.2}  \\
-\bottomrule
-\end{tabular}
-\begin{tablenotes}
-\small
-\item[$\dagger$] Image-space mode skips BEV-specific cleanup stages.
-\end{tablenotes}
-\end{threeparttable}
-\end{table}
-
-\begin{figure}[h]
-  \centering
-  \includegraphics[width=\columnwidth]{runtime_breakdown.png}
-  \caption{Per-module runtime comparison. The image-space architecture eliminates BEV overhead and reduces planner cost by $173\times$, achieving 59~FPS vs.\ 2.4~FPS.}
-  \label{fig:runtime_breakdown}
-\end{figure}
-
-
-Table~\ref{tab:runtime_offenders} ranks the major runtime offenders, guiding deployment optimization. The dominant cost in the BEV pipeline is the planner itself, not display or I/O.
-
-\begin{table}[h]
-\centering
-\caption{Runtime offenders ranked by cost.}
-\label{tab:runtime_offenders}
-\begin{tabular}{lrl}
-\toprule
-Component & Cost (ms) & Recommendation \\
-\midrule
-BEV DT Planner        & 926.8 & Replace with img-space \\
-BEV Graph Planner      & 380.3 & Replace with img-space \\
-YOLO Detection (CPU)   & 39.0  & Gate or GPU \\
-BEV Warp + Cleanup     & 15.5  & Skip in img mode \\
-Seg ($512{\times}288$) & 75.3  & Use $640{\times}360$ \\
-Predictor disabled     & +73.0 & Always enable \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-
-Table~\ref{tab:runtime_configs} shows profiled runtimes under different system configurations.
-
-\begin{table}[h]
-\centering
-\caption{System-level runtime under different configurations (4,407-frame profiled run, $512{\times}288$ input).}
-\label{tab:runtime_configs}
-\begin{tabular}{lcccc}
-\toprule
-Configuration & FPS & Seg (ms) & Det (ms) & BEV (ms) \\
-\midrule
-No detection, predictor on    & 25.3 & 20.3 & --- & 11.0 \\
-GPU detection, predictor on   & 20.1 & 17.0 & 12.2 & 13.4 \\
-CPU detection, predictor on   & 12.2 & 18.8 & 39.0 & 14.6 \\
-No detection, predictor off   & 8.9  & 75.3 & --- & 29.5 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-
-% -----------------------------------------------------------------
-\section{Temporal Smoothing Evaluation}
-\label{sec:smoother_results}
-
-The EMA temporal smoother was tuned via a grid search over 35 combinations ($\alpha \in \{0.25, \ldots, 0.65\}$, $c_\text{thresh} \in \{0.20, \ldots, 0.50\}$). With the final segmentation model (\texttt{my-segformer-road}, 99.3\% raw stability), $\alpha = 0.65$ and $c_\text{thresh} = 0.20$ achieved 99.6\% temporally stable frames on a 500-frame evaluation window.
-
-
-
-
-% -----------------------------------------------------------------
-\section{Template Arc Planner Evaluation}
+\section{Template-Approval Planning is More Stable than Skeleton Discovery}
+\label{sec:claim_template_approval}
 \label{sec:template_eval}
 
-Section~\ref{sec:template_planner} describes the template arc planner; this section reports its evaluation against the skeleton-graph baseline. Both planners were run on the same calibrated 220-frame June clip with identical segmentation and BEV configuration, detection disabled for deterministic replay.
+This section examines the claim that a propose-and-verify template approach produces more stable paths than constructing paths from scratch via skeleton extraction.  If supported, this finding validates the v4 design iteration's shift from path discovery to path verification, as described in Section~\ref{sec:template_planner}.
+
+Both planners were evaluated on the same calibrated 220-frame June clip with identical segmentation and BEV configuration, detection disabled for deterministic replay.  Table~\ref{tab:template_eval} reports the comparison.
 
 \begin{table}[h]
 \centering
@@ -1185,14 +1108,74 @@ Mean speed [m/s]           & 1.500 & 1.067 \\
 \end{tabular}
 \end{table}
 
-The template planner reduces mean absolute heading error by 40.6\% and halves path-source switches, confirming that the fixed arc bank with family reuse produces smoother, more stable control output than per-frame graph search. The template success rate of 62.3\% indicates that in roughly one-third of frames the corridor evidence is insufficient for template approval and the planner falls back to graph or hold behavior. The low template-family switch count (3 over 220 frames) demonstrates effective reuse hysteresis. The lower mean speed (1.067 vs.\ 1.500~m/s) reflects the planner's confidence-modulated slowdown during low-evidence windows---a deliberate safety trade-off.
+The template planner reduces mean absolute heading error by 40.6\% (from $1.190^\circ$ to $0.707^\circ$) and halves path-source switches (36~$\to$~18), confirming that the fixed arc bank with family reuse produces smoother, more stable control output than per-frame graph search.  The template success rate of 62.3\% indicates that in roughly one-third of frames the corridor evidence is insufficient for template approval and the planner falls back to graph or hold behavior.  The low template-family switch count (3 over 220 frames) demonstrates effective reuse hysteresis.  The lower mean speed (1.067 vs.\ 1.500~m/s) reflects the planner's confidence-modulated slowdown during low-evidence windows---a deliberate safety trade-off.
+
+\subsection{Conclusion}
+
+The evidence supports the claim that template-approval planning achieves substantially lower heading error and fewer path discontinuities than skeleton-based path discovery.  The propose-and-verify paradigm eliminates noise-sensitive graph construction, replacing it with scoring of geometrically smooth arc candidates against the distance-transform corridor.  This comparison is limited to a single 220-frame clip; broader validation across extended sequences is provided by Claim~5 (the 1,800-frame accepted run, where template-approval achieves 100\% success rate).
 
 
 % -----------------------------------------------------------------
-\section{Waypoint-Turn Planner Evaluation}
+\section{Complete Pipeline Sustains Stable Real-Time Operation}
+\label{sec:claim_system_validation}
+
+This section examines whether the complete pipeline---integrating the findings of Claims~1--4---sustains stable real-time operation across extended video sequences.  If supported, this result provides end-to-end validation of the design iteration narrative: from fragile BEV skeleton planning (v1) to stable dual-domain template-approval with turn planning (v4).
+
+
+\subsection{Runtime Analysis}
+
+Table~\ref{tab:runtime_merged} compares per-module runtimes for the BEV pipeline and the image-space pipeline at $640\times360$ resolution on CPU.  The planner module dominates the difference: image-space midpoint planning costs 2.2\,ms compared to 380.3\,ms for the BEV skeleton-graph planner, a $173\times$ speedup.
+
+\begin{table}[h]
+\centering
+\caption{Per-module runtime comparison at $640{\times}360$ (CPU-only), with the planner module showing the dominant speedup from image-space processing.}
+\label{tab:runtime_merged}
+\begin{tabular}{lccc}
+\toprule
+Module & BEV Pipeline & Image-Space & Note \\
+\midrule
+SegFormer Inference   & 11.7\,ms & 11.7\,ms & Shared \\
+Mask Refinement       & 8.5\,ms  & 3.0\,ms  & Img skips BEV cleanup \\
+BEV Projection        & 0.9\,ms  & ---      & \\
+BEV Cleanup           & 14.6\,ms & ---      & \\
+Planner               & 380.3\,ms & 2.2\,ms & $173\times$ speedup \\
+\midrule
+Total                 & 416.0\,ms & 16.9\,ms & \\
+FPS                   & 2.4       & \textbf{59.2}  & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\columnwidth]{runtime_breakdown.png}
+  \caption{Per-module runtime comparison. The image-space architecture eliminates BEV overhead and reduces planner cost by $173\times$, achieving 59~FPS vs.\ 2.4~FPS.}
+  \label{fig:runtime_breakdown}
+\end{figure}
+
+Table~\ref{tab:runtime_configs} shows profiled runtimes under different system configurations, illustrating the impact of detection mode and predictive frame reuse on overall throughput.
+
+\begin{table}[h]
+\centering
+\caption{System-level runtime under different configurations (4,407-frame profiled run, $512{\times}288$ input).}
+\label{tab:runtime_configs}
+\begin{tabular}{lcccc}
+\toprule
+Configuration & FPS & Seg (ms) & Det (ms) & BEV (ms) \\
+\midrule
+No detection, predictor on    & 25.3 & 20.3 & --- & 11.0 \\
+GPU detection, predictor on   & 20.1 & 17.0 & 12.2 & 13.4 \\
+CPU detection, predictor on   & 12.2 & 18.8 & 39.0 & 14.6 \\
+No detection, predictor off   & 8.9  & 75.3 & --- & 29.5 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+\subsection{Waypoint-Turn Planner Validation}
 \label{sec:waypoint_turn_eval}
 
-The waypoint-turn planner (Section~\ref{sec:waypoint_turn_method}) was evaluated using a scheduled intent window on a 300-frame replay of VID\_017 (March 2026 campus sidewalk). The intent schedule commanded ``right'' for frames 20--30, simulating a GPS-triggered junction maneuver.
+The waypoint-turn planner (Section~\ref{sec:waypoint_turn_method}) was evaluated using a scheduled intent window on a 300-frame replay of VID\_017 (March 2026 campus sidewalk).  The intent schedule commanded ``right'' for frames 20--30, simulating a GPS-triggered junction maneuver.
 
 \begin{table}[h]
 \centering
@@ -1215,14 +1198,13 @@ Mean FPS                        & 12.86 \\
 \end{tabular}
 \end{table}
 
-The planner activates the waypoint-turn path on frames 24--25 (when corridor support on the commanded side exceeds the acquisition gate of 0.40) and maintains hold behavior on the surrounding frames 20--23 and 26--30 (where support meets the sustain threshold of 0.25 but the full path does not pass the containment gate). Outside the intent window, the system cleanly returns to template following. The zero containment failure rate confirms that the turn containment guard (Section~\ref{sec:turn_containment_method}) successfully prevents unsafe turn paths from reaching the controller.
+The planner activates the waypoint-turn path on frames 24--25 (when corridor support on the commanded side exceeds the acquisition gate of 0.40) and maintains hold behavior on the surrounding frames 20--23 and 26--30 (where support meets the sustain threshold of 0.25 but the full path does not pass the containment gate).  Outside the intent window, the system cleanly returns to template following.  The zero containment failure rate confirms that the turn containment guard (Section~\ref{sec:turn_containment_method}) successfully prevents unsafe turn paths from reaching the controller.
 
 
-% -----------------------------------------------------------------
-\section{Full-Length Accepted Run}
+\subsection{Full-Length Accepted Run}
 \label{sec:accepted_run}
 
-To validate end-to-end pipeline stability over an extended sequence, we ran the complete perception-to-path stack on VID\_017 for 1800 frames (stride 4, detection disabled, predictor off). Table~\ref{tab:accepted_run} summarizes the results.
+The complete perception-to-path stack was evaluated on VID\_017 for 1800 frames (stride~4, detection disabled, predictor off).  Table~\ref{tab:accepted_run} summarizes the results.
 
 \begin{table}[h]
 \centering
@@ -1243,22 +1225,33 @@ Mean pipeline time     & \SI{69.5}{ms} \\
 \end{tabular}
 \end{table}
 
-The template planner achieved 100\% success across all 1800 frames---a substantial improvement over the 62.3\% template rate observed in the earlier 220-frame evaluation (Table~\ref{tab:template_eval}). The difference is attributable to two factors: (i)~the improved segmentation model (OneFormer-trained, IoU 0.954 vs.\ the earlier checkpoint), and (ii)~the use of stride~4, which reduces temporal noise by processing every fourth frame. The 9.97~FPS throughput meets the 10~Hz real-time requirement, confirming deployment viability on CPU hardware.
+The template planner achieved 100\% success across all 1800 frames---a substantial improvement over the 62.3\% template rate observed in the earlier 220-frame evaluation (Table~\ref{tab:template_eval}).  The difference is attributable to two factors: (i)~the improved segmentation model (OneFormer-trained, IoU~0.954 vs.\ the earlier baseline), and (ii)~the use of stride~4, which reduces temporal noise by processing every fourth frame.  The 9.97~FPS throughput meets the 10~Hz real-time requirement, confirming deployment viability on CPU hardware.
 
 
-% -----------------------------------------------------------------
-\section{Overnight Containment Validation}
+\subsection{Overnight Containment Validation}
 \label{sec:overnight_eval}
 
 An overnight automated evaluation systematically tested the turn containment guard under three configurations on VID\_017 with persistent right intent (300 frames):
 
 \begin{enumerate}[nosep]
   \item \textbf{Strict guard} (ignore first 1 sample): rejected all turn paths as too strict, falling back entirely to DT corridor.
-  \item \textbf{Projection recovery}: attempted to project samples back into the mask before refitting. Insufficient alone because failures originated from near-ego BEV mask edge noise, not far-field arc drift.
+  \item \textbf{Projection recovery}: attempted to project samples back into the mask before refitting.  Insufficient alone because failures originated from near-ego BEV mask edge noise, not far-field arc drift.
   \item \textbf{Near-ego exclusion} (ignore first 4 samples): recovered the original waypoint-turn window while achieving 0\% containment failure rate.
 \end{enumerate}
 
-The final \texttt{TURN\_PATH\_IGNORE\_FIRST\_SAMPLES\,=\,4} parameter accounts for the noisy BEV bottom-edge zone present when ego anchoring is disabled. With the scheduled intent window (right intent only on frames 20--30), the system achieved clean template-to-turn-to-template transitions with no containment failures, no path-outside pixels, and a minimum boundary clearance of \SI{4.775}{\px}.
+The final \texttt{TURN\_PATH\_IGNORE\_FIRST\_SAMPLES\,=\,4} parameter accounts for the noisy BEV bottom-edge zone present when ego anchoring is disabled.  With the scheduled intent window (right intent only on frames 20--30), the system achieved clean template-to-turn-to-template transitions with no containment failures, no path-outside pixels, and a minimum boundary clearance of \SI{4.775}{\px}.
+
+
+\subsection{Conclusion}
+
+The complete pipeline achieves 9.97~FPS on the 1800-frame accepted run, meeting the 10~Hz real-time target within measurement noise.  The template-approval planner is used for 100\% of frames in the accepted run, and the waypoint-turn planner maintains a 0\% containment failure rate with the safety guard active.  These results validate the design iteration narrative: from fragile BEV skeleton planning (v1, 99.3\% frame failure) through intermediate iterations to stable dual-domain template-approval with turn safety verification (v4, 100\% path availability at 9.97~FPS).
+
+
+% -----------------------------------------------------------------
+\section{Temporal Smoothing Evaluation}
+\label{sec:smoother_results}
+
+The EMA temporal smoother was tuned via a grid search over 35 combinations ($\alpha \in \{0.25, \ldots, 0.65\}$, $c_\text{thresh} \in \{0.20, \ldots, 0.50\}$).  With the final segmentation model (\texttt{my-segformer-road}, 99.3\% raw stability), $\alpha = 0.65$ and $c_\text{thresh} = 0.20$ achieved 99.6\% temporally stable frames on a 500-frame evaluation window.
 
 
 % =====================================================================
