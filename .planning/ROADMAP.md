@@ -62,7 +62,7 @@ Plans:
 
 Plans:
 - [x] 03-01-PLAN.md — Rewrite System Design with WHY-before-WHAT design rationale for all components
-- [ ] 03-02-PLAN.md — Restructure Evaluation into 5 claim-driven sections with iteration table and merged runtime
+- [x] 03-02-PLAN.md — Restructure Evaluation into 5 claim-driven sections with iteration table and merged runtime
 
 **Success Criteria:**
 1. Every methodology section explains WHY before WHAT (design rationale present for all 5 planners, teacher-student choice, BEV parameters)
