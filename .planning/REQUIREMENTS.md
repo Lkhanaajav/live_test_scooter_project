@@ -7,7 +7,7 @@
 
 ### Structure
 
-- [ ] **STRUCT-01**: Merge Closed-Loop chapter into System Design — 6 total chapters
+- [x] **STRUCT-01**: Merge Closed-Loop chapter into System Design — 6 total chapters
 - [ ] **STRUCT-02**: Restructure Results chapter around claims (claim-evidence-conclusion pattern)
 - [ ] **STRUCT-03**: Add transition sentences between all sections and chapters
 - [ ] **STRUCT-04**: Fix iteration count — consistently say "four design iterations"
@@ -66,7 +66,7 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| STRUCT-01 | Phase 1 | Pending |
+| STRUCT-01 | Phase 1 | Complete |
 | STRUCT-02 | Phase 3 | Pending |
 | STRUCT-03 | Phase 5 | Pending |
 | STRUCT-04 | Phase 1 | Pending |
