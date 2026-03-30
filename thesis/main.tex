@@ -1262,58 +1262,88 @@ The EMA temporal smoother was tuned via a grid search over 35 combinations ($\al
 
 \section{Interpretation of Key Findings}
 
-The central finding of this thesis is that \emph{simple image-space geometry consistently outperforms the more complex BEV pipeline} in both accuracy and latency for monocular sidewalk navigation. This result is both an engineering improvement and a stronger scientific contribution than the initial hypothesis (that BEV skeleton planning would be the best approach).
+The central finding of this thesis is that \emph{simple image-space geometry consistently outperforms the more complex BEV pipeline} in both accuracy and latency for monocular sidewalk navigation.  This result is both an engineering improvement and a scientific contribution: the four-iteration design progression (Table~\ref{tab:iteration_progression}) demonstrates that the image-space advantage is not an artifact of a single implementation but rather a robust trend that persists across planning strategies, segmentation models, and evaluation scales.
 
-The image-space midpoint planner achieves 14.3~px lateral center error at 2.2~ms---a $421\times$ speedup over BEV DT planning (65.0~px, 926.8~ms). This advantage persists even with oracle masks, confirming that the BEV planning domain itself introduces error rather than just inheriting segmentation noise.
+The image-space midpoint planner achieves 14.3~px lateral center error at 2.2~ms per frame---an approximately $421\times$ speedup over BEV distance-transform planning (65.0~px, 926.8~ms).  These results indicate that the accuracy--latency trade-off strongly favors image-space processing for straight-ahead corridor following.  The advantage persists even with oracle masks (Table~\ref{tab:oracle_comparison}), suggesting that the BEV planning domain itself introduces error rather than merely inheriting segmentation noise.  The iteration progression from skeleton-graph (v1) through distance-transform ridge (v2) to image-space midpoint (v3) and template-approval (v4) further suggests that each attempt to improve BEV-domain planning encountered the same fundamental geometric constraint, ultimately motivating the shift to image-space as the primary planning domain.
 
 
 \section{Why Image-Space Outperforms BEV}
 
-The fundamental issue is geometric coverage. A monocular camera with typical field of view (55--70$^\circ$) maps only a narrow trapezoidal strip of the ground plane into the BEV grid. At typical scooter camera heights (0.8--1.2~m), most of the 600$\times$600 BEV grid is empty. The distance transform and skeleton algorithms then operate on a tiny sliver of occupied pixels---often less than 0.02\% of the BEV area---frequently failing to produce a connected path of sufficient length.
+The fundamental issue is geometric coverage.  A monocular camera with typical field of view (55--70$^\circ$) maps only a narrow trapezoidal strip of the ground plane into the BEV grid.  At typical scooter camera heights (0.8--1.2~m), most of the 600$\times$600 BEV grid is empty.  The distance transform and skeleton algorithms then operate on a tiny sliver of occupied pixels---often less than 0.02\% of the BEV area---frequently failing to produce a connected path of sufficient length.
 
-Image-space planning avoids this issue entirely. The segmentation mask fills a substantial portion of the image (typically 20--60\% of pixels), providing dense geometric information for boundary detection and midpoint extraction. The per-row processing naturally follows the camera's perspective geometry, and no lossy coordinate transformation is needed.
+This coverage deficit is a fundamental geometric property of monocular perspective projection, not an implementation artifact.  Even with perfect segmentation input (oracle masks, Table~\ref{tab:oracle_comparison}), BEV-domain planning remains inferior to image-space alternatives: BEV DT achieves 69.2~px center error with oracle masks compared to 15.2~px for the image-space midpoint planner under identical conditions.  No amount of algorithmic improvement within the BEV domain can compensate for the information loss inherent in projecting a perspective image onto a metric ground plane through a single-camera homography.
 
-BEV projection also assumes flat ground and fixed camera pose. On real sidewalks, curbs, ramps, speed bumps, and camera vibration violate these assumptions, introducing geometric distortion that is absent in image-space processing.
+Image-space planning avoids this issue entirely.  The segmentation mask fills a substantial portion of the image (typically 20--60\% of pixels), providing dense geometric information for boundary detection and midpoint extraction.  The per-row processing naturally follows the camera's perspective geometry, and no lossy coordinate transformation is needed.
+
+BEV projection also assumes flat ground and fixed camera pose.  On real sidewalks, curbs, ramps, speed bumps, and camera vibration violate these assumptions, introducing geometric distortion that is absent in image-space processing.
 
 
 \section{Segmentation as a Necessary but Not Sufficient Condition}
 
-Better segmentation helps all planners: the improved model reduces temporal instability by 77\%, increases template success rate, and raises mask--path alignment across the board. However, BEV planning fails even with oracle masks (Table~\ref{tab:oracle_comparison}). Segmentation improvement has diminishing returns for BEV planning because the bottleneck is geometric coverage, not mask quality. In contrast, segmentation improvement directly and linearly benefits image-space planning.
+Better segmentation helps all planners: the improved model reduces temporal instability by 77\%, increases template success rate, and raises mask--path alignment across the board.  However, BEV planning fails even with oracle masks (Table~\ref{tab:oracle_comparison}).  These results suggest that segmentation improvement has diminishing returns for BEV planning because the bottleneck is geometric coverage, not mask quality.  In contrast, segmentation improvement directly and proportionally benefits image-space planning, where the mask occupies a substantial fraction of the image and boundary quality translates directly to path accuracy.
 
 
 \section{Template Planning and Turn Safety}
 
-The template arc planner and waypoint-turn planner address two different failure modes of the baseline system. The template planner targets \emph{heading jitter}: by selecting from a fixed arc bank with family reuse hysteresis instead of per-frame graph search, heading oscillation drops by 40.6\% and path-source switching drops by 50\%. This improvement arises because the arc bank restricts the solution space to smooth, ego-anchored trajectories that are inherently less noisy than pixel-level Dijkstra paths.
+The template-approval planner and waypoint-turn planner address two different failure modes of the baseline system.  The template-approval planner targets \emph{heading jitter}: by selecting from a fixed arc bank with family reuse hysteresis instead of per-frame graph search, heading oscillation drops by 40.6\% and path-source switching drops by 50\% (Table~\ref{tab:template_eval}).  This improvement arises because the arc bank restricts the solution space to smooth, ego-anchored trajectories that are inherently less noisy than pixel-level Dijkstra paths.
 
-The waypoint-turn planner targets \emph{junction navigation}: when GPS intent signals a turn, the corridor-support scan detects the opening and the circular arc provides a geometrically consistent maneuver path. The containment guard adds a critical safety layer by verifying the final committed path against the actual BEV mask---ensuring that planner confidence alone does not gate safety. The 0\% containment failure rate in validation suggests the guard is effective, though it is intentionally conservative: when a turn path clips the mask boundary, the system prefers safe hold behavior over an unsafe maneuver.
+The waypoint-turn planner targets \emph{junction navigation}: when GPS intent signals a turn, the corridor-support scan detects the opening and the circular arc provides a geometrically consistent maneuver path.  The containment guard adds a critical safety layer by verifying the final committed path against the actual BEV mask---ensuring that planner confidence alone does not gate safety.  The 0\% containment failure rate in validation suggests the guard is effective, though it is intentionally conservative: when a turn path clips the mask boundary, the system prefers safe hold behavior over an unsafe maneuver.
 
-The 1800-frame accepted run (100\% template success, 0.954 IoU) demonstrates that the combined system---improved segmentation, template planner, and waypoint-turn planner---can sustain stable operation over extended sequences. However, the validation remains concentrated on a single campus route (VID\_017), and broader generalization is not yet established.
+The 1800-frame accepted run (100\% template success, 0.954 IoU) demonstrates that the combined system---improved segmentation, template-approval planner, and waypoint-turn planner---can sustain stable operation over extended sequences.  However, the validation remains concentrated on a single campus route (VID\_017), and broader generalization is not yet established.
+
+
+\section{When Image-Space Planning Fails}
+\label{sec:failure_analysis}
+
+The image-space midpoint planner is designed for straight-ahead corridor following, and its geometric assumptions impose well-defined boundary conditions.  This section characterizes four scenarios in which the approach degrades, together with the mitigations that the overall system provides.
+
+\paragraph{Sharp turns.}
+The image-space midpoint planner extracts the lateral center of the segmentation mask independently in each image row, an assumption that holds when the sidewalk extends roughly forward from the camera.  At turn angles exceeding approximately 45$^\circ$, the mask bends laterally across the image and the per-row midpoint drifts toward the outside of the curve, producing paths that clip the inner boundary.  This failure mode motivates the template-approval planner and the waypoint-turn planner introduced in Sections~\ref{sec:template_planner} and~\ref{sec:waypoint_turn}, which plan in the BEV domain where curvature is explicitly represented.
+
+\paragraph{Narrow sidewalks.}
+When the sidewalk width falls below approximately one meter, the segmentation mask occupies only a few pixels laterally in the camera view.  In this regime, boundary detection becomes unreliable and the per-row midpoint exhibits high variance, as small segmentation errors shift the center by a proportionally large amount.  The temporal smoother bridges brief instabilities of this kind, and a wider camera field of view could reduce the frequency of such events by increasing the pixel budget allocated to narrow surfaces.
+
+\paragraph{Heavy occlusion.}
+When pedestrians, parked vehicles, or overhanging vegetation occlude more than approximately 60\% of the expected mask area, the remaining mask fragments and the per-row midpoint extraction produces discontinuous paths.  The temporal smoother can bridge brief occlusions by holding the previous stable path, but sustained mask loss triggers the segmentation stability gate (Section~\ref{sec:safety_mechanisms}), which caps the commanded speed until stable mask coverage is restored.
+
+\paragraph{Far-range distortion.}
+At distances beyond approximately eight meters from the camera, perspective compression reduces the lateral dimension of the sidewalk to a small number of pixels, making midpoint extraction imprecise.  This effect primarily affects the lookahead portion of the planned path rather than the near-field region that directly governs steering commands.  The eight-meter planning horizon adopted in this system is chosen in part to limit exposure to this far-range degradation.
+
+
+\section{Broader Implications for Monocular Navigation}
+\label{sec:broader_implications}
+
+The geometric coverage finding reported in this thesis---that image-space representations preserve more useful planning information than BEV for single-camera systems---is not specific to sidewalk navigation.  Any monocular corridor-following task faces the same fundamental constraint: a single perspective image maps a large fraction of the scene into image pixels, while a BEV projection concentrates the same information into a thin occupied strip surrounded by empty space.  Agricultural row following, indoor hallway navigation, and trail following on unstructured terrain all share this geometric property.  The results presented here suggest that image-space planning may offer a favorable accuracy--latency trade-off for these related domains as well, particularly on resource-constrained embedded platforms.
+
+The template-approval planning paradigm---scoring pre-computed geometric candidates against a sensory surface rather than constructing paths from scratch---represents a general propose-and-verify strategy applicable beyond sidewalk navigation.  This approach trades global optimality for computational efficiency and temporal stability, properties that are especially valuable on platforms with limited processing budgets.  The 40.6\% heading error reduction achieved by the template-approval planner over the skeleton-graph baseline (Table~\ref{tab:template_eval}) suggests that, for navigation tasks where the set of plausible trajectories is geometrically constrained, pre-computation and verification can outperform unconstrained path discovery.
+
+The 59~FPS CPU-only throughput of the recommended image-space architecture (Table~\ref{tab:runtime_configs}) demonstrates that competitive sidewalk navigation is achievable without GPU acceleration.  This result expands the deployment envelope for low-cost embedded platforms---including single-board computers, micro-controllers with camera interfaces, and battery-constrained mobile robots---that cannot accommodate the power and cost of a discrete GPU.  The common assumption that autonomous navigation requires GPU-accelerated deep learning for all pipeline components is not supported by the evidence presented here, at least for monocular corridor-following tasks with segmentation models compact enough for CPU inference.
 
 
 \section{Limitations}
 
 Several limitations qualify the findings of this thesis:
 
-\paragraph{Offline evaluation only.} All experiments are conducted offline on recorded video. The planned paths are evaluated against ground-truth masks but are never executed on the physical scooter. Path quality metrics (center error, inside-GT ratio) are necessary but not sufficient for navigation safety.
+\paragraph{Offline evaluation only.} All experiments are conducted offline on recorded video.  The planned paths are evaluated against ground-truth masks but are never executed on the physical scooter.  Path quality metrics (center error, inside-GT ratio) are necessary but not sufficient for navigation safety.
 
-\paragraph{Limited hand-annotated sample.} The planner comparison uses 32 hand-annotated frames---a common benchmark size in robotics, but small by machine learning standards. The full-video replay across 22,679 frames partially compensates, and trends are consistent across sequences.
+\paragraph{Limited hand-annotated sample.} The planner comparison uses 32 hand-annotated frames---a common benchmark size in robotics, but small by machine learning standards.  The full-video replay across 22,679 frames partially compensates, and trends are consistent across sequences.
 
-\paragraph{Fixed camera geometry.} All experiments use a single camera mount position and angle. The homography is calibrated for this specific configuration. Different camera heights, angles, or lens characteristics would require recalibration and may affect the relative performance of BEV-domain methods.
+\paragraph{Fixed camera geometry.} All experiments use a single camera mount position and angle.  The homography is calibrated for this specific configuration.  Different camera heights, angles, or lens characteristics would require recalibration and may affect the relative performance of BEV-domain methods.
 
-\paragraph{No explicit obstacle modeling.} YOLOv8n detection exists in the system but is not integrated into the planner cost function. Dynamic obstacles are handled only via implicit mask avoidance.
+\paragraph{No explicit obstacle modeling.} YOLOv8n detection exists in the system but is not integrated into the planner cost function.  Dynamic obstacles are handled only via implicit mask avoidance.
 
-\paragraph{Single campus environment.} All data comes from the University of Oklahoma campus. Generalization to other cities, surfaces (brick, gravel, dirt), weather conditions (rain, snow), and lighting (nighttime) is unknown.
+\paragraph{Single campus environment.} All data comes from the University of Oklahoma campus.  Generalization to other cities, surfaces (brick, gravel, dirt), weather conditions (rain, snow), and lighting (nighttime) is unknown.
 
-\paragraph{Conservative turn behavior.} The turn containment guard is intentionally conservative: if GPS intent remains latched after the maneuver window closes, the system prefers hold behavior rather than forcing a turn whose path leaves the mask. This design prioritizes safety over liveness but means that stale or stuck intent can cause unnecessary stops. The containment validation has been concentrated on VID\_017; behavior on videos 018--020 has not yet been verified.
+\paragraph{Conservative turn behavior.} The turn containment guard is intentionally conservative: if GPS intent remains latched after the maneuver window closes, the system prefers hold behavior rather than forcing a turn whose path leaves the mask.  This design prioritizes safety over liveness but means that stale or stuck intent can cause unnecessary stops.  The containment validation has been concentrated on VID\_017; behavior on videos 018--020 has not yet been verified.
 
 
 \section{Threats to Validity}
 
-\paragraph{Internal validity.} The same campus videos are used for both training and some evaluation sequences, though held-out splits and hand-annotated frames mitigate this concern. The temporal smoothing ablation uses the same EMA infrastructure being evaluated.
+\paragraph{Internal validity.} The same campus videos are used for both training and some evaluation sequences, though held-out splits and hand-annotated frames mitigate this concern.  The temporal smoothing ablation uses the same EMA infrastructure being evaluated.
 
 \paragraph{External validity.} Results may not generalize to non-campus environments, different scooter platforms, or significantly different camera configurations.
 
-\paragraph{Construct validity.} Center error and inside-GT ratio are proxies for navigation quality. A path that scores well on these metrics might still be unsuitable for real-world navigation if it is temporally unstable or induces uncomfortable steering behavior.
+\paragraph{Construct validity.} Center error and inside-GT ratio are proxies for navigation quality.  A path that scores well on these metrics might still be unsuitable for real-world navigation if it is temporally unstable or induces uncomfortable steering behavior.
 
 
 % =====================================================================
