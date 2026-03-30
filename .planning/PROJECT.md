@@ -19,7 +19,7 @@ A professional, cohesive thesis that tells a clear scientific story: simple imag
 
 ### Active
 
-- [ ] Complete restructure of thesis organization for logical flow and professional narrative
+- [x] Complete restructure of thesis organization for logical flow and professional narrative — Validated in Phase 1: Structural Reorganization
 - [ ] Full rewrite of all prose — authoritative academic tone, not lab-notes style
 - [ ] Rewrite evaluation to show design iteration progression (v1 skeleton → v2 DT → v3 image-space → v4 template arc)
 - [ ] Add proper baseline comparison (full pipeline vs. raw segmentation / naive approach)
@@ -60,7 +60,7 @@ A professional, cohesive thesis that tells a clear scientific story: simple imag
 3. **Missing "why"** — decisions are presented but rarely motivated; reader doesn't understand the design journey
 4. **Results are a list, not a story** — each section reports numbers but doesn't build a coherent argument
 5. **Writing quality varies** — some sections are polished (Discussion), others read like first drafts
-6. **Four iterations listed but three claimed** — Introduction says "three design iterations" but lists four
+6. ~~**Four iterations listed but three claimed** — Introduction says "three design iterations" but lists four~~ (Fixed in Phase 1)
 
 ### What's Actually Good (Keep/Build On)
 
@@ -108,4 +108,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-03-30 after initialization*
+*Last updated: 2026-03-30 after Phase 1 completion*
