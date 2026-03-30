@@ -224,7 +224,7 @@ This thesis addresses the problem of autonomous sidewalk-following navigation fo
 
 We adopt a modular pipeline that maps camera frames to controller-ready waypoints through interpretable stages: (i)~semantic segmentation via a lightweight SegFormer-B0 model trained with a teacher--student framework, (ii)~optional Bird's-Eye View (BEV) projection via a fixed calibrated homography, (iii)~mask refinement and component filtering, (iv)~path extraction via one of five planning methods spanning BEV and image-space domains, and (v)~temporal smoothing and control output.
 
-The system evolved through three design iterations, each backward-compatible with the previous:
+The system evolved through four design iterations, each backward-compatible with the previous:
 \begin{itemize}[nosep]
   \item \textbf{Iteration~1:} BEV skeleton-graph planner with SegFormer-B2 teacher.
   \item \textbf{Iteration~2:} BEV distance-transform corridor planner with enhanced mask refinement.
