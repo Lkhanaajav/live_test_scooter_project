@@ -15,7 +15,7 @@
 ### Narrative
 
 - [x] **NARR-01**: Rewrite Introduction with compelling opening hook, sharper problem statement, and stronger contribution framing
-- [ ] **NARR-02**: Rewrite Literature Review as themed synthesis — each section ends with the gap this thesis fills
+- [x] **NARR-02**: Rewrite Literature Review as themed synthesis — each section ends with the gap this thesis fills
 - [ ] **NARR-03**: Add design rationale ("why before what") for every methodology design choice
 - [ ] **NARR-04**: Frame all Results sections as claim-evidence-conclusion
 
@@ -71,7 +71,7 @@
 | STRUCT-03 | Phase 5 | Pending |
 | STRUCT-04 | Phase 1 | Complete |
 | NARR-01 | Phase 2 | Complete |
-| NARR-02 | Phase 2 | Pending |
+| NARR-02 | Phase 2 | Complete |
 | NARR-03 | Phase 3 | Pending |
 | NARR-04 | Phase 3 | Pending |
 | EVAL-01 | Phase 3 | Pending |
