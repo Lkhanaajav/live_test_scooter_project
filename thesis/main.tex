@@ -178,15 +178,13 @@ Finally, I thank my family for their unwavering support and encouragement during
 \chapter*{ABSTRACT}
 \addcontentsline{toc}{chapter}{ABSTRACT}
 
-Sidewalk-scale autonomy demands perception and planning systems that run reliably on compact, low-power hardware in cluttered, map-sparse environments. This thesis presents a monocular vision pipeline for sidewalk-following micro-mobility that progresses through four design iterations---from a skeleton-graph baseline through distance-transform corridor planning and a lightweight image-space architecture to a template arc planner with GPS-conditioned turn planning---and provides a systematic comparison of five path-planning methods across both bird's-eye view (BEV) and image-space domains.
+Autonomous sidewalk navigation for micro-mobility platforms requires perception and path planning that operate reliably on embedded, low-power hardware using only a monocular camera. This thesis presents a modular vision pipeline that evolved through four design iterations---from BEV skeleton-graph construction to template-approval planning---and provides a systematic comparison of five path-planning methods across bird's-eye view (BEV) and image-space domains. A semi-supervised teacher--student framework trains a compact SegFormer-B0 student (3.7M parameters, IoU 0.946 at \SI{11.7}{ms}) from OneFormer Swin-L pseudo-labels, providing the segmentation foundation for all downstream planning.
 
-A compact SegFormer-B0 student model (3.7M parameters), trained with a semi-supervised teacher--student framework using OneFormer Swin-L pseudo-labels, achieves a hand-annotated intersection-over-union (IoU) of 0.946 at \SI{11.7}{ms} per frame, improving over the baseline checkpoint (IoU 0.758, \SI{18.9}{ms}). In a controlled planner comparison on 32 hand-labeled frames from University of Oklahoma campus sidewalks, image-space midpoint planning achieves the lowest lateral center error (\SI{14.3}{\px}) at \SI{2.2}{ms}---a $421\times$ speedup over BEV distance-transform planning (\SI{926.8}{ms}, \SI{65.0}{\px} center error)---while maintaining comparable mask--path alignment (98.5\% vs.\ 98.6\%). A full-video replay across six campus sequences (\numprint{22679} frames) confirms that the improved segmentation reduces temporal instability from 1.46\% to 0.33\% and increases template-planner success rate from 73.7\% to 79.3\%.
+On 32 hand-annotated campus sidewalk frames, image-space midpoint planning achieves \SI{14.3}{\px} lateral center error at \SI{2.2}{ms} per frame---a $421\times$ speedup over the best BEV method (\SI{65.0}{\px} at \SI{926.8}{ms}). BEV-only planning proves fundamentally fragile under monocular projection: 99.3\% of frames in a 4{,}407-frame profiled run produced no valid BEV path due to insufficient mask coverage. Oracle-mask experiments confirm that this limitation is geometric rather than segmentation-related.
 
-A template arc planner further reduces mean heading error by 40.6\% (from $1.190^\circ$ to $0.707^\circ$) and halves path-source switches compared to the skeleton-graph baseline by selecting from a fixed arc bank with family-reuse hysteresis. For GPS-conditioned junction maneuvers, a waypoint-turn planner detects asymmetric road openings in the BEV mask and generates constant-curvature turn arcs gated by dual containment thresholds. A turn containment safety guard verifies the final control path against the BEV mask before execution, achieving 0\% containment failure rate in overnight validation. An 1800-frame accepted run achieves 100\% template success across all frames at a mean segmentation IoU of 0.954 and 9.97~FPS.
+A template-approval planner replaces the noise-sensitive skeleton-graph baseline, reducing mean heading error by 40.6\% and halving path-source switches through fixed-arc verification with family-reuse hysteresis. A GPS-conditioned waypoint-turn planner with a dual-threshold containment safety guard achieves 0\% containment failure rate in overnight validation.
 
-This thesis further demonstrates that BEV-only planning is fundamentally fragile in monocular settings: in one profiled run, 99.3\% of frames produced no valid BEV path due to insufficient mask coverage from the monocular viewpoint. The final recommended architecture---image-space midpoint primary, image-space distance-transform fallback, BEV reserved for visualization and turn planning---runs the full perception-to-path stack in under \SI{17}{ms} per frame on CPU (59~FPS), exceeding the 10~Hz real-time requirement for pedestrian-speed platforms.
-
-The system further integrates YOLOv8-nano obstacle detection, GPS waypoint navigation, and a serial command protocol for closed-loop scooter control, validated through live campus demonstrations.
+An 1800-frame accepted run sustains 100\% template success at a mean segmentation IoU of 0.954 and 9.97~FPS. The recommended dual-domain architecture---image-space primary with BEV reserved for corridor verification and turn planning---runs the full perception-to-path stack at 59~FPS on CPU, exceeding the 10~Hz real-time requirement for pedestrian-speed platforms. Future work targets closed-loop deployment on the physical scooter platform and cross-environment generalization beyond university campus sidewalks.
 
 \newpage
 
@@ -223,7 +221,7 @@ The system evolved through four design iterations, each backward-compatible with
   \item \textbf{Iteration~1:} BEV skeleton-graph planner with SegFormer-B2 teacher---constructing navigation graphs from noisy BEV pixels.
   \item \textbf{Iteration~2:} BEV distance-transform corridor planner with enhanced mask morphology---replacing graph construction with ridge-based path extraction.
   \item \textbf{Iteration~3:} Image-space midpoint and distance-transform planners with OneFormer Swin-L teacher---eliminating BEV dependency for straight-ahead path following.
-  \item \textbf{Iteration~4:} Template arc planner with GPS-conditioned waypoint-turn planner and containment safety guard---scoring pre-computed arc templates against BEV corridors rather than building paths from scratch.
+  \item \textbf{Iteration~4:} Template-approval planner with GPS-conditioned waypoint-turn planner and containment safety guard---scoring pre-computed arc templates against BEV corridors rather than building paths from scratch.
 \end{itemize}
 
 This work complements several active research threads while addressing gaps that each leaves open. End-to-end steering policies can achieve strong performance but are difficult to interpret and typically assume GPU-class hardware~\cite{e2e_nav_policies, viteri2024}. Dense monocular BEV reconstruction methods push accuracy but remain challenging to deploy on low-power platforms~\cite{zhao2024bev}. Classic semantic-mask corridor following is efficient in structured environments such as agricultural rows but does not explicitly expose intersection topology~\cite{orchard_seg_nav, row_nav_survey}. The approach taken in this thesis is monocular, transparent, and computationally light enough for CPU-only inference. To the author's knowledge, no prior work provides a systematic comparison of BEV-domain and image-space path planning for monocular sidewalk navigation, which is the primary empirical contribution of this thesis.
@@ -550,7 +548,7 @@ These stages are individually toggleable via configuration flags, allowing contr
 
 The path planning module underwent the most significant evolution across the four design iterations described in the chapter opening. The central lesson of this progression is that the planning \emph{domain}---BEV versus image-space---matters as much as the planning \emph{algorithm}. Early iterations attempted to \emph{discover} paths by constructing geometric structures (skeletons, ridges) from noisy BEV pixels; later iterations shifted to \emph{verifying} pre-computed candidates against a clean corridor representation. This section describes all five methods evaluated in Chapter~\ref{ch:evaluation}, presented in the order they were developed.
 
-Five path planning methods spanning two geometric domains are compared: three operating in BEV space and two in image space. All methods receive a binary sidewalk mask and produce a centerline trajectory.
+Five path planning methods spanning two geometric domains are compared: three operating in BEV space and two in image space. All methods receive a binary segmentation mask and produce a centerline trajectory.
 
 
 \subsection{BEV Skeleton-Graph Planner}
@@ -577,10 +575,10 @@ c(x,y) = \frac{1}{(d(x,y) + \varepsilon)^\alpha}
 where $d$ is the EDT value, $\varepsilon = 0.5$, and $\alpha = 1.5$, is minimized via Dijkstra's algorithm to find the globally maximum-clearance path. The resulting centerline is smoothed with a Savitzky--Golay filter (window size 9, polynomial order 2). This approach avoids the noise sensitivity of skeletonization but inherits the full cost of BEV computation plus the EDT and graph search.
 
 
-\subsection{BEV Template Arc Planner}
+\subsection{BEV Template-Approval Planner}
 \label{sec:template_planner}
 
-The template arc planner (v4) represents a fundamental shift in planning philosophy: from \emph{discovering} a path by constructing geometric structures from noisy pixels, to \emph{verifying} pre-computed candidates against a clean corridor. Instead of building a skeleton or tracing a ridge, a small bank of arc templates is proposed and each is scored against the distance-transform corridor. This eliminates the noise-sensitive graph and ridge construction steps entirely. Evaluation on 220 calibrated frames (Table~\ref{tab:template_eval}) indicates a 40.6\% reduction in mean heading error and 50\% fewer path-source switches compared to the skeleton-graph baseline---confirming that the fixed arc bank with family reuse hysteresis produces more stable control output than per-frame path construction. This is the planner used in the accepted 1,800-frame deployment run.
+The template-approval planner (v4, also referred to as the template arc planner) represents a fundamental shift in planning philosophy: from \emph{discovering} a path by constructing geometric structures from noisy pixels, to \emph{verifying} pre-computed candidates against a clean corridor. Instead of building a skeleton or tracing a ridge, a small bank of arc templates is proposed and each is scored against the distance-transform corridor. This eliminates the noise-sensitive graph and ridge construction steps entirely. Evaluation on 220 calibrated frames (Table~\ref{tab:template_eval}) indicates a 40.6\% reduction in mean heading error and 50\% fewer path-source switches compared to the skeleton-graph baseline---confirming that the fixed arc bank with family reuse hysteresis produces more stable control output than per-frame path construction. This is the planner used in the accepted 1,800-frame deployment run.
 
 A bank of predefined arc templates (straight, gentle-left, gentle-right, sharp-left, sharp-right) is scored against a corridor extracted from the DT ridge. Each template is evaluated by its containment within the segmented corridor and its smoothness. The highest-scoring template that passes a confidence gate becomes the planned path. This method trades generality for speed and interpretability: the arc bank is fixed and small, making runtime predictable.
 
@@ -604,7 +602,7 @@ The EDT is computed on the image-plane mask, and the maximum-distance ridge is t
 \subsection{GPS-Conditioned Waypoint-Turn Planner}
 \label{sec:waypoint_turn_method}
 
-While image-space methods suffice for straight-ahead corridor following, turn maneuvers require metric-scale arc geometry that only BEV coordinates can provide. The waypoint-turn planner therefore operates in BEV, using the corridor representation to fit and validate circular arcs for commanded turns. The containment guard described in the following subsection addresses the key safety concern: ensuring that the committed turn path stays within the drivable corridor before execution. Overnight validation testing achieved a 0\% containment failure rate, confirming that the guard reliably prevents off-corridor path commitment.
+While image-space methods suffice for straight-ahead corridor following, turn maneuvers require metric-scale arc geometry that only BEV coordinates can provide. The waypoint-turn planner therefore operates in BEV, using the corridor representation to fit and validate circular arcs for commanded turns. The containment guard described in the following subsection addresses the key safety concern: ensuring that the committed turn path stays within the BEV corridor before execution. Overnight validation testing achieved a 0\% containment failure rate, confirming that the guard reliably prevents off-corridor path commitment.
 
 When a GPS waypoint triggers a junction maneuver (left or right intent), the system activates a dedicated waypoint-turn planner that uses the BEV mask to detect and execute the commanded turn. The planner operates in five stages:
 
@@ -746,10 +744,10 @@ The pipeline is evaluated offline using five quantitative metrics:
 Intersection-over-union between the predicted binary mask and hand-annotated ground truth, computed per-frame and averaged.
 
 \paragraph{Lateral path-centering error.}
-For each sample point along the planned path, the lateral deviation from the geometric centerline is measured of the ground-truth sidewalk mask. Reported in pixels.
+For each sample point along the planned path, the lateral deviation from the geometric centerline of the ground-truth segmentation mask is measured. Reported in pixels.
 
 \paragraph{Mask--path alignment (inside-GT ratio).}
-The fraction of path pixels that fall within the ground-truth sidewalk mask:
+The fraction of path pixels that fall within the ground-truth segmentation mask:
 \begin{equation}
 \text{Alignment} = \frac{L_{\text{in}}}{L_{\text{total}}} \times 100\%
 \end{equation}
@@ -842,7 +840,7 @@ This section examines the claim that a high-capacity teacher model substantially
 \includegraphics[width=\linewidth]{bev_mask_raw.png}
 \caption{BEV projection}
 \end{subfigure}
-\caption{Segmentation pipeline stages. (a)~RGB input, (b)~raw sidewalk mask from SegFormer-B0, (c)~BEV projection of cleaned mask. Morphological filtering and connected-component analysis suppress spurs and disconnected blobs.}
+\caption{Segmentation pipeline stages. (a)~RGB input, (b)~raw segmentation mask from SegFormer-B0, (c)~BEV projection of cleaned mask. Morphological filtering and connected-component analysis suppress spurs and disconnected blobs before BEV warping.}
 \label{fig:segmentation_stage}
 \end{figure}
 
@@ -948,7 +946,7 @@ v4 & Template Arc & BEV corridor & Propose-and-verify arcs & 9.97 \\
 \end{flushleft}
 \end{table}
 
-The iteration progression reveals a consistent pattern: each BEV-domain planner (v1, v2) was abandoned not for lack of correctness but because the computational cost of operating in BEV coordinates exceeded the real-time budget.  The v3 image-space iteration bypassed BEV entirely for straight-ahead following, achieving a $25\times$ throughput improvement.  The v4 template arc planner returned to BEV coordinates but in a verification role---scoring pre-computed arcs against the BEV corridor rather than discovering paths from scratch.
+The iteration progression reveals a consistent pattern: each BEV-domain planner (v1, v2) was abandoned not for lack of correctness but because the computational cost of operating in BEV coordinates exceeded the real-time budget.  The v3 image-space iteration bypassed BEV entirely for straight-ahead following, achieving a $25\times$ throughput improvement.  The v4 template-approval planner returned to BEV coordinates but in a verification role---scoring pre-computed arcs against the BEV corridor rather than discovering paths from scratch.
 
 
 \subsection{Planner Comparison}
@@ -1034,7 +1032,7 @@ Img Midpoint    & 0.984 & 15.2 & 2.39 \\
 
 The evidence presented in this section supports the claim that image-space planning offers substantial advantages over BEV-domain planning for straight-ahead corridor following.  The image-space midpoint planner achieves approximately $4.5\times$ lower lateral error at approximately $421\times$ lower latency than the best BEV-domain planner.  This advantage persists even with oracle masks (Table~\ref{tab:oracle_comparison}), confirming that the BEV planning domain itself introduces error rather than merely inheriting segmentation noise.
 
-These results do not imply that BEV processing should be abandoned.  As the iteration progression in Table~\ref{tab:iteration_progression} illustrates, the v4 template arc planner returns to BEV coordinates in a verification role, and the turn planner (Section~\ref{sec:waypoint_turn_eval}) requires metric-scale BEV geometry for junction maneuvers.  Rather, the evidence suggests that the default planning domain for straight-ahead following should be image-space, with BEV reserved for corridor verification and turn planning.
+These results do not imply that BEV processing should be abandoned.  As the iteration progression in Table~\ref{tab:iteration_progression} illustrates, the v4 template-approval planner returns to BEV coordinates in a verification role, and the turn planner (Section~\ref{sec:waypoint_turn_eval}) requires metric-scale BEV geometry for junction maneuvers.  Rather, the evidence suggests that the default planning domain for straight-ahead following should be image-space, with BEV reserved for corridor verification and turn planning.
 
 
 % -----------------------------------------------------------------
@@ -1089,11 +1087,11 @@ Both planners were evaluated on the same calibrated 220-frame June clip with ide
 
 \begin{table}[h]
 \centering
-\caption{Template arc planner vs.\ skeleton-graph baseline on 220 frames (calibrated June clip, detection disabled).}
+\caption{Template-approval planner vs.\ skeleton-graph baseline on a 220-frame calibrated evaluation clip (VID\_017, June segment, obstacle detection disabled). The template-approval planner reduces mean heading error by 40.6\% and halves path-source switches while achieving comparable per-frame cost.}
 \label{tab:template_eval}
 \begin{tabular}{lcc}
 \toprule
-Metric & Graph Baseline & Template (Phase~11) \\
+Metric & Graph Baseline & Template-Approval \\
 \midrule
 Mean $|\theta|$ [deg]     & 1.190 & \textbf{0.707} \\
 $p_{95}$ $|\theta|$ [deg] & 3.724 & \textbf{3.508} \\
