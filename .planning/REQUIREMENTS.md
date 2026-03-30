@@ -35,9 +35,9 @@
 
 ### Discussion & Conclusion
 
-- [ ] **DISC-01**: Strengthen Discussion — explain WHY findings hold, connect to broader monocular perception field
-- [ ] **DISC-02**: Add failure analysis for image-space pipeline (when/why it breaks)
-- [ ] **DISC-03**: Rewrite Conclusion mapping each finding back to numbered contributions from Introduction
+- [x] **DISC-01**: Strengthen Discussion — explain WHY findings hold, connect to broader monocular perception field
+- [x] **DISC-02**: Add failure analysis for image-space pipeline (when/why it breaks)
+- [x] **DISC-03**: Rewrite Conclusion mapping each finding back to numbered contributions from Introduction
 
 ### Front Matter
 
@@ -82,9 +82,9 @@
 | WRIT-02 | Phase 4 | Pending |
 | WRIT-03 | Phase 4 | Pending |
 | WRIT-04 | Phase 4 | Pending |
-| DISC-01 | Phase 4 | Pending |
-| DISC-02 | Phase 4 | Pending |
-| DISC-03 | Phase 4 | Pending |
+| DISC-01 | Phase 4 | Complete |
+| DISC-02 | Phase 4 | Complete |
+| DISC-03 | Phase 4 | Complete |
 | FRNT-01 | Phase 5 | Pending |
 | FRNT-02 | Phase 5 | Pending |
 

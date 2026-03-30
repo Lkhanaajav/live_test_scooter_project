@@ -85,7 +85,7 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
-- [ ] 04-01-PLAN.md — Rewrite Discussion (Ch.5) and Conclusion (Ch.6) with failure analysis, broader implications, and contribution mapping
+- [x] 04-01-PLAN.md — Rewrite Discussion (Ch.5) and Conclusion (Ch.6) with failure analysis, broader implications, and contribution mapping
 - [ ] 04-02-PLAN.md — Rewrite Abstract, standardize terminology, make captions self-contained
 - [ ] 04-03-PLAN.md — Full prose review pass across all 6 chapters for tone consistency
 
