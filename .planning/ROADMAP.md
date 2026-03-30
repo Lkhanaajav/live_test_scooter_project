@@ -38,6 +38,12 @@
 
 **Requirements:** NARR-01, NARR-02
 
+**Plans:** 2 plans
+
+Plans:
+- [ ] 02-01-PLAN.md — Rewrite Introduction (Motivation, Problem Statement, Contributions, Thesis Organization)
+- [ ] 02-02-PLAN.md — Rewrite Literature Review (8 sections with distributed gap statements, Summary synthesis)
+
 **Success Criteria:**
 1. Introduction opens with a concrete motivating scenario, states contributions clearly, and frames the design iteration story
 2. Literature Review is organized by themes with each section ending by identifying a research gap
@@ -55,7 +61,7 @@
 **Success Criteria:**
 1. Every methodology section explains WHY before WHAT (design rationale present for all 5 planners, teacher-student choice, BEV parameters)
 2. Checkpoint benchmark removed; replaced with teacher-student comparison narrative
-3. Design iteration progression table present showing v1→v4 improvement metrics
+3. Design iteration progression table present showing v1->v4 improvement metrics
 4. Runtime tables consolidated into one clean table
 5. Every Results section follows claim-evidence-conclusion pattern
 
@@ -97,11 +103,11 @@
 ## Dependency Graph
 
 ```
-Phase 1 (Structure) → Phase 2 (Intro/LitRev) → Phase 3 (Method/Results) → Phase 4 (Prose/Discussion) → Phase 5 (Polish)
+Phase 1 (Structure) -> Phase 2 (Intro/LitRev) -> Phase 3 (Method/Results) -> Phase 4 (Prose/Discussion) -> Phase 5 (Polish)
 ```
 
 All phases are sequential — each builds on the previous rewrite.
 
 ---
 *Roadmap created: 2026-03-30*
-*Last updated: 2026-03-30 after initial creation*
+*Last updated: 2026-03-30 after Phase 2 planning*
