@@ -319,7 +319,7 @@ Agricultural row-following provides perhaps the closest analog to sidewalk corri
 
 A notable gap in the existing literature concerns the choice of planning domain. Most prior work on sidewalk and robot navigation operates in BEV or world-frame coordinates, implicitly assuming that metric-scale reasoning is necessary for accurate path extraction. The alternative of planning directly in image-space---bypassing the BEV projection entirely---has received little systematic investigation. Image-space planning avoids the coverage fragility and coordinate-transform errors inherent in monocular BEV projection but sacrifices metric scale, raising questions about whether the trade-off is worthwhile for straight-ahead corridor following.
 
-To the authors' knowledge, no prior study has provided a systematic comparison of BEV-domain and image-space path planning methods for monocular sidewalk navigation. This thesis introduces such a comparison across five methods in two coordinate domains, with results suggesting that image-space planning offers substantial advantages for straight-ahead following (Chapter~\ref{ch:evaluation}).
+To the author's knowledge, no prior study has provided a systematic comparison of BEV-domain and image-space path planning methods for monocular sidewalk navigation. This thesis introduces such a comparison across five methods in two coordinate domains, with results suggesting that image-space planning offers substantial advantages for straight-ahead following (Chapter~\ref{ch:evaluation}).
 
 
 \section{Distance Transform Methods in Navigation}
@@ -427,7 +427,7 @@ The first stage performs pixel-wise segmentation of sidewalk regions from monocu
 \subsection{Teacher--Student Supervision}
 \label{sec:teacher_student}
 
-Small models trained on limited data often produce noisy masks. To mitigate this, a semi-supervised teacher--student framework is employed. Two teacher architectures were explored across the design iterations:
+Small models trained on limited data often produce noisy masks. To mitigate this, a semi-supervised teacher--student framework is employed. Two teacher architectures are compared across the design iterations:
 
 \begin{itemize}[nosep]
   \item \textbf{Iteration~1:} A SegFormer-B2 teacher (24M parameters) fine-tuned on 300 hand-labeled frames, generating pseudo-labels on 2,300 unlabeled frames.
@@ -481,7 +481,7 @@ Table~\ref{tab:training_progression} summarizes the segmentation model iteration
 
 Input resolution directly trades segmentation quality against inference latency, and in a real-time pipeline this trade-off propagates to every downstream module: a coarser mask degrades BEV corridor extraction, while a finer mask may consume the entire frame budget before path planning begins. Identifying the resolution sweet spot is therefore a prerequisite for the rest of the system design.
 
-To balance accuracy and real-time performance, a resolution sweep was conducted using SegFormer-B0 on CPU. Table~\ref{tab:segformer_fps} reports latency and throughput. Lower resolutions ($320{\times}180$ and below) produced masks that were overly coarse, fragmenting continuous sidewalk segments. Higher resolutions ($960{\times}540$+) incurred prohibitive latency. The selected operating point is $640{\times}360$: accurate segmentation at sub-\SI{50}{ms} inference.
+To balance accuracy and real-time performance, a resolution sweep using SegFormer-B0 on CPU characterizes the latency--quality trade-off. Table~\ref{tab:segformer_fps} reports latency and throughput. Lower resolutions ($320{\times}180$ and below) produce masks that are overly coarse, fragmenting continuous sidewalk segments. Higher resolutions ($960{\times}540$+) incur prohibitive latency. The selected operating point is $640{\times}360$: accurate segmentation at sub-\SI{50}{ms} inference.
 
 \begin{table}[h]
 \centering
@@ -707,7 +707,7 @@ The heading angle $\theta_\text{vis}$ is computed from the planned path as the a
   \item $|\theta| \ge 40^\circ$: \textbf{SHARP LEFT/RIGHT} ($v = \SI{0.4}{m/s}$)
 \end{itemize}
 
-Both heading and speed are temporally smoothed. Both the heading angle and speed command are smoothed with EMA or rolling-window filters to remove high-frequency jitter.
+The heading angle and speed command are smoothed with EMA or rolling-window filters to remove high-frequency jitter.
 
 
 \section{Serial Command Protocol}
@@ -992,7 +992,7 @@ The image-space midpoint planner achieves the lowest lateral center error (14.3~
 
 \subsection{Oracle-Mask Experiment}
 
-To isolate the effect of the planning domain from segmentation quality, the same planners were evaluated with ground-truth (oracle) masks. Table~\ref{tab:oracle_comparison} shows that BEV planning remains inferior even with perfect segmentation input: BEV DT achieves 98.0\% inside-GT ratio and 69.2~px center error, compared to 98.9\% and 62.5~px for image-space DT.  The planning \emph{domain} is part of the problem, not merely the segmentation input.
+To isolate the effect of the planning domain from segmentation quality, this experiment evaluates the same planners with ground-truth (oracle) masks. Table~\ref{tab:oracle_comparison} shows that BEV planning remains inferior even with perfect segmentation input: BEV DT achieves 98.0\% inside-GT ratio and 69.2~px center error, compared to 98.9\% and 62.5~px for image-space DT.  The planning \emph{domain} is part of the problem, not merely the segmentation input.
 
 \begin{table}[h]
 \centering
@@ -1083,7 +1083,7 @@ This fragility does not render BEV processing without value.  As Claim~5 demonst
 
 This section examines the claim that a propose-and-verify template approach produces more stable paths than constructing paths from scratch via skeleton extraction.  If supported, this finding validates the v4 design iteration's shift from path discovery to path verification, as described in Section~\ref{sec:template_planner}.
 
-Both planners were evaluated on the same calibrated 220-frame June clip with identical segmentation and BEV configuration, detection disabled for deterministic replay.  Table~\ref{tab:template_eval} reports the comparison.
+Both planners are compared on the same calibrated 220-frame June clip with identical segmentation and BEV configuration, detection disabled for deterministic replay.  Table~\ref{tab:template_eval} reports the comparison.
 
 \begin{table}[h]
 \centering
@@ -1173,7 +1173,7 @@ No detection, predictor off   & 8.9  & 75.3 & --- & 29.5 \\
 \subsection{Waypoint-Turn Planner Validation}
 \label{sec:waypoint_turn_eval}
 
-The waypoint-turn planner (Section~\ref{sec:waypoint_turn_method}) was evaluated using a scheduled intent window on a 300-frame replay of VID\_017 (March 2026 campus sidewalk).  The intent schedule commanded ``right'' for frames 20--30, simulating a GPS-triggered junction maneuver.
+The waypoint-turn planner (Section~\ref{sec:waypoint_turn_method}) is evaluated on a 300-frame replay of VID\_017 (March 2026 campus sidewalk) with a scheduled intent window.  The intent schedule commands ``right'' for frames 20--30, simulating a GPS-triggered junction maneuver.
 
 \begin{table}[h]
 \centering
@@ -1202,7 +1202,7 @@ The planner activates the waypoint-turn path on frames 24--25 (when corridor sup
 \subsection{Full-Length Accepted Run}
 \label{sec:accepted_run}
 
-The complete perception-to-path stack was evaluated on VID\_017 for 1800 frames (stride~4, detection disabled, predictor off).  Table~\ref{tab:accepted_run} summarizes the results.
+This section evaluates the complete perception-to-path stack on VID\_017 for 1800 frames (stride~4, detection disabled, predictor off).  Table~\ref{tab:accepted_run} summarizes the results.
 
 \begin{table}[h]
 \centering
@@ -1249,7 +1249,7 @@ The complete pipeline achieves 9.97~FPS on the 1800-frame accepted run, meeting 
 \section{Temporal Smoothing Evaluation}
 \label{sec:smoother_results}
 
-The EMA temporal smoother was tuned via a grid search over 35 combinations ($\alpha \in \{0.25, \ldots, 0.65\}$, $c_\text{thresh} \in \{0.20, \ldots, 0.50\}$).  With the final segmentation model (\texttt{my-segformer-road}, 99.3\% raw stability), $\alpha = 0.65$ and $c_\text{thresh} = 0.20$ achieved 99.6\% temporally stable frames on a 500-frame evaluation window.
+A grid search over 35 combinations ($\alpha \in \{0.25, \ldots, 0.65\}$, $c_\text{thresh} \in \{0.20, \ldots, 0.50\}$) tunes the EMA temporal smoother.  With the final segmentation model (\texttt{my-segformer-road}, 99.3\% raw stability), $\alpha = 0.65$ and $c_\text{thresh} = 0.20$ achieves 99.6\% temporally stable frames on a 500-frame evaluation window.
 
 
 % =====================================================================
