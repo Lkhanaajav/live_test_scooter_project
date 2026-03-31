@@ -485,7 +485,7 @@ To balance accuracy and real-time performance, a resolution sweep was conducted 
 
 \begin{table}[h]
 \centering
-\caption{SegFormer-B0 inference latency and throughput at various input resolutions (CPU-only).}
+\caption{SegFormer-B0 inference latency and throughput at various input resolutions on CPU. The $640{\times}360$ resolution provides the best balance of boundary detail and real-time feasibility, operating below \SI{50}{ms} per frame while maintaining fine-grained mask edges.}
 \label{tab:segformer_fps}
 \begin{tabular}{lrr}
 \toprule
@@ -1155,7 +1155,7 @@ Table~\ref{tab:runtime_configs} shows profiled runtimes under different system c
 
 \begin{table}[h]
 \centering
-\caption{System-level runtime under different configurations (4,407-frame profiled run, $512{\times}288$ input).}
+\caption{System-level runtime under different configurations (4,407-frame profiled run, $512{\times}288$ input, CPU-only). The image-space architecture achieves 59~FPS without detection overhead, a $25\times$ improvement over the BEV pipeline at 2.4~FPS.}
 \label{tab:runtime_configs}
 \begin{tabular}{lcccc}
 \toprule
