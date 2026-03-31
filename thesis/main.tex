@@ -782,7 +782,7 @@ All experiments use campus video collected at the University of Oklahoma. Eleven
 
 \begin{table}[h]
 \centering
-\caption{Test video dataset summary.}
+\caption{Test video dataset summary. Eleven campus sidewalk sequences span straight paths, curves, T-junctions, and varying lighting; six sequences totaling \numprint{22679} frames are used for full-video evaluation.}
 \label{tab:video_dataset}
 \begin{tabular}{lcl}
 \toprule
@@ -867,7 +867,7 @@ Cand.+confhold & 0.903 & 0.987 & 0.914 & 0.947 & 13.1 \\
 \begin{figure}[h]
   \centering
   \includegraphics[width=0.85\columnwidth]{seg_improvement.png}
-  \caption{Segmentation quality comparison on 32 hand-annotated frames. The OneFormer-trained candidate improves all metrics while reducing inference time.}
+  \caption{Segmentation quality comparison on 32 hand-annotated campus frames, baseline (SegFormer-B2 teacher) vs.\ candidate (OneFormer Swin-L teacher). The candidate improves all metrics---IoU, precision, recall---while reducing inference time.}
   \label{fig:seg_improvement}
 \end{figure}
 
@@ -894,7 +894,7 @@ A full-video replay across six sequences (\numprint{22679} frames) confirms the 
 
 \begin{table}[h]
 \centering
-\caption{Full-video replay metrics across six campus sequences (\numprint{22679} frames).}
+\caption{Full-video replay metrics across six campus sequences (\numprint{22679} frames), comparing the baseline (SegFormer-B2 teacher) and candidate (OneFormer Swin-L teacher) segmentation models. The candidate reduces temporal instability by 77\% and raises the template-approval planner success rate by 5.6 percentage points.}
 \label{tab:fullvideo_replay}
 \begin{tabular}{lccc}
 \toprule
@@ -929,7 +929,7 @@ The five planners compared in this section represent four design iterations of t
 
 \begin{table}[h]
 \centering
-\caption{Design iteration progression. Each iteration introduces a new planning strategy while remaining backward-compatible with earlier stages.}
+\caption{Design iteration progression across four pipeline versions. Each iteration introduces a new planning strategy while remaining backward-compatible with earlier stages. The shift from BEV-domain discovery (v1--v2) to image-space processing (v3) yields a $25\times$ throughput improvement; v4 returns to BEV only for corridor verification.}
 \label{tab:iteration_progression}
 \begin{tabular}{clllr}
 \toprule
@@ -955,7 +955,7 @@ Five planning methods are evaluated on the 32 hand-annotated frames using the ca
 
 \begin{table}[h]
 \centering
-\caption{Planner comparison on 32 hand-annotated frames (candidate mask). Runtime is mean per-frame wall time.}
+\caption{Planner comparison on 32 hand-annotated frames using the candidate segmentation mask. Runtime is mean per-frame wall time on CPU. The image-space midpoint planner achieves the lowest lateral center error (14.3~px) at $421\times$ lower cost than the best BEV method.}
 \label{tab:planner_comparison}
 \begin{tabular}{lcccc}
 \toprule
@@ -985,7 +985,7 @@ The image-space midpoint planner achieves the lowest lateral center error (14.3~
 \begin{figure}[h]
   \centering
   \includegraphics[width=\textwidth]{planner_comparison_example.png}
-  \caption{BEV vs.\ image-space planner output comparison. The image-space planners produce more centered, stable paths while avoiding the coverage and distortion issues of BEV projection.}
+  \caption{Qualitative BEV vs.\ image-space planner output on representative campus frames. Image-space planners produce more centered, stable paths while avoiding the coverage and distortion artifacts introduced by monocular BEV projection.}
   \label{fig:planner_comparison_qual}
 \end{figure}
 
@@ -996,7 +996,7 @@ To isolate the effect of the planning domain from segmentation quality, the same
 
 \begin{table}[h]
 \centering
-\caption{Planner comparison with oracle (ground-truth) masks. BEV planning remains inferior even with perfect input.}
+\caption{Planner comparison with oracle (ground-truth) segmentation masks on 32 hand-annotated frames. BEV planning remains inferior even with perfect input, confirming that the performance gap is geometric rather than segmentation-related.}
 \label{tab:oracle_comparison}
 \begin{tabular}{lccc}
 \toprule
@@ -1046,7 +1046,7 @@ In a profiled run of 4,407 frames with the baseline segmentation model and the f
 
 \begin{table}[h]
 \centering
-\caption{BEV path extraction reliability over 4,407 profiled frames.}
+\caption{BEV path extraction reliability over 4,407 profiled frames (baseline segmentation model, full BEV pipeline). Only 0.7\% of frames yield a valid or held BEV path, confirming that monocular BEV projection alone is too fragile for primary path planning.}
 \label{tab:bev_fragility}
 \begin{tabular}{lr}
 \toprule
@@ -1126,7 +1126,7 @@ Table~\ref{tab:runtime_merged} compares per-module runtimes for the BEV pipeline
 
 \begin{table}[h]
 \centering
-\caption{Per-module runtime comparison at $640{\times}360$ (CPU-only), with the planner module showing the dominant speedup from image-space processing.}
+\caption{Per-module runtime comparison at $640{\times}360$ on CPU, BEV pipeline vs.\ image-space pipeline. The planner module dominates the difference: image-space midpoint planning costs 2.2\,ms compared to 380.3\,ms for BEV skeleton-graph, a $173\times$ speedup that drives the aggregate gain from 2.4~FPS to 59~FPS.}
 \label{tab:runtime_merged}
 \begin{tabular}{lccc}
 \toprule
@@ -1177,7 +1177,7 @@ The waypoint-turn planner (Section~\ref{sec:waypoint_turn_method}) was evaluated
 
 \begin{table}[h]
 \centering
-\caption{Waypoint-turn planner evaluation: scheduled right-intent window, 300 frames.}
+\caption{Waypoint-turn planner evaluation on VID\_017 (March 2026 campus sidewalk, stride~4): a scheduled right-intent window commands a turn on frames 20--30 of a 300-frame replay. The turn containment guard achieves a 0\% containment failure rate, confirming that no unsafe turn path reaches the controller.}
 \label{tab:waypoint_turn_eval}
 \begin{tabular}{lr}
 \toprule
@@ -1206,7 +1206,7 @@ The complete perception-to-path stack was evaluated on VID\_017 for 1800 frames 
 
 \begin{table}[h]
 \centering
-\caption{Full-length accepted run: 1800 frames, VID\_017 (stride~4, no detection, no prediction).}
+\caption{Full-length accepted run on VID\_017: 1800 frames at stride~4, detection and prediction disabled. The template-approval planner sustains 100\% path availability at 9.97~FPS, confirming end-to-end real-time feasibility on CPU.}
 \label{tab:accepted_run}
 \begin{tabular}{lr}
 \toprule
