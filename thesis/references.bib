@@ -340,33 +340,6 @@
 
 % ---- Path Tracking / Controls ----
 
-@techreport{coulter1992implementation,
-  author      = {Coulter, R. Craig},
-  title       = {Implementation of the Pure Pursuit Path Tracking Algorithm},
-  institution = {Carnegie Mellon University, Robotics Institute},
-  number      = {CMU-RI-TR-92-01},
-  year        = {1992}
-}
-
-@article{thrun2006stanley,
-  author  = {Thrun, Sebastian and Montemerlo, Mike and Dahlkamp, Hendrik and Stavens, David and
-             Aron, Andrei and Diebel, James and Fong, Philip and Gale, John and
-             Halpenny, Morgan and Hoffmann, Gabriel and Lau, Kenny and Oakley, Celia and
-             Palatucci, Mark and Pratt, Vaughan and Stang, Pascal and Strohband, Sven and
-             Dupont, Cedric and Jendrossek, Lars-Erik and Koelen, Christian and Markey, Charles and
-             Rummel, Carlo and van Niekerk, Joe and Jensen, Eric and Alessandrini, Philippe and
-             Bradski, Gary and Davies, Bob and Ettinger, Scott and Kaehler, Adrian and
-             Nefian, Ara and Mahoney, Pamela},
-  title   = {Stanley: The Robot That Won the {DARPA} Grand Challenge},
-  journal = {Journal of Field Robotics},
-  volume  = {23},
-  number  = {9},
-  pages   = {661--692},
-  year    = {2006},
-  doi     = {10.1002/rob.20147}
-}
-
-
 % ---- Object Detection ----
 
 @misc{yolov8,
@@ -394,14 +367,6 @@
   journal = {Clemson University},
   year    = {2008},
   note    = {Visual simple reaction time approximately 180--200\,ms; widely cited in human factors literature}
-}
-
-@misc{visual_reaction_bionumbers,
-  author = {Kosinski, Robert J.},
-  title  = {Reaction times to sound, light and touch},
-  year   = {2013},
-  note   = {BioNumbers ID 110800, visual reaction times 180--200\,ms},
-  url    = {https://bionumbers.hms.harvard.edu/bionumber.aspx?id=110800}
 }
 
 @misc{pi0_lowfreq,
@@ -478,4 +443,213 @@
   pages   = {1623--1637},
   year    = {2022},
   doi     = {10.1109/TPAMI.2020.3019967}
+}
+
+% Aliases removed — consolidated to bevformer and lift_splat_shoot keys
+
+
+% ---- Missing Citations Added After Review Audit ----
+
+% Pure Pursuit (control law cited in System Design)
+@techreport{coulter1992pure,
+  author      = {Coulter, R. Craig},
+  title       = {Implementation of the Pure Pursuit Path Tracking Algorithm},
+  institution = {Robotics Institute, Carnegie Mellon University},
+  number      = {CMU-RI-TR-92-01},
+  year        = {1992}
+}
+
+% Vision Transformer (foundation for SegFormer)
+@inproceedings{dosovitskiy2021vit,
+  author    = {Dosovitskiy, Alexey and Beyer, Lucas and Kolesnikov, Alexander and
+               Weissenborn, Dirk and Zhai, Xiaohua and Unterthiner, Thomas and
+               Dehghani, Mostafa and Minderer, Matthias and Heigold, Georg and
+               Gelly, Sylvain and Uszkoreit, Jakob and Houlsby, Neil},
+  title     = {An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale},
+  booktitle = {International Conference on Learning Representations (ICLR)},
+  year      = {2021}
+}
+
+% Swin Transformer (teacher backbone)
+@inproceedings{liu2021swin,
+  author    = {Liu, Ze and Lin, Yutong and Cao, Yue and Hu, Han and Wei, Yixuan and
+               Zhang, Zheng and Lin, Stephen and Guo, Baining},
+  title     = {Swin Transformer: Hierarchical Vision Transformer using Shifted Windows},
+  booktitle = {IEEE/CVF International Conference on Computer Vision (ICCV)},
+  pages     = {10012--10022},
+  year      = {2021},
+  doi       = {10.1109/ICCV48922.2021.00986}
+}
+
+% ADE20K Dataset (teacher pre-training)
+@inproceedings{zhou2017ade20k,
+  author    = {Zhou, Bolei and Zhao, Hang and Puig, Xavier and Fidler, Sanja and
+               Barriuso, Adela and Torralba, Antonio},
+  title     = {Scene Parsing through {ADE20K} Dataset},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  pages     = {633--641},
+  year      = {2017},
+  doi       = {10.1109/CVPR.2017.544}
+}
+
+% YOLO original (lineage reference)
+@inproceedings{redmon2016yolo,
+  author    = {Redmon, Joseph and Divvala, Santosh and Girshick, Ross and Farhadi, Ali},
+  title     = {You Only Look Once: Unified, Real-Time Object Detection},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  pages     = {779--788},
+  year      = {2016},
+  doi       = {10.1109/CVPR.2016.91}
+}
+
+% Dice Loss
+@inproceedings{milletari2016vnet,
+  author    = {Milletari, Fausto and Navab, Nassir and Ahmadi, Seyed-Ahmad},
+  title     = {{V-Net}: Fully Convolutional Neural Networks for Volumetric Medical Image Segmentation},
+  booktitle = {Fourth International Conference on 3D Vision (3DV)},
+  pages     = {565--571},
+  year      = {2016},
+  doi       = {10.1109/3DV.2016.79}
+}
+
+% Savitzky-Golay Filter
+@article{savitzky1964smoothing,
+  author  = {Savitzky, Abraham and Golay, Marcel J. E.},
+  title   = {Smoothing and Differentiation of Data by Simplified Least Squares Procedures},
+  journal = {Analytical Chemistry},
+  volume  = {36},
+  number  = {8},
+  pages   = {1627--1639},
+  year    = {1964},
+  doi     = {10.1021/ac60214a047}
+}
+
+% Dijkstra's Algorithm
+@article{dijkstra1959note,
+  author  = {Dijkstra, Edsger W.},
+  title   = {A Note on Two Problems in Connexion with Graphs},
+  journal = {Numerische Mathematik},
+  volume  = {1},
+  number  = {1},
+  pages   = {269--271},
+  year    = {1959},
+  doi     = {10.1007/BF01386390}
+}
+
+% ROS Navigation Stack
+@inproceedings{quigley2009ros,
+  author    = {Quigley, Morgan and Conley, Ken and Gerkey, Brian and Faust, Josh and
+               Foote, Tully and Leibs, Jeremy and Wheeler, Rob and Ng, Andrew Y.},
+  title     = {{ROS}: An Open-Source Robot Operating System},
+  booktitle = {ICRA Workshop on Open Source Software},
+  year      = {2009}
+}
+
+
+% ---- Must-Cite References ----
+
+% Road detection survey
+@article{hillel2014road,
+  author  = {Hillel, Aharon Bar and Lerner, Ronen and Levi, Dan and Raz, Guy},
+  title   = {Recent Progress in Road and Lane Detection: A Survey},
+  journal = {Machine Vision and Applications},
+  volume  = {25},
+  number  = {3},
+  pages   = {727--745},
+  year    = {2014},
+  doi     = {10.1007/s00138-011-0404-2}
+}
+
+% Frenet frame trajectory generation
+@inproceedings{werling2010frenet,
+  author    = {Werling, Moritz and Ziegler, Julius and Kammel, S{\"o}ren and Thrun, Sebastian},
+  title     = {Optimal Trajectory Generation for Dynamic Street Scenarios in a {Frenet} Frame},
+  booktitle = {IEEE International Conference on Robotics and Automation (ICRA)},
+  pages     = {987--993},
+  year      = {2010},
+  doi       = {10.1109/ROBOT.2010.5509799}
+}
+
+% Pre-computed trajectory libraries
+@article{howard2007trajectory,
+  author  = {Howard, Thomas M. and Kelly, Alonzo},
+  title   = {Optimal Rough Terrain Trajectory Generation for Wheeled Mobile Robots},
+  journal = {International Journal of Robotics Research},
+  volume  = {26},
+  number  = {2},
+  pages   = {141--166},
+  year    = {2007},
+  doi     = {10.1177/0278364906075328}
+}
+
+% UniMatch semi-supervised segmentation
+@inproceedings{yang2023unimatch,
+  author    = {Yang, Lihe and Zhuo, Lei and Qi, Lei and Shi, Yinghuan and Gao, Yang},
+  title     = {Revisiting Weak-to-Strong Consistency in Semi-Supervised Semantic Segmentation},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  pages     = {7236--7246},
+  year      = {2023},
+  doi       = {10.1109/CVPR52729.2023.00699}
+}
+
+% DAFormer domain adaptation
+@inproceedings{hoyer2022daformer,
+  author    = {Hoyer, Lukas and Dai, Dengxin and Van Gool, Luc},
+  title     = {{DAFormer}: Improving Network Architectures and Training Strategies for Domain-Adaptive Semantic Segmentation},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  pages     = {9924--9935},
+  year      = {2022},
+  doi       = {10.1109/CVPR52688.2022.00969}
+}
+
+% Structured knowledge distillation for segmentation
+@inproceedings{liu2019skd,
+  author    = {Liu, Yifan and Chen, Ke and Liu, Chris and Qin, Zengchang and Luo, Zhenbo and Wang, Jingdong},
+  title     = {Structured Knowledge Distillation for Semantic Segmentation},
+  booktitle = {IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  pages     = {2604--2613},
+  year      = {2019},
+  doi       = {10.1109/CVPR.2019.00271}
+}
+
+% Safe visual navigation under uncertainty
+@inproceedings{richter2017safe,
+  author    = {Richter, Charles and Roy, Nicholas},
+  title     = {Safe Visual Navigation via Deep Learning and Novelty Detection},
+  booktitle = {Robotics: Science and Systems (RSS)},
+  year      = {2017},
+  doi       = {10.15607/RSS.2017.XIII.064}
+}
+
+% GOLD/IPM navigation
+@article{bertozzi1998gold,
+  author  = {Bertozzi, Massimo and Broggi, Alberto},
+  title   = {{GOLD}: A Parallel Real-Time Stereo Vision System for Generic Obstacle and Lane Detection},
+  journal = {IEEE Transactions on Image Processing},
+  volume  = {7},
+  number  = {1},
+  pages   = {62--81},
+  year    = {1998},
+  doi     = {10.1109/83.650851}
+}
+
+% Vineyard corridor following on embedded
+@article{aghi2021local,
+  author  = {Aghi, Diego and Cerrato, Simone and Franzini, Matteo and Mazzia, Vittorio and Chiaberge, Marcello},
+  title   = {Local Motion Planner for Autonomous Navigation in Vineyards with a {RGB-D} Camera-Based Algorithm and Deep Learning Synergy},
+  journal = {Machines},
+  volume  = {9},
+  number  = {2},
+  pages   = {27},
+  year    = {2021},
+  doi     = {10.3390/machines9020027}
+}
+
+% Probabilistic Robotics textbook
+@book{thrun2005probabilistic,
+  author    = {Thrun, Sebastian and Burgard, Wolfram and Fox, Dieter},
+  title     = {Probabilistic Robotics},
+  publisher = {MIT Press},
+  year      = {2005},
+  isbn      = {978-0-262-20162-9}
 }
