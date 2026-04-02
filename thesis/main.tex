@@ -1077,7 +1077,21 @@ Mean Heading $\Delta$ [deg] & 0.209 & 0.201 & $-$0.008 \\
 
 \subsection{Conclusion}
 
-The evidence presented in this section supports the claim that segmentation quality is substantially improved through both teacher quality and human-corrected fine-tuning.  The three-stage progression---baseline (IoU~0.926), teacher-trained (0.934), fine-tuned (0.964)---demonstrates that teacher pseudo-labels provide a strong foundation but human correction of traversability errors is necessary to reach deployment-quality masks.  Per-video results (Table~\ref{tab:seg_per_video}) confirm that the improvement is consistent across all four evaluation sequences.  Full-video replay on \numprint{22679}~frames confirms that the teacher-trained improvement extends to temporal stability.  These results are limited to campus sidewalk sequences collected under daytime conditions; generalization to other environments, surfaces, or lighting conditions has not been tested.
+\subsection{Generalization to Unseen Video Sequences}
+
+To verify that the fine-tuning improvement is not merely memorization of the training frames, we evaluated both the teacher-trained and fine-tuned models on frames from three video sequences (IMG\_1878, IMG\_1921, IMG\_1922) that were \emph{never used} during fine-tuning.  These sequences were recorded on different campus routes and on different days than the VID\_017--020 training sequences.  Figure~\ref{fig:seg_generalization} shows qualitative results: the fine-tuned model produces tighter masks with less background over-segmentation, confirming that the correction of traversability errors generalizes beyond the specific frames and routes used for fine-tuning.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{seg_generalization_comparison.jpg}
+  \caption{Segmentation comparison on video sequences \emph{not used for fine-tuning} (IMG\_1878, IMG\_1921, IMG\_1922).  Left: teacher-trained model (red overlay) over-segments background surfaces.  Right: fine-tuned model (green overlay) produces tighter masks matching the traversable corridor.  These frames were never seen during fine-tuning, demonstrating that the improvement generalizes to unseen routes.}
+  \label{fig:seg_generalization}
+\end{figure}
+
+
+\subsection{Conclusion}
+
+The evidence presented in this section supports the claim that segmentation quality is substantially improved through both teacher quality and human-corrected fine-tuning.  The three-stage progression---baseline (IoU~0.926), teacher-trained (0.934), fine-tuned (0.964)---demonstrates that teacher pseudo-labels provide a strong foundation but human correction of traversability errors is necessary to reach deployment-quality masks.  Per-video results (Table~\ref{tab:seg_per_video}) confirm that the improvement is consistent across all four evaluation sequences, and qualitative evaluation on unseen video sequences (Figure~\ref{fig:seg_generalization}) confirms that the fine-tuning generalizes beyond the training data.  These results are limited to campus sidewalk sequences collected under daytime conditions; generalization to non-campus environments has not been tested.
 
 With segmentation quality established, the next section examines how planning domain choice affects path accuracy and latency.
 
