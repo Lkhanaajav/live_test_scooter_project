@@ -209,7 +209,7 @@ ROS     & Robot Operating System \\
 
 Autonomous sidewalk navigation for micro-mobility platforms requires perception and path planning that operate reliably on embedded, low-power hardware using only a monocular camera. This thesis presents a modular vision pipeline that evolved through four design iterations---from BEV skeleton-graph construction to template-approval planning---and provides a systematic comparison of five path-planning methods across bird's-eye view (BEV) and image-space domains. A semi-supervised teacher--student framework trains a compact SegFormer-B0 student (3.7M parameters, IoU 0.946 at \SI{11.7}{ms}) from OneFormer Swin-L pseudo-labels, providing the segmentation foundation for all downstream planning.
 
-On 32 hand-annotated campus sidewalk frames, image-space midpoint planning achieves \SI{14.3}{\px} lateral center error at \SI{2.2}{ms} per frame---a $421\times$ speedup over the best BEV method (\SI{65.0}{\px} at \SI{926.8}{ms}). BEV masks achieve adequate coverage (approximately 33\% occupancy), but BEV path \emph{discovery} algorithms---skeleton extraction and Dijkstra search---are prohibitively slow (380--927\,ms), making them unsuitable as the primary planning domain. Oracle-mask experiments confirm that BEV-domain planners introduce systematic error beyond what segmentation quality can explain.
+On 228 hand-annotated campus sidewalk frames, image-space midpoint planning with a fine-tuned segmentation model achieves \SI{22.3}{\px} lateral center error at \SI{3.1}{ms} per frame---a $271\times$ speedup over the BEV skeleton-graph method (\SI{100.5}{\px} at \SI{841}{ms}). BEV masks achieve adequate coverage (approximately 33\% occupancy), but BEV path \emph{discovery} algorithms---skeleton extraction and Dijkstra search---are prohibitively slow (770--841\,ms), making them unsuitable as the primary planning domain. Oracle-mask experiments confirm that BEV-domain planners introduce systematic error beyond what segmentation quality can explain.  A 228-frame hand annotation campaign further reveals that teacher pseudo-labels systematically over-segment unreachable background surfaces; fine-tuning on human-corrected masks raises segmentation IoU from 0.934 to 0.964.
 
 A template-approval planner replaces the noise-sensitive skeleton-graph baseline, reducing mean heading error by 40.6\% and halving path-source switches through fixed-arc verification with family-reuse hysteresis. A GPS-conditioned waypoint-turn planner with a dual-threshold containment safety guard achieves 0\% containment failure rate in overnight validation.
 
@@ -261,11 +261,11 @@ This work complements several active research threads while addressing gaps that
 This thesis makes the following contributions:
 
 \begin{enumerate}[leftmargin=*]
-  \item A systematic comparison of five path-planning methods across BEV and image-space domains, providing evidence that image-space midpoint planning achieves approximately 14.3~px lateral error at 2.2~ms per frame versus 65.0~px at 926.8~ms for the best BEV method---an approximately $421\times$ speedup with $4.5\times$ lower lateral error on the tested sidewalk sequences (Chapter~\ref{ch:evaluation}).
+  \item A systematic comparison of path-planning methods across BEV and image-space domains on 228 hand-annotated frames, providing evidence that image-space midpoint planning achieves 22.3~px lateral error at 3.1~ms per frame versus 100.5~px at 841~ms for the BEV skeleton-graph method---a $271\times$ speedup with $4.5\times$ lower lateral error on the tested sidewalk sequences (Chapter~\ref{ch:evaluation}).
 
   \item A template-approval planning architecture that replaces costly skeleton-graph construction with efficient verification of pre-computed arc templates against distance-transform corridors, reducing mean pipeline time from approximately 110~ms (v1, Table~\ref{tab:iteration_progression}) to 69.5~ms (v4, Table~\ref{tab:accepted_run}) while eliminating slow per-frame graph construction. The BEV domain is retained for corridor extraction and turn validation rather than being discarded (Chapter~\ref{ch:system_design}).
 
-  \item A semi-supervised segmentation training recipe using a high-capacity OneFormer Swin-L teacher~\cite{oneformer} to generate pseudo-labels for a compact SegFormer-B0 student~\cite{segformer}, achieving IoU of 0.946 at 11.7~ms on CPU (Chapter~\ref{ch:evaluation}).
+  \item A semi-supervised segmentation training recipe using a high-capacity OneFormer Swin-L teacher~\cite{oneformer} to generate pseudo-labels for a compact SegFormer-B0 student~\cite{segformer}, achieving IoU of 0.934 at 14.6~ms on CPU, further improved to IoU of 0.964 through fine-tuning on 228 human-corrected masks that address teacher over-segmentation errors (Chapter~\ref{ch:evaluation}).
 
   \item A multi-scale offline evaluation protocol that validates findings at three complementary scales---32 hand-annotated frames for planner accuracy, \numprint{22679}-frame replay for temporal stability, and an 1800-frame accepted run for sustained system validation---providing evidence that trends are consistent across evaluation granularities (Chapter~\ref{ch:evaluation}).
 
@@ -901,7 +901,7 @@ The software architecture that implements these components is summarized in the 
 \section{Software Architecture}
 \label{sec:software_arch}
 
-The system is implemented in Python 3.10+ using OpenCV, PyTorch, NumPy, and SciPy. A centralized configuration module (\texttt{config.py}) serves as the single source of truth for all parameters, including segmentation thresholds, BEV dimensions, planner settings, speed profiles, and feature flags. Each research improvement is gated by a boolean flag, enabling exact reproduction of any prior design iteration. The test suite comprises over 150 automated tests covering all major modules. Key reproducibility artifacts include: (i)~the trained SegFormer-B0 checkpoint, (ii)~the BEV calibration matrix (\texttt{bev\_calibration.npy}), (iii)~the 32 hand-annotated ground-truth masks, and (iv)~the centralized \texttt{config.py} with all tunable parameters.
+The system is implemented in Python 3.10+ using OpenCV, PyTorch, NumPy, and SciPy. A centralized configuration module (\texttt{config.py}) serves as the single source of truth for all parameters, including segmentation thresholds, BEV dimensions, planner settings, speed profiles, and feature flags. Each research improvement is gated by a boolean flag, enabling exact reproduction of any prior design iteration. The test suite comprises over 150 automated tests covering all major modules. Key reproducibility artifacts include: (i)~the trained SegFormer-B0 checkpoints (teacher-trained and hand-annotated fine-tuned), (ii)~the BEV calibration matrix (\texttt{bev\_calibration.npy}), (iii)~228 hand-annotated ground-truth masks across four scooter-mounted video sequences, and (iv)~the centralized \texttt{config.py} with all tunable parameters.
 
 The experimental evaluation of this pipeline---testing the five planning methods, analyzing the BEV cost--benefit trade-off, and validating the complete system on extended video---is the subject of Chapter~\ref{ch:evaluation}.
 
@@ -918,7 +918,7 @@ This chapter examines five claims that together characterize the design space ex
 
 \subsection{Data Collection}
 
-All experiments use campus video collected at the University of Oklahoma during daytime hours (approximately 9\,AM--4\,PM) under clear to partly cloudy conditions.  No nighttime, rain, or snow sequences are included.  Eleven video sequences were recorded from the scooter-mounted camera, featuring curved sidewalks, T-junctions, shadows, surface changes, and pedestrian traffic. Six sequences totaling \numprint{22679} frames are used for full-video evaluation; 32 hand-annotated frames with ground-truth masks serve as the planner comparison benchmark.  Table~\ref{tab:video_dataset} summarizes the dataset.  All runtime measurements are mean per-frame wall time on the workstation CPU (Intel Core~i7-12700K, single-threaded, GPU disabled) described in Section~\ref{sec:hardware}.
+All experiments use campus video collected at the University of Oklahoma during daytime hours (approximately 9\,AM--4\,PM) under clear to partly cloudy conditions.  No nighttime, rain, or snow sequences are included.  Eleven video sequences were recorded from the scooter-mounted camera, featuring curved sidewalks, T-junctions, shadows, surface changes, and pedestrian traffic. Six sequences totaling \numprint{22679} frames are used for full-video evaluation.  An expanded set of 228 hand-annotated frames across four scooter-mounted video sequences (VID\_017--020) serves as the primary planner comparison and segmentation evaluation benchmark, replacing an earlier 32-frame evaluation set.  Table~\ref{tab:video_dataset} summarizes the dataset.  All runtime measurements are mean per-frame wall time on the workstation CPU (Intel Core~i7-12700K, single-threaded, GPU disabled) described in Section~\ref{sec:hardware}.
 
 \begin{table}[h]
 \centering
@@ -943,14 +943,14 @@ VID\_017--020 & $\sim$4,000 each & New campus routes, March 2026 \\
 
 \subsection{Hand-Annotated Ground Truth}
 
-Thirty-two frames were manually annotated with pixel-level binary masks by the author across multiple video sequences, using a polygon-based annotation tool.  These frames span a range of conditions including straight paths, gentle curves, T-junctions, and varying lighting.  Frames were selected to represent the diversity of the evaluation corpus rather than sampled uniformly.  No inter-annotator agreement metric is available since all annotations were produced by a single annotator; this is noted as a threat to validity in Section~\ref{sec:threats}.  The annotations serve as ground truth for both segmentation evaluation and planner comparison.
+A total of 228 frames were manually annotated with pixel-level binary masks by the author across four scooter-mounted video sequences (VID\_017--020), using a brush-based correction tool.  Each frame was initialized with a teacher-generated starter mask, then manually corrected to remove unreachable background roads, fill shadow-induced gaps, and tighten boundaries to the traversable ego-reachable corridor.  Frames were extracted at uniform intervals (every 32nd frame) to cover the full temporal span of each video.  No inter-annotator agreement metric is available since all annotations were produced by a single annotator; this is noted as a threat to validity in Section~\ref{sec:threats}.  The annotations serve as ground truth for both segmentation evaluation and planner comparison.
 
 
 \subsection{Evaluation Protocol}
 
 For the planner comparison, each of the five methods receives the same cleaned binary mask. For BEV methods, the mask is first warped via homography. Metrics are computed per-frame and averaged. Runtime is measured as mean per-frame wall time on CPU.
 
-\paragraph{Training and evaluation separation.} The segmentation student model is trained on pseudo-labels from sequences IMG\_1876--IMG\_1924. The 32 hand-annotated evaluation frames are drawn from these same sequences but are held out from training. The full-video replay sequences (IMG\_1876--IMG\_1924 and VID\_017--020) include videos that overlap geographically with training environments, since all data was collected on the same campus. This overlap is a potential source of optimism in the reported metrics and is discussed further in Section~\ref{sec:threats}.
+\paragraph{Training and evaluation separation.} The initial teacher-trained segmentation model is trained on pseudo-labels from sequences IMG\_1876--IMG\_1924. The fine-tuned model is additionally trained on 228 hand-annotated frames from VID\_017--020, which also serve as the evaluation set.  This overlap means the fine-tuned segmentation IoU (0.964) reflects in-distribution performance; the planner comparison numbers (Table~\ref{tab:planner_comparison}) are less affected since they measure path geometry against ground-truth masks rather than segmentation accuracy.  All data was collected on the same university campus.  This geographic overlap is a potential source of optimism in the reported metrics and is discussed further in Section~\ref{sec:threats}.
 
 
 \subsection{Naive Baseline}
@@ -958,7 +958,7 @@ For the planner comparison, each of the five methods receives the same cleaned b
 
 As a conceptual baseline, consider a system that extracts the traversable region via segmentation but performs no geometric path planning: for each row of the mask, the midpoint between the left and right boundaries is selected, and the vehicle follows this row-by-row center without temporal smoothing, curvature estimation, or forward look-ahead.  This approach is approximately what the image-space midpoint planner implements, minus the connected-component filtering and Savitzky--Golay smoothing that make it a proper planner.
 
-The remarkable performance of image-space midpoint planning (14.3~px lateral center error at 2.2~ms, as reported in Section~\ref{sec:claim_planning_domain}) suggests that for straight-ahead corridor following, the traversable mask itself already encodes sufficient geometric information for path extraction, and the dominant contribution of the planning stage is noise suppression rather than geometric reasoning.  This naive baseline provides a conceptual lower bound against which the complexity of more sophisticated planners can be assessed.
+The remarkable performance of image-space midpoint planning (22.3~px lateral center error at 3.1~ms with the fine-tuned model, as reported in Section~\ref{sec:claim_planning_domain}) suggests that for straight-ahead corridor following, the traversable mask itself already encodes sufficient geometric information for path extraction, and the dominant contribution of the planning stage is noise suppression rather than geometric reasoning.  This naive baseline provides a conceptual lower bound against which the complexity of more sophisticated planners can be assessed.
 
 With the evaluation framework established, the following five sections examine each claim in turn, beginning with segmentation quality.
 
@@ -1157,7 +1157,7 @@ Oracle (ground truth)     & 0.994 & 15.6 & 3.1 \\
 \begin{figure}[t]
   \centering
   \includegraphics[width=\textwidth]{planner_comparison_v2.png}
-  \caption{Planner comparison on 32 hand-annotated frames (corrected data). Left: lateral center error (px). Center: inside-GT ratio. Right: per-frame runtime on log-scale latency axis. Image-space methods (green) dominate BEV methods (blue) in both accuracy and speed.}
+  \caption{Planner comparison on 228 hand-annotated frames. Left: lateral center error (px). Center: inside-GT ratio. Right: per-frame runtime on log-scale latency axis. Image-space methods (green) dominate BEV methods (blue) in both accuracy and speed.}
   \label{fig:planner_comparison}
 \end{figure}
 
@@ -1168,7 +1168,7 @@ Oracle (ground truth)     & 0.994 & 15.6 & 3.1 \\
   \label{fig:latency_log}
 \end{figure}
 
-The image-space midpoint planner achieves the lowest lateral center error (14.3~px vs.\ 65.0~px for the best BEV method) at $421\times$ lower latency (2.2~ms vs.\ 926.8~ms), while maintaining comparable mask--path alignment (98.5\% vs.\ 98.6\%).  A fairness caveat: the midpoint planner is inherently suited to straight-ahead following, which constitutes the majority of the 32 evaluation frames; performance on turn-dominated sequences would likely narrow the gap.  As noted in Section~\ref{sec:naive_baseline}, this planner is only modestly more complex than a naive row-by-row center-follower, yet it outperforms all BEV-domain methods.  Image-space DT serves as a robust fallback, providing the highest inside-GT ratio (99.4\%) at \SI{108.1}{ms}---still $8.6\times$ faster than BEV DT.  BEV methods are not competitive on runtime: the skeleton-graph planner costs \SI{380.3}{ms} and BEV DT costs \SI{926.8}{ms}, with near-field BEV DT actually \emph{slower} (\SI{1603}{ms}) due to denser graph construction.  Figure~\ref{fig:planner_comparison} summarizes these results visually, Figure~\ref{fig:latency_log} isolates the latency comparison on a logarithmic scale, and Figure~\ref{fig:planner_comparison_qual} shows qualitative path output on representative frames.  Figure~\ref{fig:skeleton_stage} illustrates the BEV skeleton-graph pipeline from thinning through path selection.
+With the fine-tuned segmentation model, the image-space midpoint planner achieves the lowest lateral center error (22.3~px vs.\ 100.5~px for BEV skeleton-graph) at $271\times$ lower latency (3.1~ms vs.\ 841~ms), while maintaining comparable mask--path alignment (98.5\% vs.\ 98.6\%).  Table~\ref{tab:planner_seg_comparison} shows that fine-tuning reduces midpoint error from 35.6~px to 22.3~px---a 37\% improvement approaching the oracle bound of 15.6~px.  A fairness caveat: the midpoint planner is inherently suited to straight-ahead following, which constitutes the majority of evaluation frames; performance on turn-dominated sequences would likely narrow the gap.  As noted in Section~\ref{sec:naive_baseline}, this planner is only modestly more complex than a naive row-by-row center-follower, yet it outperforms all BEV-domain methods.  Image-space DT serves as a robust fallback, providing the highest inside-GT ratio (98.9\%) at \SI{140}{ms}---still $6\times$ faster than BEV skeleton-graph.  Figure~\ref{fig:planner_comparison} summarizes these results visually, Figure~\ref{fig:latency_log} isolates the latency comparison on a logarithmic scale, and Figure~\ref{fig:planner_comparison_qual} shows qualitative path output on representative frames.  Figure~\ref{fig:skeleton_stage} illustrates the BEV skeleton-graph pipeline from thinning through path selection.
 
 \begin{figure}[h]
   \centering
@@ -1180,19 +1180,19 @@ The image-space midpoint planner achieves the lowest lateral center error (14.3~
 
 \subsection{Oracle-Mask Experiment}
 
-To isolate the effect of the planning domain from segmentation quality, this experiment evaluates the same planners with ground-truth (oracle) masks. Table~\ref{tab:oracle_comparison} shows that BEV planning remains inferior even with perfect segmentation input: BEV DT achieves 98.0\% inside-GT ratio and 69.2~px lateral center error, compared to 98.9\% and 62.5~px for image-space DT.  The planning \emph{domain} is part of the problem, not merely the segmentation input.
+To isolate the effect of the planning domain from segmentation quality, this experiment evaluates the same planners with ground-truth (oracle) masks on the 228-frame evaluation set. Table~\ref{tab:oracle_comparison} shows that BEV planning remains inferior even with perfect segmentation input: BEV skeleton-graph achieves 98.5\% inside-GT ratio and 96.0~px lateral center error, compared to 99.4\% and 15.6~px for image-space midpoint.  The planning \emph{domain} is part of the problem, not merely the segmentation input.
 
 \begin{table}[h]
 \centering
-\caption{Planner comparison with oracle (ground-truth) segmentation masks on 32 hand-annotated frames. BEV planning remains inferior even with perfect input, confirming that the performance gap is geometric rather than segmentation-related.}
+\caption{Planner comparison with oracle (ground-truth) segmentation masks on 228 hand-annotated frames. BEV planning remains inferior even with perfect input, confirming that the performance gap is geometric rather than segmentation-related.}
 \label{tab:oracle_comparison}
 \begin{tabular}{lccc}
 \toprule
 Planner & Inside-GT & Center Err. [px] & ms \\
 \midrule
-BEV DT Ridge (full) & 0.980 & 69.2 & 894.7 \\
-Img DT Ridge    & 0.989 & 62.5 & 109.0 \\
-Img Midpoint    & 0.984 & 15.2 & 2.39 \\
+BEV Skeleton-Graph & 0.985 & 96.0 & 800.3 \\
+Img DT Ridge    & 1.000 & 101.5 & 140.5 \\
+Img Midpoint    & 0.994 & 15.6 & 3.1 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1218,7 +1218,7 @@ Img Midpoint    & 0.984 & 15.2 & 2.39 \\
 
 \subsection{Conclusion}
 
-The evidence presented in this section supports the claim that image-space planning offers substantial advantages over BEV-domain planning for straight-ahead corridor following.  The image-space midpoint planner achieves approximately $4.5\times$ lower lateral error at approximately $421\times$ lower latency than the best BEV-domain planner.  This advantage persists even with oracle masks (Table~\ref{tab:oracle_comparison}), confirming that the BEV planning domain itself introduces error rather than merely inheriting segmentation noise.
+The evidence presented in this section supports the claim that image-space planning offers substantial advantages over BEV-domain planning for straight-ahead corridor following.  The image-space midpoint planner achieves approximately $4.5\times$ lower lateral error at $271\times$ lower latency than the BEV skeleton-graph planner.  This advantage persists even with oracle masks (Table~\ref{tab:oracle_comparison}), confirming that the BEV planning domain itself introduces error rather than merely inheriting segmentation noise.
 
 These results do not imply that BEV processing should be abandoned.  As the iteration progression in Table~\ref{tab:iteration_progression} illustrates, the v4 template-approval planner returns to BEV coordinates in a verification role, and the turn planner (Section~\ref{sec:waypoint_turn_eval}) requires metric-scale BEV geometry for junction maneuvers.  Rather, the evidence suggests that the default planning domain for straight-ahead following should be image-space, with BEV reserved for corridor verification and turn planning.
 
@@ -1484,7 +1484,7 @@ Chapter~\ref{ch:discussion} interprets these experimental findings, examines why
 
 The central finding of this thesis is that \emph{simple image-space geometry consistently outperforms the more complex BEV pipeline} in both accuracy and latency for monocular sidewalk navigation on the tested campus sequences.  This result is directly measured through the five-method planner comparison (Table~\ref{tab:planner_comparison}) and the oracle-mask experiment (Table~\ref{tab:oracle_comparison}).  The inference that this advantage generalizes beyond the tested sequences is supported---but not conclusively proven---by the consistency of the trend across the four-iteration design progression (Table~\ref{tab:iteration_progression}), multiple segmentation models, and three evaluation scales.
 
-The image-space midpoint planner achieves 14.3~px lateral center error at 2.2~ms per frame---an approximately $421\times$ speedup over BEV distance-transform planning (65.0~px, 926.8~ms).  These results indicate that the accuracy--latency trade-off strongly favors image-space processing for straight-ahead corridor following.  The advantage persists even with oracle masks (Table~\ref{tab:oracle_comparison}), suggesting that the BEV planning domain itself introduces error rather than merely inheriting segmentation noise.  The iteration progression from skeleton-graph (v1) through distance-transform ridge (v2) to image-space midpoint (v3) and template-approval (v4) further suggests that each attempt to improve BEV-domain planning encountered the same fundamental geometric constraint, ultimately motivating the shift to image-space as the primary planning domain.
+The image-space midpoint planner achieves 22.3~px lateral center error at 3.1~ms per frame---a $271\times$ speedup over BEV skeleton-graph planning (100.5~px, 841~ms).  These results indicate that the accuracy--latency trade-off strongly favors image-space processing for straight-ahead corridor following.  The advantage persists even with oracle masks (Table~\ref{tab:oracle_comparison}), suggesting that the BEV planning domain itself introduces error rather than merely inheriting segmentation noise.  The iteration progression from skeleton-graph (v1) through distance-transform ridge (v2) to image-space midpoint (v3) and template-approval (v4) further suggests that each attempt to improve BEV-domain planning encountered the same fundamental geometric constraint, ultimately motivating the shift to image-space as the primary planning domain.
 
 The geometric explanation for this image-space advantage is examined in the following section.
 
@@ -1570,7 +1570,7 @@ Several limitations qualify the findings of this thesis:
 
 \paragraph{Offline evaluation only.} All experiments are conducted offline on recorded video.  The planned paths are evaluated against ground-truth masks but are never executed on the physical scooter.  Path quality metrics (lateral center error, inside-GT ratio) are necessary but not sufficient for navigation safety.
 
-\paragraph{Limited hand-annotated sample.} The planner comparison uses 32 hand-annotated frames---a common benchmark size in robotics, but small by machine learning standards.  The full-video replay across 22,679 frames partially compensates, and trends are consistent across sequences.
+\paragraph{Hand-annotated sample.} The expanded planner comparison uses 228 hand-annotated frames across four scooter-mounted video sequences (VID\_017--020), substantially larger than the initial 32-frame evaluation.  However, all annotations were produced by a single annotator and all data comes from the same campus, limiting inter-annotator reliability and environmental diversity.
 
 \paragraph{Fixed camera geometry.} All experiments use a single camera mount position and angle.  The homography is calibrated for this specific configuration.  Different camera heights, angles, or lens characteristics would require recalibration and may affect the relative performance of BEV-domain methods.
 
@@ -1605,11 +1605,11 @@ This thesis traced the development and evaluation of a monocular-camera sidewalk
 
 \section{Summary of Contributions}
 
-\textbf{Contribution~1:} A five-method planner comparison across BEV and image-space domains (Chapter~\ref{ch:evaluation}).  Image-space midpoint planning achieves 14.3~px lateral error at 2.2~ms---a $421\times$ speedup over the best BEV method (65.0~px, 926.8~ms)---suggesting that, for monocular sidewalk following on the tested sequences, image-space planning should serve as the primary domain, with BEV reserved for corridor verification and turn planning.
+\textbf{Contribution~1:} A planner comparison across BEV and image-space domains on 228 hand-annotated frames (Chapter~\ref{ch:evaluation}).  Image-space midpoint planning achieves 22.3~px lateral error at 3.1~ms---a $271\times$ speedup over the BEV skeleton-graph method (100.5~px, 841~ms)---suggesting that, for monocular sidewalk following on the tested sequences, image-space planning should serve as the primary domain, with BEV reserved for corridor verification and turn planning.
 
 \textbf{Contribution~2:} A template-approval planner that replaces skeleton-graph construction with verification of pre-computed arc templates (Chapter~\ref{ch:system_design}).  On a 220-frame clip, it reduces mean heading error by 40.6\% and halves path-source switches relative to the skeleton-graph baseline (Table~\ref{tab:template_eval}), with 100\% success rate sustained across the 1,800-frame accepted run.
 
-\textbf{Contribution~3:} A semi-supervised teacher--student segmentation recipe (OneFormer Swin-L teacher, SegFormer-B0 student) achieving IoU~0.946 at 11.7~ms on CPU and reducing temporal instability by 77\% (Table~\ref{tab:seg_comparison}, Figure~\ref{fig:seg_comparison_qual}).
+\textbf{Contribution~3:} A semi-supervised teacher--student segmentation recipe (OneFormer Swin-L teacher, SegFormer-B0 student) achieving IoU~0.934, further improved to IoU~0.964 through fine-tuning on 228 human-corrected masks that address teacher over-segmentation of unreachable surfaces (Table~\ref{tab:seg_finetuned}).
 
 \textbf{Contribution~4:} A multi-scale offline evaluation protocol---32 hand-annotated frames, \numprint{22679}-frame replay, and 1,800-frame accepted run---showing consistent trends across scales (Chapter~\ref{ch:evaluation}).  This partially compensates for the absence of closed-loop deployment testing, though on-platform validation remains necessary.
 
@@ -1624,7 +1624,7 @@ The following directions are organized by proximity to the current system state.
 
 \paragraph{Closed-loop deployment.}  The most critical next step is deploying the complete stack on the physical scooter with real-time obstacle detection, measuring actual tracking error against ground-truth trajectories, and characterizing failure modes under closed-loop vehicle dynamics.
 
-\paragraph{Larger annotated benchmark.}  Expanding the hand-annotated evaluation set from 32 to 100 or more frames, with additional annotators for inter-rater agreement, would provide stronger statistical evidence for the planner comparison and address the single-annotator limitation noted in Section~\ref{sec:threats}.
+\paragraph{Multi-annotator evaluation.}  The current 228-frame evaluation set was produced by a single annotator.  Adding additional annotators for inter-rater agreement analysis, and expanding to include frames from different seasons and times of day, would provide stronger statistical evidence and address the single-annotator limitation noted in Section~\ref{sec:threats}.
 
 \paragraph{Cross-environment generalization.}  Evaluation on diverse sidewalk environments---different cities, weather conditions, surface materials, and nighttime illumination---would strengthen the external validity of the findings reported here.
 
