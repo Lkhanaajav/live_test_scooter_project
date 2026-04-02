@@ -31,7 +31,11 @@ if str(SIM_DIR) not in sys.path:
 
 from bev_calibration import load_bev_params  # noqa: E402
 from config import BEV_SIZE, NAV_BEV_FORWARD_M, NAV_BEV_LATERAL_M  # noqa: E402
-from dt_path_planner import DtPathPlanner, DtPlannerConfig  # noqa: E402
+try:
+    from dt_path_planner import DtPathPlanner, DtPlannerConfig  # noqa: E402
+    _HAS_DT_PLANNER = True
+except ImportError:
+    _HAS_DT_PLANNER = False
 from image_path_planner import CameraDtPlanner, CameraMidpointPlanner  # noqa: E402
 from masks import clean_bev_mask_enhanced  # noqa: E402
 from realtime_nav_core import BEVPathExtractor, PathExtractorConfig  # noqa: E402
@@ -42,6 +46,7 @@ DEFAULT_MASKS_ROOT = PROJECT_ROOT / "outputs" / "hand_annotations" / "v1" / "mas
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "research" / "artifacts"
 BASELINE_MODEL = SIM_DIR / "models" / "my-segformer-road"
 CANDIDATE_MODEL = PROJECT_ROOT / "outputs" / "training" / "binary_segformer_oneformer_teacher" / "best_checkpoint"
+FINETUNED_MODEL = PROJECT_ROOT / "outputs" / "training" / "binary_segformer_hand_annotated" / "best_checkpoint"
 
 
 @dataclass(frozen=True)
@@ -381,6 +386,8 @@ def _bev_clean(mask_bev_255: np.ndarray, nearfield_frac: float) -> np.ndarray:
 
 
 def _plan_bev_dt(mask_255: np.ndarray, h_matrix: np.ndarray, h_inv: np.ndarray, nearfield_frac: float = 1.0) -> tuple[np.ndarray, str, float]:
+    if not _HAS_DT_PLANNER:
+        return np.empty((0, 2), dtype=np.float32), "unavailable", 0.0
     bev = _warp_mask_to_bev(mask_255, h_matrix)
     bev = _bev_clean(bev, nearfield_frac=nearfield_frac)
     planner = DtPathPlanner(
@@ -579,6 +586,11 @@ def main() -> int:
         SegmentationCase("candidate_raw", CANDIDATE_MODEL, 0.60, "raw"),
         SegmentationCase("candidate_confhold", CANDIDATE_MODEL, 0.60, "confhold"),
     ]
+    if FINETUNED_MODEL.exists():
+        seg_cases.extend([
+            SegmentationCase("finetuned_raw", FINETUNED_MODEL, 0.60, "raw"),
+            SegmentationCase("finetuned_confhold", FINETUNED_MODEL, 0.60, "confhold"),
+        ])
 
     seg_df, seg_masks = evaluate_segmentation(records, seg_cases)
     seg_summary = _aggregate(seg_df, by=["case"])
@@ -597,6 +609,8 @@ def main() -> int:
         "baseline_raw": seg_masks["baseline_raw"],
         "candidate_confhold": seg_masks["candidate_confhold"],
     }
+    if "finetuned_confhold" in seg_masks:
+        mask_cases["finetuned_confhold"] = seg_masks["finetuned_confhold"]
     planner_df, path_cache = evaluate_planners(records, mask_cases)
     planner_summary = _aggregate(planner_df, by=["mask_case", "planner"])
     planner_by_video = _aggregate(planner_df, by=["mask_case", "planner", "video"])

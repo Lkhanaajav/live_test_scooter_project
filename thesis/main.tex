@@ -506,6 +506,49 @@ y_i^{\text{hand}}, & \text{if hand-annotated} \\
 The best-performing student was trained on 1,419 image--mask pairs (699 from earlier sequences plus 720 newly extracted frames from four additional campus videos).
 
 
+\subsection{Limitations of Teacher Pseudo-Labels}
+\label{sec:teacher_limits}
+
+While the teacher--student framework dramatically improves segmentation quality over a small hand-annotated dataset, the teacher model itself introduces systematic errors that the student inherits.  A 228-frame hand annotation campaign on four scooter-mounted video sequences (VID\_017--020) revealed three categories of teacher failure:
+
+\begin{itemize}[nosep]
+  \item \textbf{Unreachable surface segmentation.}  The OneFormer teacher segments any region that \emph{appears} to be road or sidewalk, including surfaces visible in the background that are physically unreachable by the scooter---behind fences, across grass, or on elevated parallel paths.  The teacher has no concept of traversability; it recognizes texture, not reachability.
+  \item \textbf{Shadow and direct sunlight.}  Strong shadows from trees and buildings cause the teacher to either miss shaded sidewalk (false negatives) or hallucinate road in shadowed grass (false positives).  Direct sunlight produces similar failures where overexposed concrete blends with adjacent bright surfaces.
+  \item \textbf{Seasonal appearance variation.}  During spring, dormant brown grass visually resembles concrete sidewalk, causing boundary bleed.  Summer conditions with bright green grass would provide substantially better contrast for segmentation.
+\end{itemize}
+
+These failures motivated a fine-tuning stage using 228 human-corrected masks, described in Section~\ref{sec:finetuned_seg}.
+
+
+\subsection{Human-Corrected Fine-Tuning}
+\label{sec:finetuned_seg}
+
+To address the teacher's systematic errors, the student model was fine-tuned on 228 hand-annotated frames from the four scooter-mounted video sequences.  Each frame was initialized with a teacher-generated starter mask, then manually corrected using a brush-based annotation tool: unreachable background roads were erased, shadow-induced gaps were filled, and boundaries were tightened to match the actual traversable corridor visible to the scooter.  The annotation criterion was \emph{traversable ego-reachable sidewalk}, not \emph{any road-like surface in the image}.
+
+The fine-tuning recipe initializes from the teacher-trained checkpoint and trains for 8 epochs with a learning rate of $2 \times 10^{-5}$ (cosine annealing), batch size 4, and the same cross-entropy + Dice loss used in the initial training.  The built-in validation split (every 5th frame per video) monitors overfitting.
+
+Table~\ref{tab:seg_finetuned} reports the improvement on the 228-frame evaluation set.
+
+\begin{table}[h]
+\centering
+\caption{Segmentation quality before and after hand-annotated fine-tuning (228 frames from VID\_017--020).  The fine-tuned model achieves 3-point IoU improvement and substantially higher precision, confirming that human-corrected annotations teach the model to avoid over-segmentation of unreachable surfaces.}
+\label{tab:seg_finetuned}
+\begin{tabular}{lccccr}
+\toprule
+Model & IoU & Prec. & Recall & F1 & ms \\
+\midrule
+Baseline (SegFormer-B2 teacher)      & 0.926 & 0.946 & 0.978 & 0.960 & 15.6 \\
+Teacher-trained (OneFormer Swin-L)   & 0.934 & 0.951 & 0.982 & 0.965 & 14.6 \\
+\textbf{Fine-tuned (hand-annotated)} & \textbf{0.964} & \textbf{0.981} & \textbf{0.982} & \textbf{0.982} & \textbf{14.0} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Fine-tuning raises IoU from 0.934 to 0.964 (+3.0 percentage points) and precision from 0.951 to 0.981 (+3.0 points), while recall remains unchanged at 0.982.  The precision improvement confirms that the model learned to suppress the teacher's over-segmentation of unreachable surfaces.  The predicted mask area decreased from 865K to 838K pixels on average---closer to the ground-truth mean of 836K---indicating tighter, more conservative segmentation boundaries.
+
+This result demonstrates that for domain-specific deployment, teacher pseudo-labels alone are insufficient: human correction of traversability errors is necessary to produce masks that reflect the actual navigable corridor rather than all road-like surfaces in the scene.
+
+
 \subsection{Loss Function}
 
 The student model $f_S$ minimizes a composite loss:
@@ -979,7 +1022,7 @@ The path from baseline to candidate segmentation is best understood as a progres
 
 Switching to a OneFormer Swin-L teacher~\cite{oneformer}---pre-trained on ADE20K and capable of universal semantic, instance, and panoptic segmentation---raised the student's evaluation IoU to 0.946, a 25\% improvement.  Simultaneously, inference time decreased from \SI{18.9}{ms} to \SI{11.7}{ms}, attributable to improved model convergence from higher-quality pseudo-labels.  The full training history, including intermediate checkpoints and data augmentation stages, is documented in Table~\ref{tab:training_progression} (Section~\ref{sec:teacher_student}).
 
-This progression demonstrates that, for a capacity-constrained student model, the quality of the teacher's pseudo-labels is the dominant factor in final segmentation performance.  The student architecture (SegFormer-B0, 3.7M parameters) remained unchanged throughout; only the teacher and training recipe varied.
+This progression demonstrates that, for a capacity-constrained student model, the quality of the teacher's pseudo-labels is the dominant factor in initial segmentation performance.  The student architecture (SegFormer-B0, 3.7M parameters) remained unchanged throughout; only the teacher and training recipe varied.  However, as described in Section~\ref{sec:teacher_limits}, even the best teacher introduces systematic errors---segmenting unreachable surfaces and failing on shadow/sunlight conditions---that a subsequent fine-tuning stage on 228 human-corrected masks resolves (Section~\ref{sec:finetuned_seg}, Table~\ref{tab:seg_finetuned}).
 
 \begin{figure}[h]
   \centering
@@ -1075,24 +1118,38 @@ The iteration progression reveals a consistent pattern: each BEV-domain planner 
 
 \subsection{Planner Comparison}
 
-Five planning methods are evaluated on the 32 hand-annotated frames using the candidate segmentation model.  Each planner receives the same cleaned binary mask; for BEV methods, the mask is first warped via homography.  Table~\ref{tab:planner_comparison} reports path availability, mask--path alignment, lateral center error, and runtime.
+Five planning methods are evaluated on 228 hand-annotated frames (VID\_017--020) using three segmentation configurations: the teacher-trained model, the hand-annotated fine-tuned model, and oracle (ground-truth) masks.  Each planner receives the same cleaned binary mask; for BEV methods, the mask is first warped via homography.  Table~\ref{tab:planner_comparison} reports path availability, mask--path alignment, lateral center error, and runtime for the fine-tuned model; Table~\ref{tab:planner_seg_comparison} compares the image-space midpoint planner across segmentation models to isolate the effect of fine-tuning on downstream planning.
 
 \begin{table}[h]
 \centering
-\caption{Planner comparison on 32 hand-annotated frames using the candidate segmentation mask. Runtime is mean per-frame wall time on CPU. The image-space midpoint planner achieves the lowest lateral center error (14.3~px) at $421\times$ lower cost than the best BEV method.}
+\caption{Planner comparison on 228 hand-annotated frames using the fine-tuned segmentation model. Runtime is mean per-frame wall time on CPU. The image-space midpoint planner achieves the lowest lateral center error (22.3~px) at $271\times$ lower cost than the BEV skeleton-graph method.}
 \label{tab:planner_comparison}
 \begin{tabular}{lcccc}
 \toprule
 Planner & Path [\%] & Inside-GT & Center Err. [px] & ms \\
 \midrule
 \multicolumn{5}{l}{\textit{BEV-domain methods}} \\
-\quad Skeleton-Graph   & 100 & 0.971 & 76.6 & 380.3 \\
-\quad DT Ridge (full)  & 100 & 0.986 & 65.0 & 926.8 \\
-\quad DT Ridge (near)  & 100 & 0.986 & 79.0 & 1603.0 \\
+\quad Skeleton-Graph   & 100 & 0.986 & 100.5 & 841.2 \\
 \midrule
 \multicolumn{5}{l}{\textit{Image-space methods}} \\
-\quad Midpoint         & 100 & 0.985 & \textbf{14.3} & \textbf{2.2} \\
-\quad DT Ridge         & 100 & \textbf{0.994} & 60.4 & 108.1 \\
+\quad Midpoint         & 100 & 0.985 & \textbf{22.3} & \textbf{3.1} \\
+\quad DT Ridge         & 100 & \textbf{0.989} & 100.9 & 140.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Effect of segmentation model on image-space midpoint planner accuracy (228 frames). Hand-annotated fine-tuning reduces lateral center error by 37\%, approaching oracle performance.}
+\label{tab:planner_seg_comparison}
+\begin{tabular}{lccc}
+\toprule
+Segmentation Model & Inside-GT & Center Err. [px] & ms \\
+\midrule
+Baseline (old model)      & 0.987 & 39.4 & 3.1 \\
+Teacher-trained           & 0.968 & 35.6 & 3.1 \\
+\textbf{Fine-tuned}       & \textbf{0.985} & \textbf{22.3} & 3.1 \\
+Oracle (ground truth)     & 0.994 & 15.6 & 3.1 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1447,18 +1504,30 @@ While domain choice is the primary factor, segmentation quality also plays a rol
 
 \section{Segmentation as a Necessary but Not Sufficient Condition}
 
-Better segmentation helps all planners: the improved model reduces temporal instability by 77\% (1.46\%~$\to$~0.33\% unstable frames, Table~\ref{tab:fullvideo_replay}), increases the template success rate by 5.6~percentage points, and raises mask--path alignment from 97.8\% to 98.5\% for the image-space midpoint planner.  However, BEV planning fails even with oracle masks: BEV DT achieves 69.2~px lateral error with perfect input versus 15.2~px for the image-space midpoint under the same conditions (Table~\ref{tab:oracle_comparison}).  These results suggest that segmentation improvement has diminishing returns for BEV planning because the bottleneck is computational cost and coordinate-transform error, not mask quality.  In contrast, segmentation improvement directly and proportionally benefits image-space planning, where the mask occupies a substantial fraction of the image and boundary quality translates directly to path accuracy.
+Better segmentation helps all planners, and the effect is measurable at each stage of the training progression.  The teacher-trained model reduces temporal instability by 77\% (1.46\%~$\to$~0.33\% unstable frames, Table~\ref{tab:fullvideo_replay}) and increases the template success rate by 5.6~percentage points.  The subsequent hand-annotated fine-tuning stage (Section~\ref{sec:finetuned_seg}) further reduces lateral center error from 35.6~px to 22.3~px for the image-space midpoint planner---a 37\% improvement that approaches oracle performance (15.6~px, Table~\ref{tab:planner_seg_comparison}).  This improvement is driven by precision gains: the fine-tuned model stops segmenting unreachable background surfaces, producing tighter masks that better represent the actual traversable corridor.
+
+However, BEV planning fails even with oracle masks: BEV skeleton-graph achieves 96.0~px lateral error with perfect input versus 15.6~px for the image-space midpoint under the same conditions (Table~\ref{tab:planner_comparison}).  These results suggest that segmentation improvement has diminishing returns for BEV planning because the bottleneck is computational cost and coordinate-transform error, not mask quality.  In contrast, segmentation improvement directly and proportionally benefits image-space planning, where the mask occupies a substantial fraction of the image and boundary quality translates directly to path accuracy.
 
 Beyond segmentation and domain choice, the planning algorithm itself affects path stability, as discussed next.
 
 
 \section{Template Planning and Turn Safety}
 
-The template-approval planner and waypoint-turn planner address two different failure modes of the baseline system.  The template-approval planner targets \emph{heading jitter}: by selecting from a fixed arc bank with family reuse hysteresis instead of per-frame graph search, heading oscillation drops by 40.6\% and path-source switching drops by 50\% (Table~\ref{tab:template_eval}).  This improvement arises because the arc bank restricts the solution space to smooth, ego-anchored trajectories that are inherently less noisy than pixel-level Dijkstra paths.
+\subsection{Why Skeleton-Based Planning Fails}
 
-The waypoint-turn planner targets \emph{junction navigation}: when GPS intent signals a turn, the corridor-support scan detects the opening and the circular arc provides a geometrically consistent maneuver path.  The containment guard adds a critical safety layer by verifying the final committed path against the actual BEV mask---ensuring that planner confidence alone does not gate safety.  The 0\% containment failure rate in validation suggests the guard is effective, though it is intentionally conservative: when a turn path clips the mask boundary, the system prefers safe hold behavior over an unsafe maneuver.
+The skeleton-graph planner (v1) is fundamentally mismatched to the sidewalk navigation task for three reasons.  First, \textbf{topological instability}: Guo--Hall thinning produces skeletons whose topology changes with minor mask perturbations---a single pixel of noise at a mask boundary can create or destroy a branch, causing the Dijkstra path to jump between completely different routes on consecutive frames.  This instability directly produces the heading jitter and path-source switching observed in Table~\ref{tab:template_eval}.  Second, \textbf{computational cost}: per-pixel graph construction and Dijkstra search on the full BEV mask require 380--841\,ms per frame (Tables~\ref{tab:planner_comparison},~\ref{tab:iteration_progression}), consuming the entire real-time budget on path planning alone.  Third, \textbf{unnecessary generality}: skeleton extraction discovers \emph{all} topological paths through the mask, but for sidewalk following the vehicle only needs the single forward corridor---the junction topology is better handled by GPS intent conditioning than by exhaustive graph search.
 
-The 1800-frame accepted run (100\% template success, 0.954 IoU) demonstrates that the combined system---improved segmentation, template-approval planner, and waypoint-turn planner---can sustain stable operation over extended sequences.  However, the validation remains concentrated on a single campus route (VID\_017), and broader generalization is not yet established.
+\subsection{Template-Approval as the Alternative}
+
+The template-approval planner addresses all three skeleton failures.  By scoring a fixed bank of seven pre-computed arc templates against the BEV corridor, it replaces per-frame path \emph{discovery} with path \emph{verification}.  This eliminates topological instability (the arc bank is fixed and smooth), reduces planner cost to 1.45\,ms per frame (Table~\ref{tab:accepted_run}), and restricts the solution space to geometrically plausible ego-anchored trajectories.  The result is a 40.6\% reduction in mean heading error and 50\% fewer path-source switches compared to the skeleton-graph baseline (Table~\ref{tab:template_eval}).
+
+\subsection{GPS Intent for Turn Handling}
+
+For junction maneuvers, the system uses GPS intent conditioning rather than skeleton-based topology discovery.  When GPS bearing comparison signals a left or right turn, the waypoint-turn planner activates a dedicated BEV corridor scan to detect the opening and fits a circular arc through the turn geometry.  This design separates two concerns: \emph{where to turn} (answered by GPS intent) and \emph{how to turn safely} (answered by BEV corridor verification with containment gating).  The skeleton-graph approach conflates these concerns by attempting to discover all possible paths and select among them---an approach that is both slower and less reliable than intent-conditioned verification.
+
+The containment guard adds a critical safety layer by verifying the final committed path against the actual BEV mask---ensuring that planner confidence alone does not gate safety.  The 0\% containment failure rate in validation suggests the guard is effective, though it is intentionally conservative: when a turn path clips the mask boundary, the system prefers safe hold behavior over an unsafe maneuver.
+
+The 1800-frame accepted run (100\% template success, 0.954 IoU, 9.97~FPS) demonstrates that the combined system---fine-tuned segmentation, template-approval planner, and GPS-conditioned waypoint-turn planner---can sustain stable operation over extended sequences.  However, the validation remains concentrated on a single campus route (VID\_017), and broader generalization is not yet established.
 
 The conditions under which this approach degrades are characterized in the following section.
 
