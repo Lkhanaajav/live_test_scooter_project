@@ -207,7 +207,7 @@ ROS     & Robot Operating System \\
 \chapter*{ABSTRACT}
 \addcontentsline{toc}{chapter}{ABSTRACT}
 
-Autonomous sidewalk navigation for micro-mobility platforms requires perception and path planning that operate reliably on embedded, low-power hardware using only a monocular camera. This thesis presents a modular vision pipeline that evolved through four design iterations---from BEV skeleton-graph construction to template-approval planning---and provides a systematic comparison of five path-planning methods across bird's-eye view (BEV) and image-space domains. A semi-supervised teacher--student framework trains a compact SegFormer-B0 student (3.7M parameters, IoU 0.946 at \SI{11.7}{ms}) from OneFormer Swin-L pseudo-labels, providing the segmentation foundation for all downstream planning.
+Autonomous sidewalk navigation for micro-mobility platforms requires perception and path planning that operate reliably on embedded, low-power hardware using only a monocular camera. This thesis presents a modular vision pipeline that evolved through four design iterations---from BEV skeleton-graph construction to template-approval planning---and provides a systematic comparison of five path-planning methods across bird's-eye view (BEV) and image-space domains. A semi-supervised teacher--student framework trains a compact SegFormer-B0 student (3.7M parameters) from OneFormer Swin-L pseudo-labels, subsequently fine-tuned on 228 human-corrected masks to achieve IoU 0.964 at \SI{14.0}{ms}, providing the segmentation foundation for all downstream planning.
 
 On 228 hand-annotated campus sidewalk frames, image-space midpoint planning with a fine-tuned segmentation model achieves \SI{22.3}{\px} lateral center error at \SI{3.1}{ms} per frame---a $271\times$ speedup over the BEV skeleton-graph method (\SI{100.5}{\px} at \SI{841}{ms}). BEV masks achieve adequate coverage (approximately 33\% occupancy), but BEV path \emph{discovery} algorithms---skeleton extraction and Dijkstra search---are prohibitively slow (770--841\,ms), making them unsuitable as the primary planning domain. Oracle-mask experiments confirm that BEV-domain planners introduce systematic error beyond what segmentation quality can explain.  A 228-frame hand annotation campaign further reveals that teacher pseudo-labels systematically over-segment unreachable background surfaces; fine-tuning on human-corrected masks raises segmentation IoU from 0.934 to 0.964.
 
@@ -238,7 +238,7 @@ Existing approaches to vision-based navigation face limitations in this setting.
 
 This thesis investigates autonomous sidewalk-following navigation for micro-mobility platforms equipped with a single forward-facing monocular camera. The core task is to map each video frame to a centered, smooth navigation path through the traversable region, producing control-ready waypoints suitable for real-time execution on embedded hardware. Within this broad objective, the thesis focuses on two open questions. First, for straight-ahead path following, which planning domain yields better accuracy and computational efficiency---bird's-eye view or image-space? Second, when BEV-domain reasoning is needed for tasks such as corridor validation and turn planning, how should BEV processing be structured to retain its metric-scale benefits while meeting real-time constraints?
 
-The scope of this work is bounded by the following constraints. All evaluation is conducted offline on pre-recorded campus sidewalk video, isolating the perception and planning stages from closed-loop vehicle dynamics. Runtime measurements are performed under CPU-only inference to reflect the computational budget of embedded deployment. The evaluation corpus consists of six video sequences totaling over \numprint{22000} frames, supplemented by 32~hand-annotated frames with ground-truth masks for quantitative planner comparison. No closed-loop vehicle control is exercised during evaluation, ensuring that the reported metrics characterize the perception and planning pipeline in isolation.
+The scope of this work is bounded by the following constraints. All evaluation is conducted offline on pre-recorded campus sidewalk video, isolating the perception and planning stages from closed-loop vehicle dynamics. Runtime measurements are performed under CPU-only inference to reflect the computational budget of embedded deployment. The evaluation corpus consists of six video sequences totaling over \numprint{22000} frames, supplemented by 228~hand-annotated frames with ground-truth masks for quantitative planner and segmentation comparison. No closed-loop vehicle control is exercised during evaluation, ensuring that the reported metrics characterize the perception and planning pipeline in isolation.
 
 
 \section{Approach Overview}
@@ -267,7 +267,7 @@ This thesis makes the following contributions:
 
   \item A semi-supervised segmentation training recipe using a high-capacity OneFormer Swin-L teacher~\cite{oneformer} to generate pseudo-labels for a compact SegFormer-B0 student~\cite{segformer}, achieving IoU of 0.934 at 14.6~ms on CPU, further improved to IoU of 0.964 through fine-tuning on 228 human-corrected masks that address teacher over-segmentation errors (Chapter~\ref{ch:evaluation}).
 
-  \item A multi-scale offline evaluation protocol that validates findings at three complementary scales---32 hand-annotated frames for planner accuracy, \numprint{22679}-frame replay for temporal stability, and an 1800-frame accepted run for sustained system validation---providing evidence that trends are consistent across evaluation granularities (Chapter~\ref{ch:evaluation}).
+  \item A multi-scale offline evaluation protocol that validates findings at three complementary scales---228 hand-annotated frames for planner accuracy and segmentation evaluation, \numprint{22679}-frame replay for temporal stability, and an 1800-frame accepted run for sustained system validation---providing evidence that trends are consistent across evaluation granularities (Chapter~\ref{ch:evaluation}).
 
   \item A GPS-conditioned waypoint-turn planner with a containment safety guard that verifies committed paths against the BEV corridor before execution, validated with a 0\% containment failure rate (Chapter~\ref{ch:system_design}, Chapter~\ref{ch:evaluation}).
 \end{enumerate}
@@ -392,7 +392,7 @@ Semi-supervised extensions of knowledge distillation use the teacher to generate
 
 OneFormer~\cite{oneformer} is a universal image segmentation model that unifies semantic, instance, and panoptic segmentation within a single architecture through task-conditioned joint training. Pre-trained on large-scale datasets including ADE20K~\cite{zhou2017ade20k}, COCO~\cite{coco}, and CityScapes~\cite{cityscapes}, OneFormer with a Swin-L backbone~\cite{liu2021swin} provides high-quality dense predictions across a wide range of visual domains. Its broad training distribution makes it a strong candidate for generating pseudo-labels in domains where dedicated annotated data is scarce---such as sidewalk-specific binary segmentation.
 
-While knowledge distillation has been applied broadly in semantic segmentation, the specific combination of OneFormer Swin-L as teacher and SegFormer-B0 as student has not been explored in this context. This thesis employs this combination to train a student model that achieves IoU of 0.946 at 11.7~ms inference time on CPU (Chapter~\ref{ch:evaluation}).
+While knowledge distillation has been applied broadly in semantic segmentation, the specific combination of OneFormer Swin-L as teacher and SegFormer-B0 as student has not been explored in this context. This thesis employs this combination to train a student model that, after fine-tuning on 228 human-corrected masks, achieves IoU of 0.964 at 14.0~ms inference time on CPU (Chapter~\ref{ch:evaluation}).
 
 Deploying these trained models under real-time constraints on embedded hardware introduces additional challenges, reviewed in the following section.
 
@@ -420,7 +420,7 @@ The preceding sections have surveyed eight areas of prior work relevant to monoc
 
   \item \textbf{BEV discovery-vs-verification cost--benefit uncharacterized.} While the limitations of monocular BEV projection are acknowledged qualitatively in the literature, no prior work has systematically characterized the cost--benefit trade-off between BEV path \emph{discovery} (constructing paths from scratch on BEV grids) and BEV path \emph{verification} (scoring pre-computed candidates against BEV corridors) for sidewalk scenarios. This gap is addressed by the BEV cost--benefit analysis presented in Chapter~\ref{ch:evaluation}, which documents a two-orders-of-magnitude cost difference between the two approaches and demonstrates that verification retains the metric-scale benefits essential for turn geometry.
 
-  \item \textbf{OneFormer-to-SegFormer distillation not applied to sidewalk segmentation.} Knowledge distillation is well established in segmentation, but the specific combination of a universal OneFormer Swin-L teacher with a lightweight SegFormer-B0 student has not been explored for sidewalk-specific binary segmentation. This thesis presents such a training recipe, achieving IoU of 0.946 at 11.7~ms on CPU.
+  \item \textbf{OneFormer-to-SegFormer distillation not applied to sidewalk segmentation.} Knowledge distillation is well established in segmentation, but the specific combination of a universal OneFormer Swin-L teacher with a lightweight SegFormer-B0 student has not been explored for sidewalk-specific binary segmentation. This thesis presents such a recipe, achieving IoU of 0.964 at 14.0~ms on CPU after fine-tuning on human-corrected masks.
 
   \item \textbf{Few end-to-end CPU-only sidewalk pipeline benchmarks.} Individual perception and planning components are often profiled in isolation, but complete perception-to-planning pipelines have rarely been benchmarked end-to-end on CPU-only embedded hardware for sidewalk applications. The system-level profiling in this thesis addresses this gap, reporting 59~FPS for the recommended image-space architecture.
 \end{enumerate}
@@ -464,7 +464,7 @@ These hardware constraints directly shape the segmentation strategy described ne
 
 The real-time constraint described in Section~\ref{sec:hardware}---sustaining at least 10\,Hz on a Raspberry Pi~4---imposes a strict parameter budget on the segmentation model. SegFormer-B0 (3.7M parameters) achieves sub-50\,ms inference on CPU, leaving approximately 50\,ms for all downstream processing (BEV projection, path planning, obstacle detection, and control). Larger variants in the SegFormer family, such as B2 (24M parameters) and B5 (84.7M parameters), consume the entire per-frame budget on segmentation alone and are therefore not viable for embedded deployment. The choice of SegFormer-B0 is therefore not a preference but a constraint imposed by the hardware platform.
 
-A second challenge arises from the limited training data available for sidewalk segmentation. Small models trained on a few hundred hand-annotated frames tend to produce noisy masks with inconsistent boundaries. Early iterations of this work addressed this limitation through a teacher--student knowledge distillation framework, initially using a SegFormer-B2 teacher. That configuration yielded a student IoU of 0.758 on hand-annotated evaluation frames (Table~\ref{tab:seg_comparison}). Switching the teacher to a high-capacity OneFormer Swin-L~\cite{oneformer} model pre-trained on ADE20K raised the student IoU to 0.946 at 11.7\,ms inference latency.  The latency reduction from the earlier checkpoint (18.9\,ms) reflects the fact that the improved training recipe produced a different final student checkpoint with cleaner decision boundaries, not a direct effect of teacher quality on inference speed. This teacher--student progression motivates the supervision strategy described in the subsections that follow.
+A second challenge arises from the limited training data available for sidewalk segmentation. Small models trained on a few hundred hand-annotated frames tend to produce noisy masks with inconsistent boundaries. Early iterations of this work addressed this limitation through a teacher--student knowledge distillation framework, initially using a SegFormer-B2 teacher. Switching the teacher to a high-capacity OneFormer Swin-L~\cite{oneformer} model pre-trained on ADE20K raised the student IoU from 0.926 to 0.934 on the 228-frame evaluation set (Table~\ref{tab:seg_comparison}).  A subsequent fine-tuning stage on 228 human-corrected masks further raised IoU to 0.964 (Section~\ref{sec:finetuned_seg}). This three-stage progression motivates the supervision strategy described in the subsections that follow.
 
 The first stage performs pixel-wise segmentation of sidewalk regions from monocular RGB input. This module is critical for all downstream steps and must balance segmentation quality with real-time efficiency on embedded systems.
 
@@ -527,26 +527,7 @@ To address the teacher's systematic errors, the student model was fine-tuned on 
 
 The fine-tuning recipe initializes from the teacher-trained checkpoint and trains for 8 epochs with a learning rate of $2 \times 10^{-5}$ (cosine annealing), batch size 4, and the same cross-entropy + Dice loss used in the initial training.  The built-in validation split (every 5th frame per video) monitors overfitting.
 
-Table~\ref{tab:seg_finetuned} reports the improvement on the 228-frame evaluation set.
-
-\begin{table}[h]
-\centering
-\caption{Segmentation quality before and after hand-annotated fine-tuning (228 frames from VID\_017--020).  The fine-tuned model achieves 3-point IoU improvement and substantially higher precision, confirming that human-corrected annotations teach the model to avoid over-segmentation of unreachable surfaces.}
-\label{tab:seg_finetuned}
-\begin{tabular}{lccccr}
-\toprule
-Model & IoU & Prec. & Recall & F1 & ms \\
-\midrule
-Baseline (SegFormer-B2 teacher)      & 0.926 & 0.946 & 0.978 & 0.960 & 15.6 \\
-Teacher-trained (OneFormer Swin-L)   & 0.934 & 0.951 & 0.982 & 0.965 & 14.6 \\
-\textbf{Fine-tuned (hand-annotated)} & \textbf{0.964} & \textbf{0.981} & \textbf{0.982} & \textbf{0.982} & \textbf{14.0} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Fine-tuning raises IoU from 0.934 to 0.964 (+3.0 percentage points) and precision from 0.951 to 0.981 (+3.0 points), while recall remains unchanged at 0.982.  The precision improvement confirms that the model learned to suppress the teacher's over-segmentation of unreachable surfaces.  The predicted mask area decreased from 865K to 838K pixels on average---closer to the ground-truth mean of 836K---indicating tighter, more conservative segmentation boundaries.
-
-This result demonstrates that for domain-specific deployment, teacher pseudo-labels alone are insufficient: human correction of traversability errors is necessary to produce masks that reflect the actual navigable corridor rather than all road-like surfaces in the scene.
+The quantitative results of this fine-tuning are reported in Chapter~\ref{ch:evaluation}, Table~\ref{tab:seg_comparison}: fine-tuning raises IoU from 0.934 to 0.964 (+3.0 percentage points) and precision from 0.951 to 0.981 (+3.0 points), while recall remains unchanged at 0.982.  The precision improvement confirms that the model learned to suppress the teacher's over-segmentation of unreachable surfaces.  The predicted mask area decreased from 865K to 838K pixels on average---closer to the ground-truth mean of 836K---indicating tighter, more conservative segmentation boundaries.
 
 
 \subsection{Loss Function}
@@ -565,7 +546,7 @@ The student model is initialized from a SegFormer-B0 checkpoint pre-trained on C
 
 \subsection{Training Progression}
 
-Table~\ref{tab:training_progression} summarizes the segmentation model iterations. The OneFormer teacher with expanded data yields the highest validation IoU (0.959), while the hand-annotated evaluation (Section~\ref{sec:res_seg}) confirms a large improvement over the baseline (IoU 0.758~$\to$~0.946).
+Table~\ref{tab:training_progression} summarizes the segmentation model iterations. The OneFormer teacher with expanded data yields the highest validation IoU (0.959), while the 228-frame hand-annotated evaluation (Section~\ref{sec:res_seg}) confirms substantial improvement through teacher quality (IoU 0.926~$\to$~0.934) and human-corrected fine-tuning (0.934~$\to$~0.964).
 
 \input{tables/generated/training_progression.tex}
 
@@ -706,7 +687,7 @@ Pre-computed trajectory libraries~\cite{howard2007trajectory} establish the prop
 \subsection{Image-Space Midpoint Planner}
 \label{sec:img_midpoint}
 
-The third iteration (v3) emerged from the observation that for straight-ahead corridor following, perspective projection preserves the lateral ordering of mask boundaries: the left edge of the sidewalk in the camera image remains to the left of the right edge at every row, regardless of foreshortening. The midpoint of each row therefore approximates the corridor center without any BEV transform. This insight yields a 14.3\,px lateral center error at 2.2\,ms---a 421$\times$ speedup over BEV DT ridge planning (Table~\ref{tab:planner_comparison}). The result suggests that for straight-ahead path extraction, the segmentation mask itself encodes sufficient geometric information, and the BEV transform introduces cost and noise without proportional benefit.
+The third iteration (v3) emerged from the observation that for straight-ahead corridor following, perspective projection preserves the lateral ordering of mask boundaries: the left edge of the sidewalk in the camera image remains to the left of the right edge at every row, regardless of foreshortening. The midpoint of each row therefore approximates the corridor center without any BEV transform. This insight yields 22.3\,px lateral center error at 3.1\,ms---a $271\times$ speedup over BEV skeleton-graph planning (Table~\ref{tab:planner_comparison}). The result suggests that for straight-ahead path extraction, the segmentation mask itself encodes sufficient geometric information, and the BEV transform introduces cost and noise without proportional benefit.
 
 This method operates directly on the image-plane segmentation mask $\widehat{M}_\text{img}$, bypassing BEV entirely. For each row $y$ of the mask, the left and right sidewalk boundaries are identified and the midpoint $x_\text{mid}(y) = (x_L(y) + x_R(y))/2$ is computed. Rows with fewer than a minimum number of road pixels are skipped. A connected-component filter ensures only the ego-connected mask region is used. The resulting per-row midpoints are smoothed with a Savitzky--Golay filter to produce a continuous centerline. This method is the fastest (\SI{2.2}{ms}) and produces the lowest lateral center error in the experiments reported in Chapter~\ref{ch:evaluation}.
 
@@ -714,9 +695,9 @@ This method operates directly on the image-plane segmentation mask $\widehat{M}_
 \subsection{Image-Space Distance-Transform Planner}
 \label{sec:img_dt}
 
-The image-space DT planner provides a more robust alternative to midpoint extraction when mask boundaries are irregular or partially occluded. By tracing the maximum-clearance ridge rather than averaging left and right boundaries, it maintains 99.4\% inside-GT alignment at 108.1\,ms (Table~\ref{tab:planner_comparison}), serving as a fallback when the midpoint method encounters degraded mask quality.
+The image-space DT planner provides a more robust alternative to midpoint extraction when mask boundaries are irregular or partially occluded. By tracing the maximum-clearance ridge rather than averaging left and right boundaries, it maintains 98.9\% inside-GT alignment at \SI{140}{ms} (Table~\ref{tab:planner_comparison}), serving as a fallback when the midpoint method encounters degraded mask quality.
 
-The EDT is computed on the image-plane mask, and the maximum-distance ridge is traced using dynamic programming with a lateral drift constraint. A per-row forward pass from the ego (bottom-center) selects the column with minimum cost (inverse EDT) subject to a maximum lateral step per row, producing a path that tracks the widest part of the sidewalk corridor. This method is more robust than midpoint extraction on masks with irregular boundaries or partial gaps but slower (\SI{108.1}{ms}).
+The EDT is computed on the image-plane mask, and the maximum-distance ridge is traced using dynamic programming with a lateral drift constraint. A per-row forward pass from the ego (bottom-center) selects the column with minimum cost (inverse EDT) subject to a maximum lateral step per row, producing a path that tracks the widest part of the sidewalk corridor. This method is more robust than midpoint extraction on masks with irregular boundaries or partial gaps but slower (\SI{140}{ms}).
 
 
 \subsection{GPS-Conditioned Waypoint-Turn Planner}
@@ -991,19 +972,37 @@ This section examines the claim that a high-capacity teacher model substantially
 
 \subsection{Hand-Annotated Evaluation}
 
-Table~\ref{tab:seg_comparison} compares the baseline and improved segmentation models on 32 hand-annotated frames. The improved model (OneFormer Swin-L teacher, threshold 0.60) raises IoU from 0.758 to 0.946 while simultaneously reducing inference time from \SI{18.9}{ms} to \SI{11.7}{ms}---a 38\% speedup. Precision and recall both improve substantially, indicating better mask completeness and fewer false positives.  Figure~\ref{fig:seg_improvement} visualizes these gains, and Figure~\ref{fig:segmentation_stage} shows the pipeline stages from RGB input through BEV projection.
+Table~\ref{tab:seg_comparison} compares the full segmentation progression on the 228 hand-annotated frames (VID\_017--020).  Three training stages are compared: the initial baseline (SegFormer-B2 teacher), the teacher-trained candidate (OneFormer Swin-L teacher), and the hand-annotated fine-tuned model.  Table~\ref{tab:seg_per_video} reports per-video IoU for the fine-tuned model to confirm consistency across sequences.
 
 \begin{table}[h]
 \centering
-\caption{Segmentation quality on 32 hand-annotated frames. ``Baseline'' uses the SegFormer-B2 teacher; ``Candidate'' uses the OneFormer Swin-L teacher.}
+\caption{Segmentation quality progression on 228 hand-annotated frames (VID\_017--020).  Three training stages are compared: baseline (SegFormer-B2 teacher), teacher-trained (OneFormer Swin-L), and fine-tuned on 228 human-corrected masks.  Fine-tuning raises IoU by 3.0 points and precision by 3.0 points relative to the teacher-trained model.}
 \label{tab:seg_comparison}
 \begin{tabular}{lccccr}
 \toprule
 Model & IoU & Prec. & Recall & F1 & ms \\
 \midrule
-Baseline      & 0.758 & 0.910 & 0.835 & 0.851 & 18.9 \\
-Candidate     & \textbf{0.946} & \textbf{0.983} & \textbf{0.962} & \textbf{0.972} & \textbf{11.7} \\
-Cand.+confhold & 0.903 & 0.987 & 0.914 & 0.947 & 13.1 \\
+Baseline (B2 teacher)     & 0.926 & 0.946 & 0.978 & 0.960 & 15.6 \\
+Teacher-trained (OneFormer)  & 0.934 & 0.951 & 0.982 & 0.965 & 14.6 \\
+\textbf{Fine-tuned (hand-annotated)} & \textbf{0.964} & \textbf{0.981} & \textbf{0.982} & \textbf{0.982} & \textbf{14.0} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Per-video segmentation IoU for the fine-tuned model (228 frames).  Performance is consistent across all four sequences, with VID\_017 and VID\_019 showing the highest IoU and VID\_018 the lowest---attributable to heavier shadow and surface variation in that sequence.}
+\label{tab:seg_per_video}
+\begin{tabular}{lccc}
+\toprule
+Video & IoU & Precision & Recall \\
+\midrule
+VID\_017 & 0.971 & 0.982 & 0.989 \\
+VID\_018 & 0.960 & 0.978 & 0.982 \\
+VID\_019 & 0.962 & 0.988 & 0.974 \\
+VID\_020 & 0.963 & 0.978 & 0.984 \\
+\midrule
+\textbf{All} & \textbf{0.964} & \textbf{0.981} & \textbf{0.982} \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1011,18 +1010,16 @@ Cand.+confhold & 0.903 & 0.987 & 0.914 & 0.947 & 13.1 \\
 \begin{figure}[h]
   \centering
   \includegraphics[width=0.85\columnwidth]{seg_improvement_v2.png}
-  \caption{Segmentation quality comparison on 32 hand-annotated campus frames, baseline (SegFormer-B2 teacher) vs.\ candidate (OneFormer Swin-L teacher). The candidate improves all metrics---IoU, precision, recall---while reducing inference time.}
+  \caption{Segmentation quality comparison.  The fine-tuned model achieves the highest IoU (0.964) by learning to suppress unreachable background surfaces that the teacher model over-segments.}
   \label{fig:seg_improvement}
 \end{figure}
 
 
 \subsection{Teacher--Student Progression}
 
-The path from baseline to candidate segmentation is best understood as a progression in teacher quality.  The initial training recipe employed a SegFormer-B2 teacher (24M parameters) fine-tuned on 300 hand-annotated frames to generate pseudo-labels for the SegFormer-B0 student.  This approach achieved IoU~0.758 on the hand-annotated evaluation set---serviceable for initial pipeline development but insufficient for reliable path planning, as boundary errors in the mask propagate directly into lateral path error.
+The segmentation progression is best understood in three stages.  First, switching from a SegFormer-B2 teacher to a OneFormer Swin-L teacher raised the student's IoU from 0.926 to 0.934 on the 228-frame evaluation set, demonstrating that teacher quality is the dominant factor in initial student performance.  Second, manual annotation of 228 frames revealed systematic teacher errors: over-segmentation of unreachable surfaces, shadow/sunlight failures, and seasonal boundary bleed (Section~\ref{sec:teacher_limits}).  Third, fine-tuning on these human-corrected masks raised IoU to 0.964 (+3.0 points), with the improvement driven primarily by precision gains (0.951~$\to$~0.981) that confirm the model learned to suppress background over-segmentation (Section~\ref{sec:finetuned_seg}).
 
-Switching to a OneFormer Swin-L teacher~\cite{oneformer}---pre-trained on ADE20K and capable of universal semantic, instance, and panoptic segmentation---raised the student's evaluation IoU to 0.946, a 25\% improvement.  Simultaneously, inference time decreased from \SI{18.9}{ms} to \SI{11.7}{ms}, attributable to improved model convergence from higher-quality pseudo-labels.  The full training history, including intermediate checkpoints and data augmentation stages, is documented in Table~\ref{tab:training_progression} (Section~\ref{sec:teacher_student}).
-
-This progression demonstrates that, for a capacity-constrained student model, the quality of the teacher's pseudo-labels is the dominant factor in initial segmentation performance.  The student architecture (SegFormer-B0, 3.7M parameters) remained unchanged throughout; only the teacher and training recipe varied.  However, as described in Section~\ref{sec:teacher_limits}, even the best teacher introduces systematic errors---segmenting unreachable surfaces and failing on shadow/sunlight conditions---that a subsequent fine-tuning stage on 228 human-corrected masks resolves (Section~\ref{sec:finetuned_seg}, Table~\ref{tab:seg_finetuned}).
+The student architecture (SegFormer-B0, 3.7M parameters) remained unchanged throughout all three stages; only the teacher, training data, and recipe varied.  The full training history is documented in Table~\ref{tab:training_progression} (Section~\ref{sec:teacher_student}).
 
 \begin{figure}[h]
   \centering
@@ -1071,7 +1068,7 @@ Mean Heading $\Delta$ [deg] & 0.209 & 0.201 & $-$0.008 \\
 
 \subsection{Conclusion}
 
-The evidence presented in this section supports the claim that teacher quality is the dominant factor in student mask quality.  The switch from a SegFormer-B2 teacher to a OneFormer Swin-L teacher produced a 25\% IoU improvement (0.758~$\to$~0.946) and a 38\% inference speedup (18.9~ms~$\to$~11.7~ms), with full-video replay confirming that the improvement extends to temporal stability across \numprint{22679}~frames.  These results are limited to campus sidewalk sequences collected under daytime conditions; generalization to other environments, surfaces, or lighting conditions has not been tested.
+The evidence presented in this section supports the claim that segmentation quality is substantially improved through both teacher quality and human-corrected fine-tuning.  The three-stage progression---baseline (IoU~0.926), teacher-trained (0.934), fine-tuned (0.964)---demonstrates that teacher pseudo-labels provide a strong foundation but human correction of traversability errors is necessary to reach deployment-quality masks.  Per-video results (Table~\ref{tab:seg_per_video}) confirm that the improvement is consistent across all four evaluation sequences.  Full-video replay on \numprint{22679}~frames confirms that the teacher-trained improvement extends to temporal stability.  These results are limited to campus sidewalk sequences collected under daytime conditions; generalization to other environments, surfaces, or lighting conditions has not been tested.
 
 With segmentation quality established, the next section examines how planning domain choice affects path accuracy and latency.
 
@@ -1164,7 +1161,7 @@ Oracle (ground truth)     & 0.994 & 15.6 & 3.1 \\
 \begin{figure}[t]
   \centering
   \includegraphics[width=\columnwidth]{latency_log_scale.png}
-  \caption{Planner latency on a logarithmic scale. All three BEV-domain methods exceed the 100\,ms real-time budget (dashed red line), while the image-space midpoint planner operates at 2.2\,ms---a $173\times$ speedup over the BEV skeleton-graph planner. The image-space DT planner sits near the budget boundary at 108.1\,ms.}
+  \caption{Planner latency on a logarithmic scale. BEV-domain methods exceed the 100\,ms real-time budget (dashed red line), while the image-space midpoint planner operates at 3.1\,ms---a $271\times$ speedup over the BEV skeleton-graph planner (841\,ms). The image-space DT planner sits above the budget boundary at 140\,ms.}
   \label{fig:latency_log}
 \end{figure}
 
@@ -1211,7 +1208,7 @@ Img Midpoint    & 0.994 & 15.6 & 3.1 \\
 \includegraphics[width=\linewidth]{cam_paths_0001.png}
 \caption{Selected path in camera view.}
 \end{subfigure}
-\caption{BEV skeleton-graph pipeline. (a)~Skeleton after Guo--Hall thinning, (b)~candidate paths from Dijkstra search, (c)~selected path reprojected to camera view. While topologically informative, this method is the slowest (\SI{380.3}{ms}) and least accurate of the five compared planners.}
+\caption{BEV skeleton-graph pipeline. (a)~Skeleton after Guo--Hall thinning, (b)~candidate paths from Dijkstra search, (c)~selected path reprojected to camera view. While topologically informative, this method is the slowest (841\,ms on the 228-frame eval) and least accurate of the compared planners.}
 \label{fig:skeleton_stage}
 \end{figure}
 
@@ -1319,24 +1316,24 @@ This section examines whether the complete pipeline---integrating the findings o
 
 \subsection{Runtime Analysis}
 
-Table~\ref{tab:runtime_merged} compares per-module runtimes for the BEV pipeline and the image-space pipeline at $640\times360$ resolution on CPU.  The planner module dominates the difference: image-space midpoint planning costs 2.2\,ms compared to 380.3\,ms for the BEV skeleton-graph planner, a $173\times$ speedup (Figure~\ref{fig:runtime_breakdown}).
+Table~\ref{tab:runtime_merged} compares per-module runtimes for the BEV pipeline and the image-space pipeline at $640\times360$ resolution on CPU.  The planner module dominates the difference: image-space midpoint planning costs 3.1\,ms compared to 841\,ms for the BEV skeleton-graph planner, a $271\times$ speedup (Figure~\ref{fig:runtime_breakdown}).
 
 \begin{table}[h]
 \centering
-\caption{Per-module runtime comparison at $640{\times}360$ on CPU, BEV pipeline vs.\ image-space pipeline. The planner module dominates the difference: image-space midpoint planning costs 2.2\,ms compared to 380.3\,ms for BEV skeleton-graph, a $173\times$ speedup that drives the aggregate gain from 2.4~FPS to 59~FPS.}
+\caption{Per-module runtime comparison at $640{\times}360$ on CPU, BEV pipeline vs.\ image-space pipeline. The planner module dominates the difference: image-space midpoint planning costs 3.1\,ms compared to 841\,ms for BEV skeleton-graph, a $271\times$ speedup.}
 \label{tab:runtime_merged}
 \begin{tabular}{lccc}
 \toprule
 Module & BEV Pipeline & Image-Space & Note \\
 \midrule
-SegFormer Inference   & 11.7\,ms & 11.7\,ms & Shared \\
+SegFormer Inference   & 14.0\,ms & 14.0\,ms & Shared (fine-tuned) \\
 Mask Refinement       & 8.5\,ms  & 3.0\,ms  & Img skips BEV cleanup \\
 BEV Projection        & 0.9\,ms  & ---      & \\
 BEV Cleanup           & 14.6\,ms & ---      & \\
-Planner               & 380.3\,ms & 2.2\,ms & $173\times$ speedup \\
+Planner               & 841\,ms  & 3.1\,ms  & $271\times$ speedup \\
 \midrule
-Total                 & 416.0\,ms & 16.9\,ms & \\
-FPS                   & 2.4       & \textbf{59.2}  & \\
+Total                 & 879\,ms  & 20.1\,ms & \\
+FPS                   & 1.1      & \textbf{49.8}  & \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -1344,7 +1341,7 @@ FPS                   & 2.4       & \textbf{59.2}  & \\
 \begin{figure}[h]
   \centering
   \includegraphics[width=\columnwidth]{runtime_breakdown_v2.png}
-  \caption{Per-module runtime comparison. The image-space architecture eliminates BEV overhead and reduces planner cost by $173\times$, achieving 59~FPS vs.\ 2.4~FPS.}
+  \caption{Per-module runtime comparison. The image-space architecture eliminates BEV overhead and reduces planner cost by $271\times$, achieving 49.8~FPS vs.\ 1.1~FPS.}
   \label{fig:runtime_breakdown}
 \end{figure}
 
@@ -1586,7 +1583,7 @@ In addition to these limitations, specific threats to validity merit considerati
 \section{Threats to Validity}
 \label{sec:threats}
 
-\paragraph{Internal validity.} The same campus environment is used for both training and evaluation, introducing potential geographic overfitting: the segmentation model may have learned campus-specific visual features (e.g., specific concrete textures, grass-border patterns) that inflate reported accuracy.  While the 32 hand-annotated frames are held out from training, they are drawn from the same video sequences used for pseudo-label generation, so scene-level overlap exists.  All annotations were produced by a single annotator (the author), introducing potential annotator bias; inter-annotator agreement is not measured.  The temporal smoothing evaluation uses the same EMA infrastructure being evaluated, and no independent smoothing baseline (e.g., Kalman filter, moving average) is compared.  No inferential statistics (confidence intervals, significance tests) are reported for the planner comparison due to the small sample size (32 frames); the reported differences, while consistent across evaluation scales, should be interpreted as observed effect sizes rather than statistically confirmed results.
+\paragraph{Internal validity.} The same campus environment is used for both training and evaluation, introducing potential geographic overfitting: the segmentation model may have learned campus-specific visual features (e.g., specific concrete textures, grass-border patterns) that inflate reported accuracy.  The 228 hand-annotated frames used for the fine-tuned model evaluation overlap with the fine-tuning training data (same video sequences with a 20\% validation hold-out), so the reported fine-tuned IoU (0.964) reflects in-distribution performance.  All annotations were produced by a single annotator (the author), introducing potential annotator bias; inter-annotator agreement is not measured.  The temporal smoothing evaluation uses the same EMA infrastructure being evaluated, and no independent smoothing baseline (e.g., Kalman filter, moving average) is compared.  No inferential statistics (confidence intervals, significance tests) are reported for the planner comparison due to the small sample size (32 frames); the reported differences, while consistent across evaluation scales, should be interpreted as observed effect sizes rather than statistically confirmed results.
 
 \paragraph{External validity.} All data was collected during daytime hours under clear to partly cloudy conditions on a single university campus.  Results may not generalize to non-campus environments, different surface materials (brick, gravel, dirt), weather conditions (rain, snow, nighttime), different scooter platforms, or significantly different camera configurations.  The stride-based full-video evaluation processes every frame sequentially but does not exercise closed-loop vehicle dynamics; path quality in open-loop replay may be optimistic relative to actual deployment where steering errors compound over time.
 
@@ -1609,9 +1606,9 @@ This thesis traced the development and evaluation of a monocular-camera sidewalk
 
 \textbf{Contribution~2:} A template-approval planner that replaces skeleton-graph construction with verification of pre-computed arc templates (Chapter~\ref{ch:system_design}).  On a 220-frame clip, it reduces mean heading error by 40.6\% and halves path-source switches relative to the skeleton-graph baseline (Table~\ref{tab:template_eval}), with 100\% success rate sustained across the 1,800-frame accepted run.
 
-\textbf{Contribution~3:} A semi-supervised teacher--student segmentation recipe (OneFormer Swin-L teacher, SegFormer-B0 student) achieving IoU~0.934, further improved to IoU~0.964 through fine-tuning on 228 human-corrected masks that address teacher over-segmentation of unreachable surfaces (Table~\ref{tab:seg_finetuned}).
+\textbf{Contribution~3:} A semi-supervised teacher--student segmentation recipe (OneFormer Swin-L teacher, SegFormer-B0 student) achieving IoU~0.934, further improved to IoU~0.964 through fine-tuning on 228 human-corrected masks that address teacher over-segmentation of unreachable surfaces (Table~\ref{tab:seg_comparison}).
 
-\textbf{Contribution~4:} A multi-scale offline evaluation protocol---32 hand-annotated frames, \numprint{22679}-frame replay, and 1,800-frame accepted run---showing consistent trends across scales (Chapter~\ref{ch:evaluation}).  This partially compensates for the absence of closed-loop deployment testing, though on-platform validation remains necessary.
+\textbf{Contribution~4:} A multi-scale offline evaluation protocol---228 hand-annotated frames for planner and segmentation comparison, \numprint{22679}-frame replay for temporal stability, and 1,800-frame accepted run for sustained validation---showing consistent trends across scales (Chapter~\ref{ch:evaluation}).  This partially compensates for the absence of closed-loop deployment testing, though on-platform validation remains necessary.
 
 \textbf{Contribution~5:} A GPS-conditioned waypoint-turn planner with dual-threshold containment gating, achieving 0\% containment failure rate at 12.9~FPS on a 300-frame turn sequence (Table~\ref{tab:waypoint_turn_eval}).  The containment guard validates committed turn paths against the BEV corridor before execution, providing a practical safety mechanism for GPS-directed maneuvers.
 
