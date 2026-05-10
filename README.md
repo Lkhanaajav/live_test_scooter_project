@@ -3,6 +3,8 @@
 
 > Real-time autonomous navigation for electric scooters using semantic segmentation, Bird's Eye View path planning, and a custom fine-tuned SegFormer model — running at 8 Hz on embedded hardware.
 
+**[Read the full thesis (PDF)](thesis_autonomous_scooter_navigation_2025.pdf)**
+
 ---
 
 ## What This Project Does
