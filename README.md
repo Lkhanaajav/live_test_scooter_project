@@ -23,6 +23,12 @@ Real-time autonomous navigation for electric scooters using a single forward-fac
 
 ---
 
+**Baseline (top) vs candidate model (bottom) — IMG_1878, three sampled frames. Green = drivable mask, arrow = planned heading, right panel = BEV view.**
+
+![Segmentation and path comparison — IMG_1878](research/artifacts/images/segmentation_compare_img_1878.jpg)
+
+---
+
 ## What It Does
 
 Single camera → semantic segmentation → BEV homography transform → safe-corridor path planning → steering + speed commands. Designed to run on a commodity embedded board at real-time inference rates.
@@ -108,6 +114,10 @@ Evaluated on 6 real-world sidewalk videos (22,679 total frames). Two videos (`IM
 | `IMG_1924` | 3,459 | +0.0079 | — | −0.7 pp | +2.1 pp |
 
 `IMG_1878` showed the strongest end-to-end gain — the cleaner binary masks directly improve planner behavior when the baseline segmentation is noisy.
+
+**BEV output — IMG_1922, frame 1124. Green = drivable region, cyan line = EDT-optimal path, red = corridor boundary.**
+
+![BEV path planning — IMG_1922](research/artifacts/images/planner_compare_IMG_1922_frame_001124.png)
 
 ---
 
