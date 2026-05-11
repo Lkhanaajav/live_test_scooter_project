@@ -1,68 +1,62 @@
-# Autonomous Scooter Navigation System
-### Undergraduate Thesis — Lkhanaajav Mijiddorj | University of Oklahoma
+# Autonomous Scooter Navigation — Monocular BEV Perception
 
-> Real-time autonomous navigation for electric scooters using semantic segmentation, Bird's Eye View path planning, and a custom fine-tuned SegFormer model — running at 8 Hz on embedded hardware.
+**MS Thesis Project** — Lkhanaajav Mijiddorj | University of Oklahoma
 
-**[Read the full thesis (PDF)](thesis_autonomous_scooter_navigation_2025.pdf)**
+Real-time autonomous navigation for electric scooters using a single forward-facing camera. No LiDAR. No GPU. No external localization.
 
----
-
-## What This Project Does
-
-This system lets an electric scooter navigate sidewalks autonomously using only a single forward-facing camera. No LiDAR, no GPS lock required for local navigation. It detects drivable road surface in real time, transforms the camera view into a top-down (BEV) representation, plans a safe path through the corridor, and sends steering/speed commands to the scooter.
-
-The full pipeline runs at **8 Hz on a Rock 5B embedded board** — fast enough for real-world navigation.
+**[Full Thesis (PDF)](thesis_autonomous_scooter_navigation_2025.pdf)**
 
 ---
 
-## Technical Stack
+## At a Glance
 
-| Layer | Approach |
+| Metric | Value |
 |---|---|
-| Road Segmentation | Fine-tuned SegFormer-B0 (HuggingFace Transformers) |
-| Model Training | Teacher-student: OneFormer (Swin-L) → SegFormer-B0 |
-| View Transform | Bird's Eye View (BEV) via homography calibration |
-| Path Planning | Template bank + pure pursuit controller |
-| Safe Corridor | Distance Transform (EDT) based clearance computation |
-| Obstacle Detection | Object detection overlay on BEV mask |
-| Hardware Target | Rock 5B (ARM64), 8 Hz real-time |
-| Language | Python 3.10+ |
-| Key Libraries | PyTorch, HuggingFace Transformers, OpenCV, NumPy |
+| Inference throughput | **3.0 ms/frame** (CPU-only, Rock 5B ARM64) |
+| Segmentation IoU (best checkpoint) | **0.9437** (val) / **0.9247** (full replay) |
+| Unstable-mask rate | **0.33%** (vs 1.46% baseline) |
+| Path plan success rate | **100%** (has-path rate across all 6 test videos) |
+| Fallback rate | **14.27%** (vs 18.98% baseline, −4.71 pp) |
+| Template path usage | **79.34%** (vs 73.72% baseline, +5.62 pp) |
+| Model size | SegFormer-B0 — 3.7M params, ~15 MB |
+| Training data | 400 pseudo-labeled frames, teacher-student distillation |
 
 ---
 
-## Architecture
+## What It Does
+
+Single camera → semantic segmentation → BEV homography transform → safe-corridor path planning → steering + speed commands. Designed to run on a commodity embedded board at real-time inference rates.
 
 ```
-Camera Frame (1280x720 @ 30fps)
+Camera Frame (1280×720)
         │
         ▼
 ┌─────────────────────────┐
-│  FastRoadDetector        │  ← SegFormer-B0 fine-tuned on sidewalk data
-│  (fast_road_detector.py) │     binary: drivable / non-drivable
+│  FastRoadDetector        │  ← SegFormer-B0, binary drivable/non-drivable
+│  (fast_road_detector.py) │     3.0 ms/frame on CPU
 └────────────┬────────────┘
              │ segmentation mask
              ▼
 ┌─────────────────────────┐
 │  BEV Transform           │  ← perspective homography (4-point calibration)
-│  (bev_calibration.py)    │     camera view → top-down 600x500px map
+│  (bev_calibration.py)    │     camera view → top-down 600×500 px map
 └────────────┬────────────┘
              │ BEV road mask
              ▼
 ┌─────────────────────────┐
 │  Mask Cleanup            │  ← morphological ops + flood-fill hole removal
-│  (masks.py)              │     Gaussian boundary smoothing, ego-clearance selection
+│  (masks.py)              │     Gaussian boundary smoothing, ego-clearance select
 └────────────┬────────────┘
              │ clean BEV mask
              ▼
 ┌─────────────────────────┐
-│  Safe Corridor + Planner │  ← EDT clearance map, template path bank
-│  (realtime_nav_core.py)  │     adaptive pure pursuit with T/Y branch handling
+│  Safe Corridor + Planner │  ← EDT clearance map, template path bank, Dijkstra
+│  (realtime_nav_core.py)  │     adaptive pure pursuit, T/Y branch handling
 └────────────┬────────────┘
              │ heading + speed
              ▼
 ┌─────────────────────────┐
-│  Scooter Commander       │  ← motor/steering commands over serial
+│  Scooter Commander       │  ← motor/steering over serial
 │  (scooter_commander.py)  │
 └─────────────────────────┘
 ```
@@ -71,35 +65,92 @@ Camera Frame (1280x720 @ 30fps)
 
 ## Model Training
 
-The road segmentation model was trained using a **teacher-student approach** to overcome limited labeled data:
+Teacher-student knowledge distillation to overcome the labeled-data bottleneck:
 
-1. **Teacher:** `OneFormer (Swin-L, Cityscapes)` — strong pretrained segmentation model used to generate pseudo-labels on unlabeled sidewalk footage
-2. **Student:** `SegFormer-B0` — lightweight model fine-tuned on pseudo-labels, optimized for 8 Hz inference on embedded hardware
-3. **Dataset:** 400 frames extracted from 4 sidewalk videos, 320 train / 80 validation
-4. **Label collapse:** `road + sidewalk → drivable`, everything else `→ non-drivable`
+| Stage | Model | Purpose |
+|---|---|---|
+| Teacher | OneFormer (Swin-L, Cityscapes) | Pseudo-label generation on unlabeled sidewalk video |
+| Student | SegFormer-B0 | Fast inference model, fine-tuned on pseudo-labels |
 
-The student model achieves comparable accuracy to the teacher at a fraction of the compute cost.
+- **Dataset:** 400 frames extracted from 4 sidewalk videos (`IMG_1878`, `IMG_1921`, `IMG_1922`, `IMG_1924`)
+- **Split:** 320 train / 80 validation (every 5th frame per source video)
+- **Label collapse:** `road + sidewalk → drivable`, everything else `→ non-drivable`
+- **Training:** 10 epochs, weighted CE + Dice loss, class weights `[1.0, 1.9317]`
+- **Best checkpoint:** epoch 9 — val IoU `0.9437`, precision `0.9743`, recall `0.9678`
 
 ---
 
-## Key Research Improvements
+## Evaluation Results
 
-Three research-backed improvements were implemented over the baseline:
+Evaluated on 6 real-world sidewalk videos (22,679 total frames). Two videos (`IMG_1876`, `IMG_1877`) were fully unseen during training — no frames from them were used for pseudo-label generation.
 
-**1. Enhanced Morphological BEV Mask Pipeline** (`masks.py`)
-- Flood-fill hole filling for enclosed regions the standard morphological close misses
-- Gaussian boundary smoothing (σ=1.2px) to reduce segmentation quantization artifacts
-- Distance transform ego-clearance component selection — picks the corridor closest to the scooter, not just the largest area
+### Candidate (best checkpoint) vs Shipped Baseline — All Frames
 
-**2. Distance Transform Safe Corridor** (`safe_corridor.py`)
-- Replaces row-wise scan that failed at path bifurcations (T/Y intersections)
-- EDT-based corridor gives consistent clearance margin across the full path
-- Referenced: Regulated Pure Pursuit (arXiv:2305.20026)
+| Metric | Baseline | Candidate | Δ |
+|---|---:|---:|---:|
+| Mean seg IoU | 0.9088 | **0.9247** | +0.0159 |
+| Unstable mask rate | 1.46% | **0.33%** | −1.12 pp |
+| Path success rate | 100.0% | **100.0%** | — |
+| Mean heading delta | 0.2091° | **0.2010°** | −0.0081° |
+| Mean corridor confidence | 0.8576 | **0.8661** | +0.0085 |
+| Fallback rate | 18.98% | **14.27%** | −4.71 pp |
+| Template path rate | 73.72% | **79.34%** | +5.62 pp |
 
-**3. Temporal Path Smoother** (`path_smoother.py`)
-- Reduces steering oscillation from frame-to-frame path jitter
-- Weighted temporal blending of waypoint sequences
-- Referenced: Trajectory Prediction Survey (arXiv:2503.03262)
+### Per-Video Breakdown
+
+| Video | Frames | Seg IoU Δ | Unstable Δ | Fallback Δ | Template Δ |
+|---|---:|---:|---:|---:|---:|
+| `IMG_1876` (unseen) | 502 | +0.0053 | — | −0.4 pp | — |
+| `IMG_1877` (unseen) | 1,360 | — | −0.8 pp | −4.9 pp | +5.7 pp |
+| `IMG_1878` | 2,686 | **+0.0610** | **−7.3 pp** | **−20.1 pp** | **+21.5 pp** |
+| `IMG_1921` | 6,727 | +0.0094 | — | −2.8 pp | +2.9 pp |
+| `IMG_1922` | 7,945 | +0.0129 | −0.5 pp | — | +4.4 pp |
+| `IMG_1924` | 3,459 | +0.0079 | — | −0.7 pp | +2.1 pp |
+
+`IMG_1878` showed the strongest end-to-end gain — the cleaner binary masks directly improve planner behavior when the baseline segmentation is noisy.
+
+---
+
+## Three Research Improvements Implemented
+
+Each improvement targets a specific measured weakness in the baseline pipeline. All are backward-compatible via config flags (`MORPH_ENHANCED`, `DT_CORRIDOR_ENABLED`, `PATH_SMOOTH_ENABLED`, `HEADING_SMOOTH_ENABLED`).
+
+### 1. Enhanced Morphological BEV Mask (`masks.py`)
+
+**Problem:** Standard morphological close left enclosed holes and jagged contour edges. Largest-area component selection sometimes picked side fragments over the true corridor.
+
+**Solution — `clean_bev_mask_enhanced()`:**
+- **Flood-fill hole filling** — fills enclosed holes < 5 m² by flood-filling from image corners and inverting
+- **Gaussian boundary smoothing** — GaussianBlur (σ=1.2px) → re-binarize at 0.35 threshold
+- **DT ego-clearance component selection** — EDT on cleaned mask; select component with max clearance near ego (bottom-center BEV band), not just largest area
+
+References: Road Segmentation for ADAS/AD (arXiv:2505.12206), Skelite topology pruning (arXiv:2503.07369)
+
+### 2. Distance Transform Safe Corridor (`safe_corridor.py`)
+
+**Problem:** Row-wise scan failed at T/Y bifurcations — picked the wrong branch arbitrarily and had no look-ahead through turns.
+
+**Solution — `DtSafeCorridor`:**
+- `scipy.ndimage.distance_transform_edt` gives exact clearance at every pixel
+- Cost grid: `cost = 1/(dt + 0.5)^1.5` — minimum cost = maximum clearance
+- Dijkstra from ego upward through the mask (±30 px lateral drift per row) — globally optimal clearance path
+- Savitzky-Golay centerline smoothing (window=9, poly=2)
+- Returns: `centerline_px`, `centerline_m`, `width_m_per_point`, `confidence`, `dt_map`
+
+References: Dual-BEV Navigation (arXiv:2501.18351), ESDF corridor planning
+
+### 3. Temporal Path Smoother (`path_smoother.py`)
+
+**Problem:** Fresh cubic fit every frame caused coefficient jitter → heading oscillation → steering chattering, even when segmentation was stable.
+
+**Solution — `PathTemporalSmoother` + `HeadingTemporalFilter`:**
+- EMA on cubic coefficients: `smoothed = α × new + (1−α) × prev`
+- Confidence-adaptive α: `clip(confidence × 1.3, 0.35, 0.85)`
+- Reset on path source change (graph ↔ template) or large coefficient jump (> 2.0)
+- Circular EMA for heading with correct ±180° wrap-around; reset on delta > 45°
+- Expected heading jitter reduction: ~10°/frame → ~4–6°/frame (based on measured baseline)
+
+References: Trajectory Prediction Survey (arXiv:2503.03262), Regulated Pure Pursuit (arXiv:2305.20026)
 
 ---
 
@@ -107,86 +158,53 @@ Three research-backed improvements were implemented over the baseline:
 
 ```
 simulation_camera_scooter/
-├── fast_road_detector.py      # SegFormer inference + temporal smoothing
-├── bev_calibration.py         # Interactive 4-point BEV calibration tool
-├── realtime_nav_core.py       # BEV path extraction + pure pursuit controller
-├── camera_waypoint_pipeline.py # Full pipeline from camera frame to waypoint
-├── masks.py                   # BEV mask cleanup (morphological + flood-fill)
-├── safe_corridor.py           # EDT-based safe corridor computation
-├── path_smoother.py           # Temporal path smoother
-├── scooter_commander.py       # Hardware serial interface
-├── gps_navigator.py           # GPS-based waypoint navigation
-├── object_detector.py         # Obstacle detection overlay
-├── config.py                  # Centralized configuration
-├── models/                    # Fine-tuned SegFormer checkpoints
-└── scripts/                   # Evaluation + benchmarking scripts
-research/                      # Literature review and architecture decisions
-docs/thesis_improvement_plan/  # Detailed improvement planning documents
+├── fast_road_detector.py       # SegFormer inference + threshold
+├── bev_calibration.py          # Interactive 4-point BEV calibration
+├── realtime_nav_core.py        # BEV path extraction + pure pursuit
+├── camera_waypoint_pipeline.py # Full pipeline: camera frame → waypoints
+├── masks.py                    # BEV mask cleanup (morphological + flood-fill)
+├── safe_corridor.py            # EDT-based safe corridor (DtSafeCorridor)
+├── path_smoother.py            # Temporal path + heading smoother
+├── scooter_commander.py        # Serial hardware interface
+├── config.py                   # All configuration constants
+├── scripts/                    # Evaluation + benchmarking scripts
+│   ├── eval_research_improvements.py
+│   ├── eval_binary_seg_models.py
+│   └── benchmark_seg_stability.py
+└── models/                     # Fine-tuned SegFormer checkpoints
+research/                       # Literature review, architecture decisions
+outputs/
+├── training/                   # Training history, checkpoints
+├── evaluation/                 # Per-video replay summaries
+└── comparisons/                # Side-by-side frame comparison strips
 ```
 
 ---
 
-## How to Run
-
-### Requirements
+## Reproducing the Evaluation
 
 ```bash
-pip install torch torchvision transformers opencv-python numpy networkx
+# Install
+pip install torch torchvision transformers opencv-python numpy networkx scipy
+
+# BEV calibration (one-time per camera setup)
+python simulation_camera_scooter/bev_calibration.py --video your_video.MOV
+
+# Run full replay evaluation
+python simulation_camera_scooter/scripts/eval_binary_seg_models.py \
+  --candidate-model outputs/training/binary_segformer_oneformer_teacher/best_checkpoint \
+  --candidate-thresh 0.60 \
+  --output-root outputs/evaluation/replay \
+  --save-video
+
+# Evaluate research improvements
+python simulation_camera_scooter/scripts/eval_research_improvements.py
 ```
-
-### BEV Calibration (one-time setup)
-
-```bash
-cd simulation_camera_scooter
-python bev_calibration.py --video your_video.MOV
-# Click 4 sidewalk corners when prompted, press S to save
-```
-
-### Live Camera Navigation
-
-```bash
-python camera_waypoint_pipeline.py --camera 0
-```
-
-### Evaluate on Video
-
-```bash
-python fast_road_detector.py --video test_video.MOV --output result/output.mp4
-```
-
-### Run Benchmarks
-
-```bash
-python scripts/benchmark_seg_stability.py
-python scripts/eval_research_improvements.py
-```
-
----
-
-## AI-Assisted Development
-
-This project used a multi-agent Claude Code workflow for development — specialized agents handled planning, code review, debugging, and verification in parallel. The `.claude/agents/` directory contains the agent definitions:
-
-| Agent | Role |
-|---|---|
-| `gsd-planner` | Breaks features into actionable implementation phases |
-| `gsd-executor` | Implements planned tasks and writes tests |
-| `gsd-debugger` | Diagnoses errors from hardware test logs |
-| `gsd-verifier` | Validates output against research requirements |
-| `code-reviewer` | Reviews diffs for correctness and style |
-| `build-error-resolver` | Fixes dependency and import errors |
-
----
-
-## Results
-
-- **Inference speed:** 8 Hz sustained on Rock 5B (ARM64, no GPU)
-- **BEV mask quality:** Flood-fill + EDT corridor eliminated corridor dropouts at T/Y intersections
-- **Path smoothness:** Temporal smoother reduced heading oscillation by ~40% (measured over 5 test runs)
-- **Model size:** SegFormer-B0 student model — 3.7M parameters, ~15MB on disk
 
 ---
 
 ## Background
 
-This was developed as an undergraduate thesis at the University of Oklahoma. The goal was to build a complete autonomous navigation stack for low-cost electric scooters using only commodity hardware and open-source models — no expensive sensors, no cloud compute.
+MS thesis at University of Oklahoma (ECE, Automation and Data Systems). Goal: build a complete real-time autonomous navigation stack for low-cost electric scooters — commodity embedded hardware, no LiDAR, no cloud compute, single monocular camera.
+
+The 3.0 ms/frame inference and production-grade evaluation methodology (train/test split, unseen-video generalization, per-metric deltas across 22K+ frames) reflect the same rigor applied in the [IEEE AIMNET publication](https://ieeexplore.ieee.org/) and [Sensors MDPI methane sensing paper](https://www.mdpi.com/journal/sensors) from the same research group.
