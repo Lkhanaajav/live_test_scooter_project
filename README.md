@@ -23,10 +23,6 @@ Real-time autonomous navigation for electric scooters using a single forward-fac
 
 ---
 
-**Baseline (top) vs candidate model (bottom) — IMG_1878, three sampled frames. Green = drivable mask, arrow = planned heading, right panel = BEV view.**
-
-![Segmentation and path comparison — IMG_1878](research/artifacts/images/segmentation_compare_img_1878.jpg)
-
 ---
 
 ## What It Does
@@ -84,6 +80,10 @@ Teacher-student knowledge distillation to overcome the labeled-data bottleneck:
 - **Training:** 10 epochs, weighted CE + Dice loss, class weights `[1.0, 1.9317]`
 - **Best checkpoint:** epoch 9 — val IoU `0.9437`, precision `0.9743`, recall `0.9678`
 
+*Left: teacher model output (red). Right: fine-tuned model on hand-annotated data (green). Three unseen scenes — note clean boundaries and correct exclusion of grass, cars, and building edges.*
+
+![Segmentation quality — teacher vs fine-tuned](thesis/figures/seg_generalization_comparison.jpg)
+
 ---
 
 ## Evaluation Results
@@ -115,9 +115,9 @@ Evaluated on 6 real-world sidewalk videos (22,679 total frames). Two videos (`IM
 
 `IMG_1878` showed the strongest end-to-end gain — the cleaner binary masks directly improve planner behavior when the baseline segmentation is noisy.
 
-**BEV output — IMG_1922, frame 1124. Green = drivable region, cyan line = EDT-optimal path, red = corridor boundary.**
+*Full-video replay across all 22,679 frames. Candidate model (green) vs baseline (gray) across four key metrics.*
 
-![BEV path planning — IMG_1922](research/artifacts/images/planner_compare_IMG_1922_frame_001124.png)
+![Full-video replay results — 22,679 frames](thesis/figures/fullvideo_comparison.png)
 
 ---
 
