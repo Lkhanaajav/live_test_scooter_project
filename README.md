@@ -4,7 +4,7 @@
 
 Real-time autonomous navigation for electric scooters using a single forward-facing camera. No LiDAR. No GPU. No external localization.
 
-**[Full Thesis (PDF)](thesis_autonomous_scooter_navigation_2025.pdf)**
+**[Full Thesis (PDF)](2026_Mijiddorj_Lkhanaajav_Thesis.pdf)**
 
 ---
 
