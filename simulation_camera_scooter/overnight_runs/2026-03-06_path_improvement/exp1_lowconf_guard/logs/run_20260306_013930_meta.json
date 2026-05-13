@@ -1,0 +1,25 @@
+{
+  "csv_file": "overnight_runs/2026-03-06_path_improvement/exp1_lowconf_guard/logs\\run_20260306_013930.csv",
+  "start_time": "2026-03-06T01:42:10.732386",
+  "total_frames": 2057,
+  "camera_id": 0,
+  "video_path": "test_video_june_03_3.mp4",
+  "stride": 1,
+  "detection_enabled": false,
+  "detection_stride": 1,
+  "gps_device": null,
+  "gps_waypoints": null,
+  "serial_port": null,
+  "model_dir": "C:\\Users\\lhana\\OneDrive\\Desktop\\scootedr\\live_test_scooter_project\\simulation_camera_scooter\\models\\my-segformer-road",
+  "seg_resolution": [
+    640,
+    360
+  ],
+  "low_power": false,
+  "path_scale": 1.0,
+  "nav_work_grid": 220,
+  "nav_bev_forward_m": 10.0,
+  "nav_bev_lateral_m": 10.0,
+  "planner_mode": "dijkstra",
+  "yolo_model": "disabled"
+}

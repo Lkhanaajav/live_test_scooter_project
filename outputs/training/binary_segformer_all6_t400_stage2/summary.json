@@ -1,0 +1,94 @@
+{
+  "created_at": "2026-03-18T04:07:23",
+  "device": "cuda",
+  "images_root": "C:\\Users\\lhana\\OneDrive\\Desktop\\scootedr\\live_test_scooter_project\\outputs\\datasets\\annotation_frames_all6_t400",
+  "masks_root": "C:\\Users\\lhana\\OneDrive\\Desktop\\scootedr\\live_test_scooter_project\\outputs\\pseudo_labels\\all6_t400_oneformer_cityscapes_swin_binary\\masks",
+  "output_dir": "C:\\Users\\lhana\\OneDrive\\Desktop\\scootedr\\live_test_scooter_project\\outputs\\training\\binary_segformer_all6_t400_stage2",
+  "init_model": "outputs\\training\\binary_segformer_oneformer_teacher\\best_checkpoint",
+  "train_count": 1920,
+  "val_count": 480,
+  "class_weights": [
+    1.0,
+    1.9456208944320679
+  ],
+  "epochs": 6,
+  "batch_size": 4,
+  "lr": 2e-05,
+  "weight_decay": 0.0001,
+  "target_hw": [
+    360,
+    640
+  ],
+  "history": [
+    {
+      "epoch": 1,
+      "train_loss": 0.11921406162437051,
+      "val_loss": 0.10161918550729751,
+      "val_iou": 0.9466061587919927,
+      "val_precision": 0.9703791310298001,
+      "val_recall": 0.9747724001690098,
+      "val_accuracy": 0.981252341941551,
+      "lr": 1.973044870579824e-05
+    },
+    {
+      "epoch": 2,
+      "train_loss": 0.10404910361394286,
+      "val_loss": 0.09255264567521711,
+      "val_iou": 0.9507070360623469,
+      "val_precision": 0.9744646485635768,
+      "val_recall": 0.9749969350864436,
+      "val_accuracy": 0.9827629304108796,
+      "lr": 1.686241637868734e-05
+    },
+    {
+      "epoch": 3,
+      "train_loss": 0.09454866396263242,
+      "val_loss": 0.0876711991460373,
+      "val_iou": 0.9526549965223403,
+      "val_precision": 0.97527403719065,
+      "val_recall": 0.9762334815214286,
+      "val_accuracy": 0.9834570041232639,
+      "lr": 1.1736481776669307e-05
+    },
+    {
+      "epoch": 4,
+      "train_loss": 0.09110887716524303,
+      "val_loss": 0.08612107750959694,
+      "val_iou": 0.9545771618208072,
+      "val_precision": 0.97963079644878,
+      "val_recall": 0.9739075416285271,
+      "val_accuracy": 0.9841983326099537,
+      "lr": 6.039202339608432e-06
+    },
+    {
+      "epoch": 5,
+      "train_loss": 0.08674293520549933,
+      "val_loss": 0.08354388990749916,
+      "val_iou": 0.9543613370554396,
+      "val_precision": 0.9764581460671402,
+      "val_recall": 0.9768375008688231,
+      "val_accuracy": 0.9840718858506945,
+      "lr": 2.0000000000000003e-06
+    },
+    {
+      "epoch": 6,
+      "train_loss": 0.08594548240459214,
+      "val_loss": 0.08361587513548632,
+      "val_iou": 0.9544804668788596,
+      "val_precision": 0.9765926637087966,
+      "val_recall": 0.97682768890243,
+      "val_accuracy": 0.9841156051070602,
+      "lr": 2.0000000000000003e-06
+    }
+  ],
+  "best_val_iou": 0.9545771618208072,
+  "total_runtime_s": 581.6179020404816,
+  "val_videos": [
+    "IMG_1876",
+    "IMG_1877",
+    "IMG_1878",
+    "IMG_1921",
+    "IMG_1922",
+    "IMG_1924"
+  ]
+}

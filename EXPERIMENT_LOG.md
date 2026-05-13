@@ -1,0 +1,401 @@
+# Experiment Log
+
+---
+
+## Session: 2026-03-18 — Simple Road Pipeline Simplification (Branch: simplify-pipeline-simple-roads)
+
+### Goal
+Simplify the navigation pipeline to work reliably on clean simple-road scenes.
+Priority: stable path > low-noise mask > smooth frame-to-frame behavior.
+NOT targeting complex urban edge cases.
+
+### Environment
+- GPU: NVIDIA RTX 5070 (CUDA 12.8, PyTorch 2.10.0+cu128)
+- Python, scipy 1.16.0, OpenCV 4.12.0
+
+### Test Videos
+| Video | Resolution | FPS | Duration | Priority |
+|-------|-----------|-----|----------|----------|
+| test_video_june_03_3.mp4 | 1280x720 | 30 | 68.6s | HIGH — main dev video |
+| IMG_1877.MOV | 1920x1080 | 30 | 45.4s | HIGH — cleanest unseen |
+| IMG_1876.MOV | 1080x1920 | 30 | 16.7s | MED — portrait |
+| IMG_1921.MOV | 1920x1080 | 30 | 306.2s | LOW — long |
+| IMG_1878/1922/1924.MOV | 1920x1080 | 30 | varies | MED |
+
+### Baseline Noise Sources (Simple Road Context)
+1. 7 templates active — sharp turn templates win on noisy frames even on straight roads
+2. Mask EMA α=0.65 — current frame dominates, noise propagates quickly
+3. DT SG window=9 — short, centerline has grid quantization jitter
+4. straight_preference_margin=0.03 — barely penalizes switching to turn templates
+5. Path EMA min_alpha=0.35, max_alpha=0.85 — fast tracking, limited smoothing
+6. Heading EMA alpha=0.50 — moderate only
+
+### Simple Road Improvements (Hypothesis)
+- Reduce to 3 templates (straight, gentle-left, gentle-right)
+- Increase straight_preference_margin to 0.08
+- Lower mask EMA alpha to 0.50 (more inertia)
+- Increase DT SG window to 15
+- Lower path EMA max_alpha to 0.72
+- Lower heading EMA alpha to 0.35
+- Add stronger near-field morphological close for road gap filling
+
+### Plan
+1. [x] Inspect repo, understand baseline
+2. [x] Locate test videos
+3. [x] Write `simple_road_pipeline.py`
+4. [x] Write `scripts/eval_simple_road.py`
+5. [x] Run on test_video_june_03_3.mp4 (300 frames, step=3)
+6. [x] Compare baseline vs improved metrics (see EVALUATION_REPORT.md)
+7. [x] Update EVALUATION_REPORT.md
+
+### Eval Results — 2026-03-18 (corrected run)
+
+**Bug found and fixed**: `BaselineProcessor.process_bev_mask()` was computing
+`iou_prev` as IoU of the CURRENT cleaned mask vs the CURRENT pre-cleaned mask
+(same frame), yielding a misleadingly high 0.994. Fixed to compare vs PREVIOUS
+cleaned mask for true temporal stability, same semantics as simple road pipeline.
+
+**Key findings from corrected eval** (see EVALUATION_REPORT.md §Simple Road):
+- Coverage: Baseline ~0.31, Simple Road ~0.17 — intentional: `_keep_ego_connected`
+  filters to only ego-reachable road (more conservative, not a bug).
+- Temporal IoU: will reflect true frame-to-frame stability after the fix.
+- Heading = 0 for straight test video is CORRECT behavior, not a pipeline failure.
+- 3-template bank prevents noisy frames from triggering sharp-turn templates.
+
+### Files Added
+- `simulation_camera_scooter/simple_road_pipeline.py`
+- `simulation_camera_scooter/scripts/eval_simple_road.py`
+- `simulation_camera_scooter/scripts/prepare_hand_annotation_workspace.py`
+
+---
+
+## Session: 2026-03-17 Binary Drivable Mask Upgrade
+
+### Context
+- Goal: replace or improve the current scooter segmentation stage with a more stable binary drivable-mask model for downstream BEV/path planning.
+- Final target schema:
+  - `drivable = 1`
+  - `non-drivable = 0`
+- Constraint from repo reality: the current deployed runtime already behaves as a binary mask pipeline even though some legacy code paths still mention `ROAD_ID=1` and `SIDEWALK_ID=2`.
+
+### Baseline Identified
+- Baseline segmentation runtime:
+  - `simulation_camera_scooter/fast_road_detector.py`
+  - `simulation_camera_scooter/live_heading_demo.py`
+  - current default checkpoint from `simulation_camera_scooter/config.py`: `models/my-segformer-road`
+- Baseline segmentation behavior:
+  - `FastRoadDetector.process_frame()` upsamples logits, takes softmax for class `road_id`, thresholds it, and emits a binary `uint8` mask.
+  - `simulation_camera_scooter/masks.py` already treats `{0,255}` masks as a valid binary-input case.
+- Baseline downstream planner:
+  - `simulation_camera_scooter/live_heading_demo.py`
+  - `simulation_camera_scooter/realtime_nav_core.py`
+  - BEV projection + BEV cleanup + graph/template planner + controller.
+
+### Data Inventory
+- Test videos found in `simulation_camera_scooter/test_videos/`:
+  - `IMG_1876.MOV`
+  - `IMG_1877.MOV`
+  - `IMG_1878.MOV`
+  - `IMG_1921.MOV`
+  - `IMG_1922.MOV`
+  - `IMG_1924.MOV`
+- Extracted annotation frames found in `simulation_camera_scooter/annotation_frames/`:
+  - 400 JPGs total
+  - 100 each from `IMG_1878`, `IMG_1921`, `IMG_1922`, `IMG_1924`
+- Important evaluation caveat:
+  - training on these 400 frames contaminates 4 of the 6 available evaluation videos.
+  - I will still evaluate on all 6 because the user explicitly requested it, but I need to report `IMG_1876` and `IMG_1877` as the cleanest unseen-video check.
+
+### Teacher Model Decision
+- Chosen teacher: `shi-labs/oneformer_cityscapes_dinat_large`
+- Why:
+  - official OneFormer repo reports Cityscapes semantic `mIoU = 83.1` for DiNAT-L vs `83.0` for Swin-L.
+  - both official Hugging Face checkpoints are available in the current environment, but DiNAT-L is the slightly stronger accessible semantic teacher.
+  - local verification showed the class metadata loads correctly and includes Cityscapes `road` and `sidewalk` labels.
+- Binary collapse plan:
+  - teacher semantic classes mapped into binary drivable mask.
+  - primary first-pass mapping hypothesis: `road`, `sidewalk`, and `parking` count as drivable; everything else is non-drivable.
+  - this mapping will be audited visually before student training.
+
+### Risks Identified Up Front
+- Current PyTorch install is CPU-only even though the machine has an RTX 5070.
+- No maintained dense segmentation training script exists in the repo for the current binary runtime path.
+- The current live demo hardcodes `MODEL_DIR`, which makes baseline-vs-new comparison less reproducible than it should be.
+- Teacher pseudo-labels may over-segment road-adjacent regions or miss narrow sidewalk structure in scooter footage.
+- All available videos are iPhone-style mobile footage; scene motion and rolling-shutter jitter may dominate gains from segmentation alone.
+
+### First Concrete Experiment Plan
+1. Build reproducible experiment scaffolding:
+   - create root logs
+   - create organized `outputs/` tree
+   - make baseline/new-model evaluation scriptable by model path
+2. Establish reproducible baseline:
+   - run current pipeline on all 6 videos
+   - save per-video logs, overlays, and summary metrics
+3. Generate teacher pseudo-labels for all 400 annotation frames:
+   - use OneFormer DiNAT-L semantic output
+   - collapse to binary drivable masks
+   - record class mapping and any confidence heuristics
+4. Fine-tune a practical student:
+   - start from existing SegFormer binary checkpoint family in repo
+   - train for stable binary mask output, not multi-class output
+   - prefer simple reproducible training loop over new framework complexity
+5. Evaluate new checkpoint on all videos:
+   - compare baseline segmentation stability
+   - compare downstream planner behavior
+   - save structured before/after artifacts
+6. Write final `EVALUATION_REPORT.md` and `NEXT_STEPS.md`
+
+### Commands Run Before Plan Lock
+- `git pull --no-edit origin main`
+- `git status --short --branch`
+- repo/documentation inspection with `Get-ChildItem`, `Get-Content`, and `rg`
+- video inventory and decode checks with OpenCV
+- environment inspection:
+  - `nvidia-smi`
+  - Python package checks for `torch`, `transformers`, `huggingface_hub`
+- teacher availability checks:
+  - Hugging Face model/processor load for official OneFormer Cityscapes checkpoints
+  - class metadata validation for road/sidewalk indices
+
+### Initial Hypotheses
+- Hypothesis 1:
+  - a stronger teacher-generated binary mask set will reduce spurious drivable regions better than the current runtime checkpoint.
+- Hypothesis 2:
+  - even a modest segmentation improvement will matter in low-occupancy videos because the BEV/path stack is sensitive to missing or fragmented corridor support.
+- Hypothesis 3:
+  - the largest immediate improvement may come from student thresholding/post-processing stability, not only from raw training loss.
+
+### Files Changed So Far
+- `EXPERIMENT_LOG.md` created
+- `TRAINING_LOG.md` created
+- `NEXT_STEPS.md` created
+- `outputs/` folder tree created
+
+### Current Status
+- Stage: planning complete, execution starting.
+- Next action: patch the runtime/evaluation path so the model checkpoint can be swapped cleanly, then run the all-video baseline.
+
+## Execution Notes
+
+### 2026-03-17 19:05 to 19:10 Central
+- Action:
+  - patched `simulation_camera_scooter/live_heading_demo.py`
+- Why:
+  - baseline vs candidate comparison was not reproducible while `MODEL_DIR` and output video path were hardcoded.
+- Changes:
+  - added runtime `model_dir`
+  - added runtime `output_video_path`
+  - later added runtime `seg_conf_thresh`
+  - disabled internal detector logging from the live replay path
+
+### 2026-03-17 19:11 to 19:16 Central
+- Action:
+  - upgraded PyTorch from CPU-only to CUDA
+- Command:
+  - `python -m pip install --upgrade --index-url https://download.pytorch.org/whl/cu128 torch torchvision torchaudio`
+- Result:
+  - `torch 2.10.0+cu128`
+  - CUDA available on `NVIDIA GeForce RTX 5070`
+
+### 2026-03-17 19:16 to 19:19 Central
+- Action:
+  - attempted teacher validation with `shi-labs/oneformer_cityscapes_dinat_large`
+- Result:
+  - blocked by `natten` compatibility mismatch on Windows (`natten2dav` / `natten2dqkrpb` import failure)
+- Decision:
+  - switched to `shi-labs/oneformer_cityscapes_swin_large`
+  - rationale: official checkpoint, clean CUDA execution, no broken backend chain
+
+### 2026-03-17 19:19 to 19:27 Central
+- Action:
+  - created and ran `simulation_camera_scooter/scripts/generate_binary_pseudo_labels.py`
+- Commands:
+  - smoke: `python simulation_camera_scooter\scripts\generate_binary_pseudo_labels.py --limit 5 --save-previews`
+  - full: `python simulation_camera_scooter\scripts\generate_binary_pseudo_labels.py --save-previews`
+- Result:
+  - 400 masks generated
+  - outputs under `outputs/pseudo_labels/oneformer_cityscapes_swin_large_binary`
+  - mean drivable ratio `0.3416`
+  - mean runtime `635 ms/frame`
+
+### 2026-03-17 19:27 to 19:32 Central
+- Action:
+  - created and ran `simulation_camera_scooter/scripts/train_binary_segformer.py`
+- Command:
+  - `python simulation_camera_scooter\scripts\train_binary_segformer.py --epochs 10 --batch-size 4 --num-workers 2`
+- Result:
+  - best validation IoU `0.9437`
+  - best checkpoint at epoch `9`
+  - output checkpoint: `outputs/training/binary_segformer_oneformer_teacher/best_checkpoint`
+
+### 2026-03-17 19:32 to 19:33 Central
+- Action:
+  - tuned binary threshold with `simulation_camera_scooter/scripts/tune_binary_threshold.py`
+- Result:
+  - best threshold on pseudo-label validation split: `0.60`
+
+### 2026-03-17 19:34 to 19:35 Central
+- Action:
+  - created and smoke-tested `simulation_camera_scooter/scripts/eval_binary_seg_models.py`
+- Purpose:
+  - confirm baseline/candidate replay wiring before full run
+
+### 2026-03-17 19:36 to 21:48 Central
+- Action:
+  - full all-video replay for baseline and candidate
+- Command:
+  - `python simulation_camera_scooter\scripts\eval_binary_seg_models.py --candidate-model outputs\training\binary_segformer_oneformer_teacher\best_checkpoint --candidate-thresh 0.6 --output-root outputs\evaluation\binary_model_replay_full --save-video`
+- Result:
+  - baseline and candidate processed on all 6 videos
+  - rendered videos saved
+  - summary saved to:
+    - `outputs/evaluation/binary_model_replay_full/summary.json`
+    - `outputs/evaluation/binary_model_replay_full/summary.md`
+
+### 2026-03-17 21:49 Central
+- Action:
+  - generated visual comparison strips
+- Command:
+  - `python simulation_camera_scooter\scripts\make_video_comparison_strips.py`
+- Result:
+  - comparison JPGs saved under `outputs/comparisons/binary_model_replay_full`
+
+## Key Findings
+- The candidate model improved segmentation stability on every test video.
+- Weighted all-frame unstable rate dropped from `1.46%` to `0.33%`.
+- Weighted fallback rate dropped from `18.98%` to `14.27%`.
+- Weighted template rate increased from `73.72%` to `79.34%`.
+- Generalization is mixed:
+  - unseen videos improved in segmentation statistics and planner mode selection
+  - unseen heading dynamics did not improve
+
+## Files Added During Session
+- `simulation_camera_scooter/scripts/generate_binary_pseudo_labels.py`
+- `simulation_camera_scooter/scripts/train_binary_segformer.py`
+- `simulation_camera_scooter/scripts/tune_binary_threshold.py`
+- `simulation_camera_scooter/scripts/eval_binary_seg_models.py`
+- `simulation_camera_scooter/scripts/make_video_comparison_strips.py`
+- `EXPERIMENT_LOG.md`
+- `TRAINING_LOG.md`
+- `EVALUATION_REPORT.md`
+- `NEXT_STEPS.md`
+
+## Final Experimental Decision
+- Best checkpoint from this session:
+  - `outputs/training/binary_segformer_oneformer_teacher/best_checkpoint`
+- Best runtime threshold from this session:
+  - `0.60`
+- Deployment recommendation:
+  - candidate checkpoint is worth keeping as the stronger binary segmentation baseline
+  - but I would still want a small human-corrected unseen-scene fine-tune before calling it the final general solution
+
+---
+
+## Session: 2026-03-18 Overnight Pseudo-Label Scale-Up
+
+### User Direction
+- Use all available videos.
+- Extract far more frames.
+- Aim for roughly 2000 frames or more and allow long overnight processing.
+
+### Hypothesis
+- If the OneFormer teacher masks are already visibly strong, then scaling the teacher-labeled training set across all same-project videos may let the fast SegFormer student absorb more of that teacher behavior.
+
+### Execution
+
+#### 2026-03-18 02:12 Central
+- Action:
+  - extracted a larger frame set from all six videos
+- Command:
+  - `python simulation_camera_scooter\scripts\extract_annotation_frames.py --out-dir outputs\datasets\annotation_frames_all6_t400 --target 400`
+- Result:
+  - `2400` JPGs total
+  - `400` each from `IMG_1876`, `IMG_1877`, `IMG_1878`, `IMG_1921`, `IMG_1922`, `IMG_1924`
+
+#### 2026-03-18 02:21 Central
+- Action:
+  - generated OneFormer pseudo-labels for the expanded dataset
+- Command:
+  - `python simulation_camera_scooter\scripts\generate_binary_pseudo_labels.py --input-root outputs\datasets\annotation_frames_all6_t400 --output-root outputs\pseudo_labels\all6_t400_oneformer_cityscapes_swin_binary --save-previews`
+- Result:
+  - `2400` binary masks written
+  - output root: `outputs/pseudo_labels/all6_t400_oneformer_cityscapes_swin_binary`
+  - mean drivable ratio: `0.3391`
+  - mean teacher runtime: `649.7 ms/frame`
+
+#### 2026-03-18 02:37 Central
+- Action:
+  - trained a larger pseudo-labeled student from the shipped baseline checkpoint
+- Command:
+  - `python simulation_camera_scooter\scripts\train_binary_segformer.py --images-root outputs\datasets\annotation_frames_all6_t400 --masks-root outputs\pseudo_labels\all6_t400_oneformer_cityscapes_swin_binary\masks --output-dir outputs\training\binary_segformer_all6_t400 --epochs 10 --batch-size 4 --num-workers 2`
+- Result:
+  - best validation IoU: `0.9588`
+  - best checkpoint: `outputs/training/binary_segformer_all6_t400/best_checkpoint`
+
+#### 2026-03-18 02:39 Central
+- Action:
+  - tuned the new checkpoint threshold
+- Command:
+  - `python simulation_camera_scooter\scripts\tune_binary_threshold.py --images-root outputs\datasets\annotation_frames_all6_t400 --masks-root outputs\pseudo_labels\all6_t400_oneformer_cityscapes_swin_binary\masks --model-dir outputs\training\binary_segformer_all6_t400\best_checkpoint`
+- Result:
+  - best threshold remained `0.60`
+  - best pseudo-label validation IoU at chosen threshold: `0.9594`
+
+#### 2026-03-18 03:39 Central
+- Action:
+  - replayed the new 2400-frame student on all six videos
+- Command:
+  - `python simulation_camera_scooter\scripts\replay_model_on_videos.py --model-dir outputs\training\binary_segformer_all6_t400\best_checkpoint --label all6_t400 --seg-conf-thresh 0.6 --output-root outputs\replays\binary_segformer_all6_t400`
+- Result:
+  - videos and logs saved under `outputs/replays/binary_segformer_all6_t400`
+  - summary saved to `outputs/replays/binary_segformer_all6_t400/summary.json`
+
+#### 2026-03-18 03:50 Central
+- Action:
+  - generalized comparison-strip generation to accept explicit baseline and candidate roots
+- File changed:
+  - `simulation_camera_scooter/scripts/make_video_comparison_strips.py`
+- Command:
+  - `python simulation_camera_scooter\scripts\make_video_comparison_strips.py --baseline-root outputs\evaluation\binary_model_replay_full\baseline_current --candidate-root outputs\replays\binary_segformer_all6_t400 --output-dir outputs\comparisons\binary_segformer_all6_t400`
+- Result:
+  - side-by-side contact sheets created for all 6 videos
+
+### Quantitative Result
+- Relative to the shipped baseline, the 2400-frame student still improved the pipeline:
+  - mean seg IoU: `0.9088 -> 0.9221`
+  - unstable rate: `1.46% -> 0.33%`
+  - fallback rate: `18.98% -> 14.76%`
+  - template rate: `73.72% -> 77.29%`
+  - mean heading delta: `0.2091 -> 0.2021 deg`
+- Relative to the earlier 400-frame teacher-trained student, the 2400-frame student regressed slightly overall:
+  - mean seg IoU: `0.9247 -> 0.9221`
+  - corridor confidence: `0.8661 -> 0.8573`
+  - fallback rate: `14.27% -> 14.76%`
+  - template rate: `79.34% -> 77.29%`
+
+### Interpretation
+- Scaling teacher-labeled data volume was enough to keep beating the shipped baseline.
+- It was not enough to beat the earlier tighter 400-frame pseudo-labeled set.
+- The likely issue is pseudo-label quality dilution, not lack of quantity.
+
+### Follow-Up Attempt
+
+#### 2026-03-18 04:00 Central
+- Action:
+  - tested staged fine-tuning from the stronger 400-frame student rather than from `my-segformer-road`
+- Command:
+  - `python simulation_camera_scooter\scripts\train_binary_segformer.py --images-root outputs\datasets\annotation_frames_all6_t400 --masks-root outputs\pseudo_labels\all6_t400_oneformer_cityscapes_swin_binary\masks --init-model outputs\training\binary_segformer_oneformer_teacher\best_checkpoint --output-dir outputs\training\binary_segformer_all6_t400_stage2 --epochs 6 --batch-size 4 --num-workers 2 --lr 2e-5`
+- Result:
+  - best validation IoU: `0.9546`
+  - underperformed the direct 2400-frame run
+- Decision:
+  - do not promote
+  - do not spend another multi-hour full-video replay on this stage-2 checkpoint
+
+### Session Decision
+- Keep the earlier 400-frame checkpoint as the best overall model:
+  - `outputs/training/binary_segformer_oneformer_teacher/best_checkpoint`
+- Keep the 2400-frame checkpoint as a documented scale-up experiment and artifact:
+  - `outputs/training/binary_segformer_all6_t400/best_checkpoint`
+- Next gains should come from better labels, not just more labels.

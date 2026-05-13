@@ -1,0 +1,33 @@
+[
+  {
+    "epoch": 1,
+    "train": {
+      "loss_total": 0.6262851357460022,
+      "loss_valid_bce": 0.5439005196094513,
+      "loss_left": 0.012930590193718672,
+      "loss_right": 0.027134675532579422,
+      "loss_center": 0.000893305114004761,
+      "loss_ordering": 0.0027214698493480682,
+      "valid_acc": 0.875,
+      "valid_true_ratio": 1.0,
+      "valid_pred_ratio": 0.875,
+      "left_mae": 0.1609022431075573,
+      "right_mae": 0.23239462077617645,
+      "center_mae": 0.035746184177696705
+    },
+    "val": {
+      "loss_total": 0.7914324402809143,
+      "loss_valid_bce": 0.685842752456665,
+      "loss_left": 0.03505624830722809,
+      "loss_right": 0.017336377874016762,
+      "loss_center": 0.000804404669906944,
+      "loss_ordering": 0.0,
+      "valid_acc": 1.0,
+      "valid_true_ratio": 1.0,
+      "valid_pred_ratio": 1.0,
+      "left_mae": 0.2646683156490326,
+      "right_mae": 0.18603694438934326,
+      "center_mae": 0.03931569308042526
+    }
+  }
+]

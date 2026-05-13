@@ -1,0 +1,11 @@
+component,mean_ms,case,evidence,keep_or_cut,notes
+YOLO detection on CPU,39.032,full_cpu_detection,outputs/profiling/runtime_512/summary.md,gate hard / move to GPU / disable during planner research,Single largest steady-state cost; removing detection improved total by 42.274 ms.
+Predictor disabled,72.982,no_detection vs no_detection_no_predict,outputs/profiling/runtime_512/summary.md,keep predictor / do not disable casually,Turning off predictive reuse drops FPS from 25.27 to 8.94.
+BEV warp + cleanup,10.989,no_detection,outputs/profiling/runtime_512/summary.md,keep only if BEV is actually used,Meaningful cost even before any heavy path search.
+clean_bev_mask_enhanced on populated mask,22.0,spot timing,local timing during hand-annotation study,gate to BEV-only mode,"Small alone, but pure overhead if planner stays in image space."
+BEV DtPathPlanner on populated mask,1767.0,spot timing,research/artifacts/tables/planner_hand_annotations_summary.csv,replace as primary planner,Slow when occupancy is valid; earlier ~3 ms averages came mostly from empty-mask failures.
+BEV graph planner on populated mask,1832.0,spot timing,research/artifacts/tables/planner_hand_annotations_summary.csv,do not use as primary for monocular scooter,Not competitive with image-space planners in runtime.
+Image-space DT planner,109.0,hand-annotated planner eval,research/artifacts/tables/planner_hand_annotations_summary.csv,keep as robust fallback,Much faster than BEV DT and usually more accurate.
+Image-space midpoint planner,2.2,hand-annotated planner eval,research/artifacts/tables/planner_hand_annotations_summary.csv,keep as default primary planner,Best speed/quality trade in sampled evaluation.
+High seg input resolution (512x288 vs 256x144),55.5,resolution_benchmark_img1931_1024w30,outputs/comparisons/resolution_benchmark_img1931_1024w30/summary.md,cut unless quality proof requires it,Total time rises from 70.8 ms to 126.3 ms for only +0.0038 seg IoU on the benchmark clip.
+ONNX export on GPU as a thesis focus,-0.3,onnx_vs_pytorch_img1931_1024w30_256x144,outputs/comparisons/onnx_vs_pytorch_img1931_1024w30_256x144/summary.md,not a priority if running on GPU,Observed 13.85 FPS ONNX vs 14.50 FPS PyTorch GPU; no practical gain in this repo state.

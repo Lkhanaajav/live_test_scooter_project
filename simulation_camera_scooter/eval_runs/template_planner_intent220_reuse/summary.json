@@ -1,0 +1,65 @@
+[
+  {
+    "csv_path": "simulation_camera_scooter\\eval_runs\\template_planner_intent220_reuse\\test_video_june_03_3\\graph_baseline\\logs\\run_20260313_025500.csv",
+    "frames": 220,
+    "has_path_rate": 1.0,
+    "mean_abs_heading_deg": 1.0091636363636363,
+    "p95_abs_heading_deg": 3.2507999999999986,
+    "max_abs_heading_deg": 4.83,
+    "high_heading_frames": 0,
+    "mean_speed_mps": 1.5,
+    "low_confidence_rate": 0.0,
+    "mean_slowdown": 0.0,
+    "template_rate": 0.0,
+    "graph_rate": 0.7045454545454546,
+    "fallback_rate": 0.29545454545454547,
+    "path_source_switches": 44,
+    "template_family_switches": 0,
+    "mean_bev_occ_ratio": 0.6921186363636364,
+    "low_occ_rate": 0.0,
+    "path_source_counts": {
+      "graph": 155,
+      "fallback_skeleton": 53,
+      "fallback_centerline": 12
+    },
+    "template_family_counts": {
+      "": 220
+    },
+    "mode": "graph_baseline",
+    "video_label": "test_video_june_03_3",
+    "video_path": "simulation_camera_scooter\\test_video_june_03_3.mp4"
+  },
+  {
+    "csv_path": "simulation_camera_scooter\\eval_runs\\template_planner_intent220_reuse\\test_video_june_03_3\\template_phase11\\logs\\run_20260313_025535.csv",
+    "frames": 220,
+    "has_path_rate": 1.0,
+    "mean_abs_heading_deg": 0.20809090909090908,
+    "p95_abs_heading_deg": 1.319,
+    "max_abs_heading_deg": 1.979,
+    "high_heading_frames": 0,
+    "mean_speed_mps": 1.0056909090909092,
+    "low_confidence_rate": 0.4090909090909091,
+    "mean_slowdown": 0.4028836363636364,
+    "template_rate": 0.5909090909090909,
+    "graph_rate": 0.06363636363636363,
+    "fallback_rate": 0.34545454545454546,
+    "path_source_switches": 19,
+    "template_family_switches": 5,
+    "mean_bev_occ_ratio": 0.6113784999999999,
+    "low_occ_rate": 0.0,
+    "path_source_counts": {
+      "template": 130,
+      "fallback_hold": 54,
+      "graph": 14,
+      "fallback_skeleton": 13,
+      "fallback_centerline": 9
+    },
+    "template_family_counts": {
+      "straight": 217,
+      "left": 3
+    },
+    "mode": "template_phase11",
+    "video_label": "test_video_june_03_3",
+    "video_path": "simulation_camera_scooter\\test_video_june_03_3.mp4"
+  }
+]

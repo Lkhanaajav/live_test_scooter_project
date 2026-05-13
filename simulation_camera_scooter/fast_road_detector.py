@@ -12,26 +12,31 @@ from dataclasses import dataclass, asdict
 from typing import Optional, Tuple, Dict, List, Union
 from transformers import AutoImageProcessor, SegformerForSemanticSegmentation
 import argparse
+from stabilization import TemporalMaskSmoother
+from config import MODEL_DIR as DEFAULT_MODEL_DIR
 
 @dataclass
 class Config:
     # Basic settings
-    video_path: str = "test_video_june_03_1.MOV"
-    model_dir: str = "models/my-segformer-road"
+    video_path: str = "test_video_june_03_3.MOV"
+    model_dir: str = DEFAULT_MODEL_DIR
     output_mp4: str = "result/fast_overlay.mp4"
     road_id: int = 1
     conf_thresh: float = 0.6
-    
+
     # Performance settings
     frame_step: int = 2  # Increased from 5 to 10
     use_gpu: bool = True
     enable_logging: bool = True
-    
+
     # Processing settings
     enable_edge_cleaning: bool = False
     enable_simple_smoothing: bool = False  # Simpler temporal smoothing
     smoothing_weight: float = 0.2  # Weight for previous frame (0.2 = 20% previous, 80% current)
     inference_resize: Optional[Tuple[int, int]] = None  # (width, height) override for SegFormer input
+
+    # ONNX acceleration
+    onnx_model_path: Optional[str] = None  # Path to .onnx model (auto-detected if None)
 
 @dataclass
 class SystemInfo:
@@ -105,6 +110,7 @@ class FastRoadDetector:
         self.system_info = get_system_info()
         self._setup_logging()
         self._setup_device()
+        self._ort_session = None  # ONNX Runtime session (None = use PyTorch)
         self._load_model()
         self.previous_mask = None
         
@@ -151,19 +157,95 @@ class FastRoadDetector:
             self.logger.info(f"  GPU Reserved:  {gpu_reserved:.2f} MB")
         self.logger.info(f"  CPU Used:      {cpu_used:.2f} MB")
 
+    @staticmethod
+    def _resolve_model_dir(model_dir: str) -> str:
+        """Resolve relative model paths from this file's directory."""
+        if not os.path.isabs(model_dir):
+            local_candidate = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                model_dir
+            )
+            if os.path.isdir(local_candidate):
+                return local_candidate
+        return model_dir
+
+    def _find_onnx_model(self, model_dir: str) -> Optional[str]:
+        """Auto-detect ONNX model file next to the PyTorch model."""
+        if self.config.onnx_model_path:
+            path = self.config.onnx_model_path
+            if not os.path.isabs(path):
+                path = os.path.join(os.path.dirname(os.path.abspath(__file__)), path)
+            return path if os.path.isfile(path) else None
+
+        # Check for ONNX export directory (model_dir + "-onnx")
+        # Prefer FP32 — INT8 dynamic quantization can be slower on some CPUs
+        onnx_dir = model_dir.rstrip("/\\") + "-onnx"
+        for name in ("model.onnx", "model_int8.onnx"):
+            candidate = os.path.join(onnx_dir, name)
+            if os.path.isfile(candidate):
+                return candidate
+        return None
+
     def _load_model(self):
         try:
             self._log_memory_usage("Before model load")
-            self.processor = AutoImageProcessor.from_pretrained(self.config.model_dir)
-            self.model = SegformerForSemanticSegmentation.from_pretrained(
-                self.config.model_dir
-            ).to(self.device)
-            self.model.eval()
+            model_dir = self._resolve_model_dir(self.config.model_dir)
+
+            # Try ONNX Runtime first (much faster on CPU)
+            onnx_path = self._find_onnx_model(model_dir)
+            if onnx_path is not None:
+                self._load_onnx_model(onnx_path, model_dir)
+            else:
+                self._load_pytorch_model(model_dir)
+
             self._log_memory_usage("After model load")
-            self.logger.info("Model loaded successfully")
         except Exception as e:
             self.logger.error(f"Error loading model: {e}")
             raise
+
+    def _load_onnx_model(self, onnx_path: str, model_dir: str):
+        """Load ONNX model via ONNX Runtime for fast CPU inference."""
+        import onnxruntime as ort
+
+        self.logger.info(f"Loading ONNX model: {onnx_path}")
+        sess_opts = ort.SessionOptions()
+        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        sess_opts.inter_op_num_threads = 2
+        sess_opts.intra_op_num_threads = 4
+        self._ort_session = ort.InferenceSession(
+            onnx_path, sess_opts, providers=["CPUExecutionProvider"]
+        )
+        # We still need the image processor for normalization
+        if os.path.isdir(model_dir):
+            self.processor = AutoImageProcessor.from_pretrained(model_dir, local_files_only=True)
+        else:
+            self.processor = AutoImageProcessor.from_pretrained(model_dir)
+        self.model = None  # No PyTorch model needed
+        self.logger.info(f"ONNX Runtime ready ({os.path.basename(onnx_path)})")
+
+    def _load_pytorch_model(self, model_dir: str):
+        """Load PyTorch model (fallback when no ONNX available)."""
+        if os.path.isdir(model_dir):
+            self.logger.info(f"Loading model from local directory: {model_dir}")
+            self.processor = AutoImageProcessor.from_pretrained(
+                model_dir,
+                local_files_only=True
+            )
+            self.model = SegformerForSemanticSegmentation.from_pretrained(
+                model_dir,
+                local_files_only=True
+            ).to(self.device)
+        else:
+            self.logger.warning(
+                f"Model path not found locally: {model_dir}. "
+                "Trying HuggingFace identifier resolution."
+            )
+            self.processor = AutoImageProcessor.from_pretrained(model_dir)
+            self.model = SegformerForSemanticSegmentation.from_pretrained(
+                model_dir
+            ).to(self.device)
+        self.model.eval()
+        self.logger.info("PyTorch model loaded successfully")
 
     def _apply_simple_smoothing(self, current_mask: np.ndarray) -> np.ndarray:
         """Apply simple temporal smoothing without optical flow."""
@@ -256,52 +338,80 @@ class FastRoadDetector:
     def process_frame(
         self,
         frame: np.ndarray,
-        processor_size: Optional[Union[int, Tuple[int, int], List[int], Dict[str, int]]] = None
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Process a single frame and return the segmentation mask and overlay."""
-        # Start timing
+        processor_size: Optional[Union[int, Tuple[int, int], List[int], Dict[str, int]]] = None,
+        return_overlay: bool = True,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Process a single frame and return the segmentation mask and optional overlay."""
         start_time = time.time()
-        
-        # Convert to RGB
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        
-        # Prepare input
-        size_override = processor_size if processor_size is not None else self.config.inference_resize
-        processor_kwargs = {"return_tensors": "pt"}
-        if size_override is not None:
-            processor_kwargs["size"] = self._normalize_processor_size(size_override)
-        inputs = self.processor(rgb, **processor_kwargs).to(self.device)
-        
-        # Get predictions
-        with torch.no_grad():
-            logits = self.model(**inputs).logits
-        
-        # Process predictions
+
         H, W = frame.shape[:2]
-        up = torch.nn.functional.interpolate(
-            logits, size=(H, W), mode="bilinear", align_corners=False
-        )[0]
-        probs = up.softmax(0)[self.config.road_id].cpu().numpy()
-        mask = (probs > self.config.conf_thresh).astype(np.uint8) * 255
-        
+        size_override = processor_size if processor_size is not None else self.config.inference_resize
+
+        if self._ort_session is not None:
+            # --- ONNX Runtime inference (fast CPU path) ---
+            # Direct OpenCV preprocessing — no HuggingFace processor overhead
+            if size_override is not None:
+                sz = self._normalize_processor_size(size_override)
+                if isinstance(sz, dict):
+                    target_h, target_w = sz.get("height", 256), sz.get("width", 256)
+                else:
+                    target_h = target_w = sz
+            else:
+                target_h = target_w = 512
+            # BGR->RGB + resize in one step
+            rgb_resized = cv2.resize(
+                cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),
+                (target_w, target_h),
+                interpolation=cv2.INTER_LINEAR,
+            )
+            # ImageNet normalization
+            pixel_values = rgb_resized.astype(np.float32) * np.float32(1.0 / 255.0)
+            pixel_values -= np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            pixel_values /= np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            pixel_values = np.ascontiguousarray(pixel_values.transpose(2, 0, 1)[np.newaxis])
+
+            logits = self._ort_session.run(None, {"pixel_values": pixel_values})[0]
+            # Softmax at low-res (much faster than full frame)
+            logits_2d = logits[0]  # (C, h, w)
+            exp = np.exp(logits_2d - logits_2d.max(axis=0, keepdims=True))
+            probs_lowres = (exp / exp.sum(axis=0, keepdims=True))[self.config.road_id]
+            mask_lowres = (probs_lowres > self.config.conf_thresh).astype(np.uint8) * 255
+            mask = cv2.resize(mask_lowres, (W, H), interpolation=cv2.INTER_NEAREST)
+        else:
+            # --- PyTorch inference (original path) ---
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            processor_kwargs = {"return_tensors": "pt"}
+            if size_override is not None:
+                processor_kwargs["size"] = self._normalize_processor_size(size_override)
+            inputs = self.processor(rgb, **processor_kwargs)
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            with torch.no_grad():
+                logits = self.model(**inputs).logits
+            up = torch.nn.functional.interpolate(
+                logits, size=(H, W), mode="bilinear", align_corners=False
+            )[0]
+            probs = up.softmax(0)[self.config.road_id].cpu().numpy()
+            mask = (probs > self.config.conf_thresh).astype(np.uint8) * 255
+
         # Clean mask
         mask = self._clean_mask(mask, frame)
-        
+
         # Apply temporal smoothing
         mask = self._apply_simple_smoothing(mask)
         self.previous_mask = mask.copy()
-        
-        # Create overlay
-        overlay = frame.copy()
-        overlay[mask == 255] = (0, 255, 0)
-        
+
+        overlay = None
+        if return_overlay:
+            overlay = frame.copy()
+            overlay[mask == 255] = (0, 255, 0)
+
         # Update metrics
-        inference_time = (time.time() - start_time) * 1000  # Convert to ms
+        inference_time = (time.time() - start_time) * 1000
         self.performance_metrics.inference_time = (
             self.performance_metrics.inference_time * self.performance_metrics.processed_count + inference_time
         ) / (self.performance_metrics.processed_count + 1)
         self.performance_metrics.processed_count += 1
-        
+
         return mask, overlay
 
     def process_video(self):
@@ -325,7 +435,13 @@ class FastRoadDetector:
         frame_idx = 0
         processed_idx = 0
         inference_times = []
-        
+        _smoother = TemporalMaskSmoother()
+        _last_smoothed_mask = None
+        _prev_gray = None
+        _flow_feat = dict(maxCorners=100, qualityLevel=0.01, minDistance=30, blockSize=3)
+        _flow_lk = dict(winSize=(15, 15), maxLevel=2,
+                        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+
         # Start timing when we begin processing
         self.performance_metrics.processing_start_time = time.time()
 
@@ -338,18 +454,40 @@ class FastRoadDetector:
                 if frame_idx % self.config.frame_step == 0:
                     # Start timing for this frame
                     frame_start = time.time()
-                    
-                    mask, overlay = self.process_frame(frame)
-                    self.previous_mask = mask
+
+                    # Minimal optical flow between processed frames only
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    flow_dy = 0.0
+                    if _prev_gray is not None:
+                        pts = cv2.goodFeaturesToTrack(_prev_gray, **_flow_feat)
+                        if pts is not None and len(pts) >= 6:
+                            curr_pts, status, _ = cv2.calcOpticalFlowPyrLK(
+                                _prev_gray, gray, pts, None, **_flow_lk)
+                            good = (status.ravel() == 1)
+                            if good.sum() >= 6:
+                                m, _ = cv2.estimateAffinePartial2D(
+                                    pts[good], curr_pts[good])
+                                if m is not None:
+                                    flow_dy = float(m[1, 2])
+                    _prev_gray = gray
+
+                    mask, _ = self.process_frame(frame)
+                    smoothed_mask = _smoother.smooth(mask, flow_dy=flow_dy)
+                    _last_smoothed_mask = smoothed_mask
+                    self.previous_mask = smoothed_mask
                     processed_idx += 1
-                    
+
+                    # Rebuild overlay from smoothed mask
+                    overlay = frame.copy()
+                    overlay[smoothed_mask == 255] = (0, 255, 0)
+
                     # Record inference time
                     inference_time = (time.time() - frame_start) * 1000  # Convert to ms
                     inference_times.append(inference_time)
                 else:
                     overlay = frame.copy()
-                    if self.previous_mask is not None:
-                        overlay[self.previous_mask == 255] = (0, 255, 0)
+                    if _last_smoothed_mask is not None:
+                        overlay[_last_smoothed_mask == 255] = (0, 255, 0)
 
                 # Preview
                 preview = cv2.resize(overlay, (W//2, H//2))

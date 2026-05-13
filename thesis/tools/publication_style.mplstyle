@@ -1,0 +1,69 @@
+# Publication-quality matplotlib style for OU Thesis
+# Usage: plt.style.use('thesis/tools/publication_style.mplstyle')
+#
+# Optimized for double-spaced thesis with Times New Roman body text.
+# Figures: single-column = 4.5 inches, full-width = 6.0 inches.
+# Colorblind-safe Okabe-Ito palette.
+
+# Figure properties
+figure.dpi: 100
+figure.facecolor: white
+figure.autolayout: False
+figure.constrained_layout.use: True
+figure.figsize: 6.0, 4.0
+
+# Font properties (match thesis body: Times-like serif)
+font.size: 9
+font.family: serif
+font.serif: Times New Roman, DejaVu Serif, Bitstream Vera Serif
+
+# Axes properties
+axes.linewidth: 0.6
+axes.labelsize: 10
+axes.titlesize: 11
+axes.labelweight: normal
+axes.spines.top: False
+axes.spines.right: False
+axes.spines.left: True
+axes.spines.bottom: True
+axes.edgecolor: black
+axes.labelcolor: black
+axes.axisbelow: True
+axes.grid: False
+axes.prop_cycle: cycler('color', ['0072B2', 'D55E00', '009E73', 'E69F00', 'CC79A7', '56B4E9', 'F0E442', '000000'])
+
+# Tick properties
+xtick.major.size: 4
+xtick.minor.size: 2
+xtick.major.width: 0.6
+xtick.minor.width: 0.4
+xtick.labelsize: 8
+xtick.direction: out
+ytick.major.size: 4
+ytick.minor.size: 2
+ytick.major.width: 0.6
+ytick.minor.width: 0.4
+ytick.labelsize: 8
+ytick.direction: out
+
+# Line properties
+lines.linewidth: 1.5
+lines.markersize: 5
+lines.markeredgewidth: 0.5
+
+# Legend properties
+legend.fontsize: 8
+legend.frameon: False
+legend.loc: best
+
+# Save properties (300 DPI minimum for thesis)
+savefig.dpi: 300
+savefig.format: png
+savefig.bbox: tight
+savefig.pad_inches: 0.05
+savefig.transparent: False
+savefig.facecolor: white
+
+# Image properties
+image.cmap: viridis
+image.aspect: auto

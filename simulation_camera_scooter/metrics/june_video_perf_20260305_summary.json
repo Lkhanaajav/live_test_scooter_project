@@ -1,0 +1,46 @@
+{
+  "date": "2026-03-05",
+  "video": "test_video_june_03_3.mp4",
+  "baseline_sample": {
+    "log": "logs/run_20260305_145411.csv",
+    "fps_mean": 4.82,
+    "t_total_pipeline_ms_mean": 193.85,
+    "seg_iou_mean": 0.9718,
+    "has_path_rate": 0.0027
+  },
+  "optimized_sample_stride1": {
+    "log": "logs/run_20260305_151504.csv",
+    "fps_mean": 5.43,
+    "t_total_pipeline_ms_mean": 184.29,
+    "seg_iou_mean": 0.9725,
+    "has_path_rate": 0.0024
+  },
+  "same_frame_comparison_100_830": {
+    "baseline": {
+      "fps": 4.823,
+      "t_total_pipeline_ms": 193.852,
+      "seg_iou": 0.9718,
+      "has_path": 0.0027
+    },
+    "optimized": {
+      "fps": 5.422,
+      "t_total_pipeline_ms": 184.657,
+      "seg_iou": 0.9718,
+      "has_path": 0.0027
+    }
+  },
+  "optimized_sample_stride2": {
+    "log": "logs/run_20260305_152414.csv",
+    "fps_mean": 6.42,
+    "t_total_pipeline_ms_mean": 155.94,
+    "seg_iou_mean": 0.9737,
+    "has_path_rate": 0.002
+  },
+  "full_run_stride1": {
+    "log": "logs/run_20260305_153055.csv",
+    "frames_processed": 2057,
+    "wall_seconds": 394.74,
+    "fps_mean_warm": 5.39,
+    "t_total_pipeline_ms_mean_warm": 185.54
+  }
+}

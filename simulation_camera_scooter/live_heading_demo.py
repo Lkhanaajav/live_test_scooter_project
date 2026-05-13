@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 live_heading_demo.py
 ====================
@@ -19,1320 +19,129 @@ Usage:
     python live_heading_demo.py --serial-port COM4         # send commands to scooter
 """
 
-import os, sys, cv2, math, time, argparse, threading, csv, json, random
-from datetime import datetime
-import numpy as np
-import networkx as nx
+import argparse
+import json
+import os
+import time
 from collections import deque
+
+import cv2
+import numpy as np
 
 # ---- Detector (sidewalk segmentation) ----
 from fast_road_detector import FastRoadDetector, Config
-
-# =============================================================================
-# Constants
-# =============================================================================
-ROAD_ID = 1
-SIDEWALK_ID = 2
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(BASE_DIR, "models", "my-segformer-road_new")
-SEG_INPUT_RES = (640, 360)
-LOW_POWER_SEG_INPUT_RES = (512, 288)
-
-# Default BEV points (scooter camera) -- override with calibration
-DEFAULT_SRC_POINTS = np.array([
-    [0.0,   717.0],
-    [1278.0, 717.0],
-    [860.0,  337.0],
-    [573.0,  329.0]
-], dtype=np.float32)
-
-DEFAULT_DST_POINTS = np.array([
-    [100, 480],  # bottom-left
-    [500, 480],  # bottom-right
-    [400, 100],  # top-right
-    [200, 100]   # top-left
-], dtype=np.float32)
-
-BEV_SIZE = (600, 500)
-TRIM_BOTTOM = 20
-
-# Skeleton / path tuning
-DT_CORE_THRESH = 6.0
-PRUNE_BRANCH_LEN = 12
-BOTTOM_BAND_PX = 30
-
-# Heading thresholds (degrees from vertical/forward)
-HEADING_STRAIGHT_THRESH = 12.0   # < 12 deg = STRAIGHT
-HEADING_TURN_THRESH = 40.0       # 12-40 deg = LEFT/RIGHT, >40 = SHARP
-
-# Speed profile (m/s) based on heading + obstacle proximity
-SPEED_MAX = 1.5            # full speed on straight, clear path
-SPEED_TURN = 0.8           # reduced speed during turns
-SPEED_SHARP_TURN = 0.4     # sharp turns
-SPEED_OBSTACLE_NEAR = 0.3  # obstacle within close range
-SPEED_STOP = 0.0           # full stop
-
-# Obstacle detection
-OBSTACLE_CLASSES = {0: "person", 1: "bicycle", 2: "car", 3: "motorcycle",
-                    5: "bus", 7: "truck", 15: "cat", 16: "dog"}
-OBSTACLE_CLOSE_M = 3.0     # meters -- trigger slowdown
-OBSTACLE_STOP_M = 1.0      # meters -- trigger stop
-YOLO_CONF_THRESH = 0.35    # detection confidence threshold
-YOLO_MODEL_NAME = "yolov8n.pt"  # 3.2 MB nano model
-
-# GPS
-EARTH_RADIUS_M = 6_371_000.0
-
-# Colors
-COLOR_STRAIGHT = (0, 255, 0)     # green
-COLOR_LEFT = (255, 165, 0)       # orange
-COLOR_RIGHT = (0, 165, 255)      # blue
-COLOR_SHARP = (0, 0, 255)        # red
-COLOR_STOP = (0, 0, 200)         # dark red
-COLOR_OBJ_BOX = (0, 255, 255)    # cyan -- object detection box
-COLOR_OBJ_WARN = (0, 0, 255)     # red -- close obstacle
-
-PATH_COLORS = [
-    (0, 255, 255), (255, 255, 0), (255, 0, 255),
-    (0, 165, 255), (0, 255, 128), (128, 0, 255),
-]
-
-CALIBRATION_FILE = "bev_calibration.npy"
-
-# Frame stabilization (camera shake compensation)
-STABILIZATION_ENABLED = True
-STAB_SMOOTHING_RADIUS = 20       # frames for trajectory smoothing window
-STAB_MAX_CORRECTION_PX = 50      # max pixel shift correction per frame
-STAB_MAX_CORRECTION_DEG = 3.0    # max rotation correction (degrees)
-
-# Temporal mask smoothing (reduces segmentation flickering)
-MASK_SMOOTH_ALPHA = 0.45         # EMA weight for current frame (0-1)
-MASK_SMOOTH_CONSISTENCY_THRESH = 0.3  # IoU below this = likely shake artifact
-BEV_SMOOTH_ALPHA = 0.55          # BEV mask temporal smoothing weight
-
-# Segmentation stability safety gate
-SEG_IOU_FAIL = 0.22              # severe instability threshold
-SEG_IOU_WARN = 0.35              # mild instability threshold
-SEG_FAIL_HOLD_FRAMES = 6         # consecutive unstable frames to trigger limit
-SPEED_SEG_UNSTABLE = 0.20        # speed cap (m/s) when segmentation unstable
-
-# Low-power profile (for small onboard computers)
-LOW_POWER_STRIDE = 2
-LOW_POWER_DETECTION_STRIDE = 2
-LOW_POWER_PATH_SCALE = 0.65
-
-# Intersection-aware navigation state machine
-NAV_FOLLOW_LANE = "FOLLOW_LANE"
-NAV_APPROACH_INTERSECTION = "APPROACH_INTERSECTION"
-NAV_COMMIT_TURN = "COMMIT_TURN"
-NAV_RECOVER = "RECOVER"
-INTERSECTION_CONFIRM_FRAMES = 3
-INTERSECTION_CLEAR_FRAMES = 4
-TURN_COMMIT_FRAMES = 14
-RECOVER_FRAMES = 8
-STEER_RATE_LIMIT_DEG_PER_FRAME = 4.5
-TURN_COMMIT_HEADING_DEG = 48.0
-MANEUVER_STRAIGHT_THRESH = 12.0
-MANEUVER_TURN_THRESH = 25.0
-RANDOM_DECISION_NO_GPS = True
-
-# Ego-front segmentation guard (fills bottom-center hole near scooter)
-EGO_FRONT_FILL_WIDTH_RATIO = 0.40
-EGO_FRONT_FILL_HEIGHT_PX = 80
-EGO_FRONT_SEED_HEIGHT_PX = 150
-
-
-# =============================================================================
-# Data Logger -- per-frame CSV for thesis experiments
-# =============================================================================
-class DataLogger:
-    """
-    Logs every frame's data to a timestamped CSV file for post-hoc analysis.
-    Each row captures: timing, heading, speed, detections, GPS, path info.
-    """
-
-    FIELDNAMES = [
-        # Identity
-        "frame_id", "timestamp", "wall_clock",
-        # Timing (ms)
-        "t_segmentation", "t_detection", "t_bev", "t_skeleton",
-        "t_pathfinding", "t_gps_fusion", "t_command", "t_total_pipeline",
-        "fps",
-        # Heading & control
-        "heading_raw_deg", "heading_smoothed_deg", "command",
-        "speed_raw_mps", "speed_smoothed_mps", "serial_cmd",
-        "seg_iou", "seg_unstable_frames", "stability_mode",
-        "stab_corr_px", "stab_corr_deg",
-        # Path info
-        "has_path", "num_paths", "best_path_length_px",
-        "num_graph_nodes", "num_graph_edges",
-        # Object detection
-        "num_detections", "min_obstacle_dist_m",
-        "detection_classes", "detection_distances",
-        # GPS
-        "gps_lat", "gps_lon", "gps_fix_quality",
-        "gps_wp_name", "gps_wp_dist_m", "gps_correction_deg",
-        # Mask stats
-        "sidewalk_mask_pixels", "bev_mask_pixels", "skeleton_pixels",
-    ]
-
-    def __init__(self, log_dir="logs"):
-        os.makedirs(log_dir, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.csv_path = os.path.join(log_dir, f"run_{ts}.csv")
-        self.meta_path = os.path.join(log_dir, f"run_{ts}_meta.json")
-        self._file = open(self.csv_path, "w", newline="")
-        self._writer = csv.DictWriter(self._file, fieldnames=self.FIELDNAMES)
-        self._writer.writeheader()
-        self._start_time = time.time()
-        self._row_count = 0
-        print(f"[Logger] Logging to {self.csv_path}")
-
-    def log(self, **kwargs):
-        """Write one row. Missing fields default to empty string."""
-        kwargs.setdefault("timestamp", time.time() - self._start_time)
-        kwargs.setdefault("wall_clock", datetime.now().isoformat())
-        row = {k: kwargs.get(k, "") for k in self.FIELDNAMES}
-        self._writer.writerow(row)
-        self._row_count += 1
-        # Flush every 50 rows for safety
-        if self._row_count % 50 == 0:
-            self._file.flush()
-
-    def save_metadata(self, **kwargs):
-        """Save run configuration as JSON alongside the CSV."""
-        meta = {
-            "csv_file": self.csv_path,
-            "start_time": datetime.now().isoformat(),
-            "total_frames": self._row_count,
-            **kwargs,
-        }
-        with open(self.meta_path, "w") as f:
-            json.dump(meta, f, indent=2, default=str)
-        print(f"[Logger] Metadata saved to {self.meta_path}")
-
-    def close(self):
-        self._file.flush()
-        self._file.close()
-        print(f"[Logger] Closed. {self._row_count} rows written to {self.csv_path}")
-
-
-# =============================================================================
-# Object Detection -- YOLOv8-nano (ultralytics, ~3.2 MB)
-# =============================================================================
-class TinyObjectDetector:
-    """
-    Wraps ultralytics YOLOv8-nano for lightweight obstacle detection.
-    Model is auto-downloaded from HuggingFace/ultralytics on first run.
-    Only keeps relevant classes (person, bicycle, car, etc.).
-    """
-
-    def __init__(self, model_name=YOLO_MODEL_NAME, conf=YOLO_CONF_THRESH,
-                 classes=None, device="cpu"):
-        self.conf = conf
-        self.classes = classes or list(OBSTACLE_CLASSES.keys())
-        self.device = device
-        self.model = None
-        self._load(model_name)
-
-    def _load(self, model_name):
-        try:
-            from ultralytics import YOLO
-            self.model = YOLO(model_name)
-            # Force CPU (tiny model, no GPU needed)
-            self.model.to(self.device)
-            print(f"[ObjDet] YOLOv8-nano loaded ({model_name}, device={self.device})")
-        except ImportError:
-            print("[ObjDet] WARNING: ultralytics not installed. "
-                  "Run: pip install ultralytics")
-            print("[ObjDet] Object detection DISABLED.")
-            self.model = None
-
-    def detect(self, frame_bgr):
-        """
-        Run detection on a BGR frame.
-        Returns list of dicts: {bbox: (x1,y1,x2,y2), class_id, class_name, conf, center}
-        """
-        if self.model is None:
-            return []
-
-        results = self.model.predict(
-            frame_bgr,
-            conf=self.conf,
-            classes=self.classes,
-            verbose=False,
-            device=self.device,
-        )
-
-        detections = []
-        for r in results:
-            for box in r.boxes:
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
-                detections.append({
-                    "bbox": (x1, y1, x2, y2),
-                    "class_id": cls_id,
-                    "class_name": OBSTACLE_CLASSES.get(cls_id, f"cls_{cls_id}"),
-                    "conf": conf,
-                    "center": (cx, cy),
-                    "height_px": y2 - y1,  # used for rough distance estimate
-                })
-        return detections
-
-
-def estimate_obstacle_distance(det, frame_h, camera_fov_v_deg=55.0,
-                               camera_height_m=0.8):
-    """
-    Rough monocular distance estimate using bounding-box bottom position.
-    Uses the pinhole model: objects at the bottom of the frame are closer.
-    Returns estimated distance in meters (very approximate).
-    """
-    _, y1, _, y2 = det["bbox"]
-    # Use bottom of bounding box (foot position)
-    foot_y = y2
-    # Normalized position: 0 = top, 1 = bottom
-    norm_y = foot_y / frame_h
-    if norm_y < 0.3:
-        return 15.0  # far away
-    # Simple inverse model: distance ~ k / (norm_y - offset)
-    distance = camera_height_m / max(0.01, math.tan(
-        math.radians(camera_fov_v_deg * (norm_y - 0.5))))
-    return max(0.5, min(20.0, abs(distance)))
-
-
-# =============================================================================
-# GPS Navigation
-# =============================================================================
-class GPSNavigator:
-    """
-    Reads NMEA sentences from a serial GPS and steers toward waypoints.
-    Waypoints loaded from CSV: lat,lon[,name]
-    """
-
-    def __init__(self, serial_device=None, baud=9600, waypoints_file=None):
-        self.lat = None
-        self.lon = None
-        self.speed_mps = 0.0
-        self.heading_gps = 0.0  # degrees from north (from GPS RMC)
-        self.fix_quality = 0
-        self.last_update = 0.0
-        self.lock = threading.Lock()
-        self._running = False
-        self._thread = None
-
-        # Waypoints
-        self.waypoints = []  # list of (lat, lon, name)
-        self.current_wp_idx = 0
-        self.wp_reached_radius_m = 5.0
-
-        if waypoints_file:
-            self._load_waypoints(waypoints_file)
-
-        if serial_device:
-            self._start_serial(serial_device, baud)
-
-    def _load_waypoints(self, path):
-        """Load waypoints from CSV: lat,lon[,name]"""
-        self.waypoints = []
-        try:
-            with open(path, "r") as f:
-                for i, line in enumerate(f):
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    parts = line.split(",")
-                    lat = float(parts[0])
-                    lon = float(parts[1])
-                    name = parts[2].strip() if len(parts) > 2 else f"WP{i}"
-                    self.waypoints.append((lat, lon, name))
-            print(f"[GPS] Loaded {len(self.waypoints)} waypoints from {path}")
-        except Exception as e:
-            print(f"[GPS] ERROR loading waypoints: {e}")
-
-    def _start_serial(self, device, baud):
-        """Start background thread reading NMEA from serial."""
-        try:
-            import serial as pyserial
-            self._ser = pyserial.Serial(device, baud, timeout=1)
-            self._running = True
-            self._thread = threading.Thread(target=self._read_loop, daemon=True)
-            self._thread.start()
-            print(f"[GPS] Reading from {device} @ {baud} baud")
-        except ImportError:
-            print("[GPS] WARNING: pyserial not installed. Run: pip install pyserial")
-            print("[GPS] GPS DISABLED.")
-        except Exception as e:
-            print(f"[GPS] ERROR opening {device}: {e}")
-
-    def _read_loop(self):
-        """Background thread: read NMEA sentences."""
-        while self._running:
-            try:
-                line = self._ser.readline().decode(errors="ignore").strip()
-                if not line.startswith("$"):
-                    continue
-                self._parse_nmea(line)
-            except Exception:
-                time.sleep(0.1)
-
-    def _parse_nmea(self, sentence):
-        """Parse GGA and RMC sentences."""
-        parts = sentence.split(",")
-        with self.lock:
-            if parts[0].endswith("GGA") and len(parts) >= 10:
-                lat = self._nmea_to_decimal(parts[2], parts[3])
-                lon = self._nmea_to_decimal(parts[4], parts[5])
-                if lat is not None and lon is not None:
-                    self.lat = lat
-                    self.lon = lon
-                    self.last_update = time.time()
-                try:
-                    self.fix_quality = int(parts[6])
-                except (ValueError, IndexError):
-                    pass
-
-            elif parts[0].endswith("RMC") and len(parts) >= 8:
-                lat = self._nmea_to_decimal(parts[3], parts[4])
-                lon = self._nmea_to_decimal(parts[5], parts[6])
-                if lat is not None and lon is not None:
-                    self.lat = lat
-                    self.lon = lon
-                    self.last_update = time.time()
-                try:
-                    self.speed_mps = float(parts[7]) * 0.514444  # knots to m/s
-                except (ValueError, IndexError):
-                    pass
-                try:
-                    self.heading_gps = float(parts[8])
-                except (ValueError, IndexError):
-                    pass
-
-    @staticmethod
-    def _nmea_to_decimal(raw, hemi):
-        if not raw:
-            return None
-        try:
-            raw = float(raw)
-        except ValueError:
-            return None
-        deg = int(raw // 100)
-        minutes = raw - deg * 100
-        val = deg + minutes / 60.0
-        if hemi in ("S", "W"):
-            val = -val
-        return val
-
-    def get_position(self):
-        """Returns (lat, lon) or (None, None)."""
-        with self.lock:
-            return self.lat, self.lon
-
-    def get_bearing_to_waypoint(self):
-        """
-        Returns (bearing_deg, distance_m, wp_name) to the current waypoint.
-        bearing_deg: 0=North, 90=East, etc.
-        Returns (None, None, None) if no GPS fix or no waypoints.
-        """
-        with self.lock:
-            lat, lon = self.lat, self.lon
-
-        if lat is None or lon is None:
-            return None, None, None
-        if self.current_wp_idx >= len(self.waypoints):
-            return None, None, "ARRIVED"
-
-        wp_lat, wp_lon, wp_name = self.waypoints[self.current_wp_idx]
-        bearing = self._bearing(lat, lon, wp_lat, wp_lon)
-        dist = self._haversine(lat, lon, wp_lat, wp_lon)
-
-        # Auto-advance to next waypoint if close enough
-        if dist < self.wp_reached_radius_m:
-            print(f"[GPS] Reached waypoint: {wp_name} ({dist:.1f}m)")
-            self.current_wp_idx += 1
-            if self.current_wp_idx < len(self.waypoints):
-                next_wp = self.waypoints[self.current_wp_idx]
-                print(f"[GPS] Next waypoint: {next_wp[2]}")
-            else:
-                print("[GPS] All waypoints reached!")
-
-        return bearing, dist, wp_name
-
-    def get_gps_heading_correction(self):
-        """
-        Returns a correction angle (degrees) to steer toward the next waypoint.
-        Positive = turn right, negative = turn left.
-        Returns (0.0, None, None) if no GPS data.
-        Returns (0.0, None, "ARRIVED") if all waypoints reached.
-        """
-        bearing, dist, wp_name = self.get_bearing_to_waypoint()
-        if bearing is None:
-            # Preserve wp_name so "ARRIVED" state is communicated
-            return 0.0, dist, wp_name
-
-        with self.lock:
-            current_heading = self.heading_gps
-
-        # Difference between desired bearing and current heading
-        diff = bearing - current_heading
-        # Normalize to [-180, 180]
-        while diff > 180:
-            diff -= 360
-        while diff < -180:
-            diff += 360
-
-        return diff, dist, wp_name
-
-    @staticmethod
-    def _haversine(lat1, lon1, lat2, lon2):
-        """Distance in meters between two GPS coordinates."""
-        dlat = math.radians(lat2 - lat1)
-        dlon = math.radians(lon2 - lon1)
-        a = (math.sin(dlat / 2) ** 2 +
-             math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) *
-             math.sin(dlon / 2) ** 2)
-        return EARTH_RADIUS_M * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
-    @staticmethod
-    def _bearing(lat1, lon1, lat2, lon2):
-        """Bearing in degrees from (lat1,lon1) to (lat2,lon2). 0=N, 90=E."""
-        dlon = math.radians(lon2 - lon1)
-        lat1r, lat2r = math.radians(lat1), math.radians(lat2)
-        x = math.sin(dlon) * math.cos(lat2r)
-        y = (math.cos(lat1r) * math.sin(lat2r) -
-             math.sin(lat1r) * math.cos(lat2r) * math.cos(dlon))
-        return (math.degrees(math.atan2(x, y)) + 360) % 360
-
-    def stop(self):
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=2)
-        # Close the serial port if open
-        if hasattr(self, "_ser") and self._ser and self._ser.is_open:
-            try:
-                self._ser.close()
-            except Exception:
-                pass
-
-
-# =============================================================================
-# Scooter Serial Commander
-# =============================================================================
-class ScooterCommander:
-    """
-    Sends steering angle (degrees) and speed (m/s) to the scooter
-    over a serial connection.
-
-    Protocol: each command is a line:
-        CMD,<steer_deg>,<speed_mps>\n
-    Example:
-        CMD,-12.5,1.2\n    means steer 12.5 deg left at 1.2 m/s
-        CMD,0.0,0.0\n      means stop
-    """
-
-    def __init__(self, port=None, baud=115200):
-        self.ser = None
-        self.port = port
-        if port:
-            try:
-                import serial as pyserial
-                self.ser = pyserial.Serial(port, baud, timeout=0.1)
-                print(f"[Scooter] Serial connected: {port} @ {baud}")
-            except ImportError:
-                print("[Scooter] WARNING: pyserial not installed.")
-            except Exception as e:
-                print(f"[Scooter] ERROR: {e}")
-
-    def send_command(self, steer_deg, speed_mps):
-        """Send steering + speed command. Returns the command string."""
-        cmd = f"CMD,{steer_deg:.1f},{speed_mps:.2f}\n"
-        if self.ser and self.ser.is_open:
-            try:
-                self.ser.write(cmd.encode())
-            except Exception as e:
-                print(f"[Scooter] Write error: {e}")
-        return cmd.strip()
-
-    def stop(self):
-        """Emergency stop."""
-        self.send_command(0.0, 0.0)
-        if self.ser:
-            self.ser.close()
-
-
-# =============================================================================
-# Frame Stabilization (camera shake compensation)
-# =============================================================================
-class FrameStabilizer:
-    """
-    Lightweight video stabilization using optical-flow trajectory smoothing.
-
-    How it works:
-      1. Detect feature points in the previous grayscale frame.
-      2. Track them into the current frame with Lucas-Kanade optical flow.
-      3. Estimate a rigid transform (translation + rotation) between frames.
-      4. Accumulate transforms into a "trajectory" (cumulative position).
-      5. Smooth the trajectory with a moving-average window.
-      6. Apply the difference (smoothed - actual) as a corrective warp.
-
-    This removes high-frequency camera shake while preserving the low-frequency
-    intentional motion (scooter turns, etc.).  Essential for reliable
-    segmentation and BEV projection from a vibrating scooter handlebar.
-    """
-
-    def __init__(self,
-                 smoothing_radius=STAB_SMOOTHING_RADIUS,
-                 max_shift_px=STAB_MAX_CORRECTION_PX,
-                 max_angle_deg=STAB_MAX_CORRECTION_DEG):
-        self.smoothing_radius = smoothing_radius
-        self.max_shift = float(max_shift_px)
-        self.max_angle = math.radians(max_angle_deg)
-        self.prev_gray = None
-        # Cumulative trajectory
-        self.cum_dx = 0.0
-        self.cum_dy = 0.0
-        self.cum_da = 0.0
-        # Trajectory history for moving-average smoothing
-        buf_len = smoothing_radius * 2 + 1
-        self.traj_x = deque(maxlen=buf_len)
-        self.traj_y = deque(maxlen=buf_len)
-        self.traj_a = deque(maxlen=buf_len)
-        # OpenCV feature-detection / optical-flow params
-        self._feat_params = dict(
-            maxCorners=200, qualityLevel=0.01, minDistance=30, blockSize=3
-        )
-        self._lk_params = dict(
-            winSize=(15, 15), maxLevel=2,
-            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03)
-        )
-        self.last_correction_px = 0.0
-        self.last_correction_deg = 0.0
-
-    def stabilize(self, frame):
-        """Return a shake-compensated copy of *frame* (BGR, uint8)."""
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        if self.prev_gray is None:
-            self.prev_gray = gray
-            self.traj_x.append(0.0)
-            self.traj_y.append(0.0)
-            self.traj_a.append(0.0)
-            self.last_correction_px = 0.0
-            self.last_correction_deg = 0.0
-            return frame
-
-        # --- detect & track features ---
-        prev_pts = cv2.goodFeaturesToTrack(self.prev_gray, **self._feat_params)
-        if prev_pts is None or len(prev_pts) < 10:
-            self.prev_gray = gray
-            self.last_correction_px = 0.0
-            self.last_correction_deg = 0.0
-            return frame
-
-        curr_pts, status, _ = cv2.calcOpticalFlowPyrLK(
-            self.prev_gray, gray, prev_pts, None, **self._lk_params
-        )
-        good = (status.ravel() == 1)
-        if good.sum() < 6:
-            self.prev_gray = gray
-            self.last_correction_px = 0.0
-            self.last_correction_deg = 0.0
-            return frame
-
-        # --- estimate rigid motion (translation + rotation) ---
-        m, _ = cv2.estimateAffinePartial2D(prev_pts[good], curr_pts[good])
-        if m is None:
-            self.prev_gray = gray
-            self.last_correction_px = 0.0
-            self.last_correction_deg = 0.0
-            return frame
-
-        dx = m[0, 2]
-        dy = m[1, 2]
-        da = math.atan2(m[1, 0], m[0, 0])
-
-        # --- accumulate trajectory ---
-        self.cum_dx += dx
-        self.cum_dy += dy
-        self.cum_da += da
-        self.traj_x.append(self.cum_dx)
-        self.traj_y.append(self.cum_dy)
-        self.traj_a.append(self.cum_da)
-
-        # --- smooth trajectory (moving average) ---
-        smooth_x = float(np.mean(self.traj_x))
-        smooth_y = float(np.mean(self.traj_y))
-        smooth_a = float(np.mean(self.traj_a))
-
-        # correction = smoothed - actual  (clamped for safety)
-        corr_dx = np.clip(smooth_x - self.cum_dx, -self.max_shift, self.max_shift)
-        corr_dy = np.clip(smooth_y - self.cum_dy, -self.max_shift, self.max_shift)
-        corr_da = np.clip(smooth_a - self.cum_da, -self.max_angle, self.max_angle)
-        self.last_correction_px = float(math.hypot(corr_dx, corr_dy))
-        self.last_correction_deg = float(math.degrees(corr_da))
-
-        # --- build corrective affine warp (rotate around frame center) ---
-        h, w = frame.shape[:2]
-        cx, cy = w / 2.0, h / 2.0
-        cos_a = math.cos(corr_da)
-        sin_a = math.sin(corr_da)
-        M = np.array([
-            [cos_a, -sin_a, (1 - cos_a) * cx + sin_a * cy + corr_dx],
-            [sin_a,  cos_a, -sin_a * cx + (1 - cos_a) * cy + corr_dy]
-        ], dtype=np.float64)
-
-        stabilized = cv2.warpAffine(frame, M, (w, h),
-                                     borderMode=cv2.BORDER_REPLICATE)
-        self.prev_gray = gray
-        return stabilized
-
-
-# =============================================================================
-# Temporal Mask Smoothing (reduces segmentation flickering)
-# =============================================================================
-class TemporalMaskSmoother:
-    """
-    Exponential moving average (EMA) smoother for binary segmentation masks.
-
-    When camera shake causes a sudden segmentation change (low IoU with the
-    running average), the smoother trusts the historical average more,
-    preventing transient mis-classifications from propagating to BEV / path.
-    """
-
-    def __init__(self, alpha=MASK_SMOOTH_ALPHA,
-                 consistency_thresh=MASK_SMOOTH_CONSISTENCY_THRESH):
-        """
-        Args:
-            alpha: EMA weight for current frame (higher = more responsive).
-            consistency_thresh: IoU below this triggers conservative blending.
-        """
-        self.alpha = alpha
-        self.consistency_thresh = consistency_thresh
-        self.running_avg = None
-
-    def smooth(self, mask_255, return_iou=False):
-        """
-        Accept a uint8 binary mask (0 / 255) and return a temporally
-        smoothed binary mask (0 / 255).
-        """
-        mask_f = mask_255.astype(np.float32) / 255.0
-
-        if self.running_avg is None:
-            self.running_avg = mask_f.copy()
-            return (mask_255, 1.0) if return_iou else mask_255
-
-        # Consistency check: IoU between current mask and running average
-        iou = self._iou(mask_f, self.running_avg)
-
-        if iou < self.consistency_thresh:
-            # Very different from history -- likely a shake artifact
-            effective_alpha = self.alpha * 0.25
-        elif iou < 0.5:
-            # Moderate change -- partially trust history
-            effective_alpha = self.alpha * 0.5
-        else:
-            effective_alpha = self.alpha
-
-        # Update running average
-        self.running_avg = (effective_alpha * mask_f
-                            + (1.0 - effective_alpha) * self.running_avg)
-
-        # Threshold back to binary
-        smoothed = (self.running_avg > 0.45).astype(np.uint8) * 255
-        return (smoothed, iou) if return_iou else smoothed
-
-    @staticmethod
-    def _iou(a, b):
-        """IoU between two float masks in [0, 1]."""
-        ba = a > 0.5
-        bb = b > 0.5
-        inter = float(np.logical_and(ba, bb).sum())
-        union = float(np.logical_or(ba, bb).sum())
-        return inter / max(union, 1.0)
-
-
-# =============================================================================
-# BEV Calibration Tool
-# =============================================================================
-def run_calibration(camera_id=0, video_path=None):
-    """Interactive 4-point BEV calibration. Click 4 sidewalk corners."""
-    print("\n=== BEV CALIBRATION MODE ===")
-    print("Click 4 points on the sidewalk in order:")
-    print("  1. Bottom-Left  2. Bottom-Right  3. Top-Right  4. Top-Left")
-    print("Press 'r' to reset, 's' to save, 'q' to quit.\n")
-
-    if video_path:
-        cap = cv2.VideoCapture(video_path)
-    else:
-        cap = cv2.VideoCapture(camera_id)
-
-    if not cap.isOpened():
-        print("ERROR: Cannot open camera/video.")
-        return
-
-    ret, frame = cap.read()
-    if not ret:
-        print("ERROR: Cannot read frame.")
-        cap.release()
-        return
-
-    points = []
-    labels = ["Bottom-Left", "Bottom-Right", "Top-Right", "Top-Left"]
-
-    def on_click(event, x, y, flags, param):
-        if event == cv2.EVENT_LBUTTONDOWN and len(points) < 4:
-            points.append([x, y])
-            print(f"  Point {len(points)}: ({x}, {y}) - {labels[len(points)-1]}")
-
-    cv2.namedWindow("BEV Calibration", cv2.WINDOW_NORMAL)
-    cv2.setMouseCallback("BEV Calibration", on_click)
-
-    while True:
-        display = frame.copy()
-        for i, pt in enumerate(points):
-            cv2.circle(display, tuple(pt), 8, (0, 0, 255), -1)
-            cv2.putText(display, f"{i+1}: {labels[i]}", (pt[0]+10, pt[1]-10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-        if len(points) >= 2:
-            for i in range(len(points) - 1):
-                cv2.line(display, tuple(points[i]), tuple(points[i+1]), (0, 255, 0), 2)
-            if len(points) == 4:
-                cv2.line(display, tuple(points[3]), tuple(points[0]), (0, 255, 0), 2)
-        info = f"Points: {len(points)}/4 | 'r'=reset 's'=save 'q'=quit"
-        cv2.putText(display, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        cv2.imshow("BEV Calibration", display)
-
-        key = cv2.waitKey(30) & 0xFF
-        if key == ord('r'):
-            points.clear()
-            print("  Points reset.")
-        elif key == ord('s') and len(points) == 4:
-            src = np.array(points, dtype=np.float32)
-            np.save(CALIBRATION_FILE, src)
-            print(f"\n  Saved calibration to {CALIBRATION_FILE}")
-            print(f"  Source points: {src.tolist()}")
-            break
-        elif key == ord('q') or key == 27:
-            print("  Calibration cancelled.")
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
-
-
-# =============================================================================
-# Load BEV calibration
-# =============================================================================
-def load_bev_params():
-    """Load calibration or use defaults. Returns (H, Hinv, src_points)."""
-    if os.path.exists(CALIBRATION_FILE):
-        src = np.load(CALIBRATION_FILE).astype(np.float32)
-        print(f"Loaded BEV calibration from {CALIBRATION_FILE}")
-    else:
-        src = DEFAULT_SRC_POINTS
-        print("Using default BEV calibration (scooter camera). Run --calibrate for iPhone.")
-    dst = DEFAULT_DST_POINTS
-    H = cv2.getPerspectiveTransform(src, dst)
-    Hinv = np.linalg.inv(H)
-    return H, Hinv, src
-
-
-# =============================================================================
-# BEV Mask Cleaning
-# =============================================================================
-def clean_sidewalk_mask(bev_mask_255, dt_thresh=DT_CORE_THRESH):
-    mask = bev_mask_255.copy().astype(np.uint8)
-    k7 = np.ones((7, 7), np.uint8)
-    k5 = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k7, iterations=2)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k5, iterations=1)
-    dist = cv2.distanceTransform((mask > 0).astype(np.uint8), cv2.DIST_L2, 5)
-    core = (dist > float(dt_thresh)).astype(np.uint8) * 255
-    core = cv2.dilate(core, k5, iterations=1)
-    core = cv2.morphologyEx(core, cv2.MORPH_CLOSE, k5, iterations=1)
-    return core
-
-
-def select_main_component(mask_255, bottom_band_px=45, center_weight=0.35):
-    bin_ = (mask_255 > 0).astype(np.uint8)
-    num, labels, stats, centroids = cv2.connectedComponentsWithStats(bin_, connectivity=8)
-    if num <= 1:
-        return mask_255
-    H, W = mask_255.shape
-    bottom_band_px = int(max(1, min(H, bottom_band_px)))
-    bottom_slice = labels[max(0, H - bottom_band_px):, :]
-    center_x = W / 2.0
-    best_label, best_score = None, -1.0
-    for idx in range(1, num):
-        area = float(stats[idx, cv2.CC_STAT_AREA])
-        if area <= 0:
+from realtime_nav_core import (
+    BEVPathExtractor,
+    PathExtractorConfig,
+    AdaptivePurePursuitController,
+    PurePursuitConfig,
+)
+try:
+    from path_planners import ALL_PLANNERS
+    from path_planners.adapter import planner_result_to_path_plan_result
+except ImportError:
+    ALL_PLANNERS = {}
+    planner_result_to_path_plan_result = None
+
+# ---- Project modules ----
+from config import (
+    ROAD_ID, SIDEWALK_ID, MODEL_DIR,
+    SEG_INPUT_RES, LOW_POWER_SEG_INPUT_RES,
+    BEV_SIZE, TRIM_BOTTOM,
+    DT_CORE_THRESH,
+    YOLO_MODEL_NAME, YOLO_CONF_THRESH,
+    STABILIZATION_ENABLED, STAB_SMOOTHING_RADIUS,
+    MASK_SMOOTH_ALPHA, MASK_SMOOTH_CONSISTENCY_THRESH, BEV_SMOOTH_ALPHA,
+    SEG_IOU_FAIL, SEG_IOU_WARN, SEG_FAIL_HOLD_FRAMES, SPEED_SEG_UNSTABLE,
+    LOW_POWER_STRIDE, LOW_POWER_DETECTION_STRIDE, LOW_POWER_PATH_SCALE,
+    NAV_BEV_FORWARD_M, NAV_BEV_LATERAL_M, NAV_WORK_GRID_BASE,
+    BEV_PIXELS_PER_METER_FORWARD,
+    bev_ego_x_px,
+    GPS_STEER_GAIN, GPS_STEER_BIAS_MAX_DEG,
+    SPEED_TURN,
+    PREDICT_ENABLED,
+    BEV_OBSTACLE_RADIUS_PX,
+    BEV_HARD_BLOCK_DIST_M,
+    MORPH_ENHANCED,
+)
+from data_logger import DataLogger
+from scooter_commander import ScooterCommander
+from gps_navigator import GPSNavigator
+from object_detector import TinyObjectDetector, estimate_obstacle_distance
+from bev_calibration import run_calibration, load_bev_params
+from bev_obstacle import project_foot_to_bev, detection_to_metric, ObstacleEMAGrid
+from stabilization import FrameStabilizer, TemporalMaskSmoother
+from masks import split_masks, suppress_grass_in_mask, clean_sidewalk_mask, clean_bev_mask_enhanced, select_main_component, anchor_ego_to_mask, ego_connected_mask
+from heading import heading_to_command, compute_speed, apply_planner_speed_limit
+from visualization import draw_heading_hud, draw_bev_hud
+from bev_predictor import BEVPredictiveTracker
+
+
+def _metric_point_to_bev_px(forward_m, lateral_m, bev_shape_hw):
+    """Convert a metric BEV point (forward, lateral) to BEV pixel coordinates."""
+    h_bev, w_bev = int(bev_shape_hw[0]), int(bev_shape_hw[1])
+    ego_x = int(round(bev_ego_x_px(w_bev)))
+    x = int(round(
+        ego_x + (float(lateral_m) / max(1e-6, NAV_BEV_LATERAL_M)) * max(1.0, float(w_bev - 1))
+    ))
+    y = int(round(
+        (1.0 - float(forward_m) / max(1e-6, NAV_BEV_FORWARD_M)) * max(1.0, float(h_bev - 1))
+    ))
+    x = int(np.clip(x, 0, max(0, w_bev - 1)))
+    y = int(np.clip(y, 0, max(0, h_bev - 1)))
+    return np.array([x, y], dtype=np.float32)
+
+
+def _load_intent_schedule(schedule_path: str | None) -> list[dict]:
+    """Load an optional frame-range intent schedule from JSON."""
+    if not schedule_path:
+        return []
+    with open(schedule_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict):
+        data = data.get("events", [])
+    if not isinstance(data, list):
+        raise ValueError("Intent schedule must be a JSON list or an object with an 'events' list")
+
+    schedule: list[dict] = []
+    for idx, item in enumerate(data):
+        if not isinstance(item, dict):
             continue
-        touches_bottom = bool(np.any(bottom_slice == idx))
-        cx, _ = centroids[idx]
-        center_bonus = 1.0 - min(1.0, abs(cx - center_x) / (center_x + 1e-6))
-        score = area
-        if touches_bottom:
-            score += area * 0.5
-        score += area * float(center_weight) * max(0.0, center_bonus)
-        if score > best_score:
-            best_score = score
-            best_label = idx
-    if best_label is None:
-        best_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
-    out = np.zeros_like(mask_255, dtype=np.uint8)
-    out[labels == best_label] = 255
-    return out
-
-
-def enforce_ego_front_segmentation(mask_255):
-    """
-    Ensure segmentation exists in front of the scooter (bottom-center BEV).
-    This prevents transient holes that break path start selection.
-    """
-    out = mask_255.copy().astype(np.uint8)
-    h, w = out.shape
-    if h < 16 or w < 16:
-        return out
-
-    fill_h = int(max(20, min(h, EGO_FRONT_FILL_HEIGHT_PX)))
-    seed_h = int(max(fill_h + 8, min(h, EGO_FRONT_SEED_HEIGHT_PX)))
-    half_w = int(max(8, min(w // 2, round(w * EGO_FRONT_FILL_WIDTH_RATIO * 0.5))))
-    cx = w // 2
-    x1 = max(0, cx - half_w)
-    x2 = min(w, cx + half_w)
-    y_fill1 = max(0, h - fill_h)
-    y_seed1 = max(0, h - seed_h)
-
-    # Only force-fill when there is supporting segmentation just ahead.
-    seed = out[y_seed1:y_fill1, x1:x2]
-    support_ratio = float(np.count_nonzero(seed)) / float(max(1, seed.size))
-    if support_ratio < 0.08:
-        return out
-
-    out[y_fill1:h, x1:x2] = 255
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-    out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, k, iterations=1)
-    return out
-
-
-# =============================================================================
-# Skeletonization (Guo-Hall via OpenCV)
-# =============================================================================
-def skeletonize_guohall(mask_255):
-    try:
-        from cv2.ximgproc import thinning, THINNING_GUOHALL
-        bin_ = ((mask_255 > 0).astype(np.uint8)) * 255
-        skel = thinning(bin_, THINNING_GUOHALL)
-        # thinning() may return 0/1 or 0/255 depending on OpenCV version
-        # normalize to 0/255 safely (avoids 255*255 overflow)
-        return ((skel > 0).astype(np.uint8)) * 255
-    except ImportError:
-        img = (mask_255 > 0).astype(np.uint8)
-        skel = np.zeros_like(img)
-        element = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
-        while True:
-            eroded = cv2.erode(img, element)
-            temp = cv2.dilate(eroded, element)
-            temp = cv2.subtract(img, temp)
-            skel = cv2.bitwise_or(skel, temp)
-            img = eroded.copy()
-            if cv2.countNonZero(img) == 0:
-                break
-        return skel * 255
-
-
-def extract_skeleton(bev_binary, trim_px=5):
-    kernel = np.ones((5, 5), np.uint8)
-    clean = cv2.morphologyEx(bev_binary, cv2.MORPH_CLOSE, kernel)
-    clean = cv2.medianBlur(clean, 5)
-    _, binary = cv2.threshold(clean, 127, 255, cv2.THRESH_BINARY)
-    skel = skeletonize_guohall(binary)
-    if trim_px > 0:
-        skel[:trim_px, :] = 0
-        skel[-trim_px:, :] = 0
-        skel[:, :trim_px] = 0
-        skel[:, -trim_px:] = 0
-    return skel
-
-
-def prune_small_branches(skel, min_len=PRUNE_BRANCH_LEN):
-    s = skel.copy()
-    for _ in range(min_len):
-        nb = cv2.filter2D((s > 0).astype(np.uint8), -1, np.ones((3, 3), np.uint8))
-        endpoints = ((s > 0) & (nb == 2))
-        s[endpoints] = 0
-    return s
-
-
-def prune_graph_branches(G, min_branch_length=40):
-    G = G.copy()
-    endpoints = [n for n in list(G.nodes) if G.degree[n] == 1]
-    to_remove = set()
-    for ep in endpoints:
-        path = [ep]
-        current, prev = ep, None
-        total_len = 0.0
-        while True:
-            nbrs = [n for n in G.neighbors(current) if n != prev]
-            if not nbrs:
-                break
-            nxt = nbrs[0]
-            total_len += G[current][nxt]["weight"]
-            path.append(nxt)
-            if G.degree[nxt] != 2:
-                break
-            prev, current = current, nxt
-        if total_len < min_branch_length:
-            to_remove.update(path)
-    G.remove_nodes_from(to_remove)
-    return G
-
-
-# =============================================================================
-# Heading computation
-# =============================================================================
-def compute_heading(path_pts):
-    """
-    Compute heading angle from a BEV path.
-    Returns angle in degrees: 0 = straight ahead, negative = left, positive = right.
-    """
-    if len(path_pts) < 2:
-        return 0.0
-    start = np.array(path_pts[0], dtype=float)
-    idx = min(len(path_pts) - 1, max(1, len(path_pts) * 2 // 5))
-    end = np.array(path_pts[idx], dtype=float)
-    dx = end[0] - start[0]
-    dy = start[1] - end[1]
-    if dy <= 0:
-        return 0.0
-    angle_rad = math.atan2(dx, dy)
-    return math.degrees(angle_rad)
-
-
-def clamp_delta(current, target, max_delta):
-    """Move current toward target with bounded per-frame change."""
-    delta = float(target) - float(current)
-    if delta > max_delta:
-        return float(current) + float(max_delta)
-    if delta < -max_delta:
-        return float(current) - float(max_delta)
-    return float(target)
-
-
-def infer_maneuver_from_waypoint_name(wp_name):
-    """
-    Infer maneuver class from waypoint label.
-    Supports labels like: "turn_right", "left", "straight", "uturn".
-    """
-    if not wp_name:
-        return None
-    label = str(wp_name).strip().lower()
-    if "u-turn" in label or "uturn" in label:
-        return "UTURN"
-    if "right" in label:
-        return "RIGHT"
-    if "left" in label:
-        return "LEFT"
-    if "straight" in label or "forward" in label:
-        return "STRAIGHT"
-    return None
-
-
-def infer_maneuver_from_gps_correction(gps_correction_deg):
-    """Fallback maneuver class from GPS heading correction angle."""
-    ang = float(gps_correction_deg)
-    abs_ang = abs(ang)
-    if abs_ang < MANEUVER_STRAIGHT_THRESH:
-        return "STRAIGHT"
-    if abs_ang >= MANEUVER_TURN_THRESH:
-        return "RIGHT" if ang > 0 else "LEFT"
-    return None
-
-
-def detect_intersection(paths, graph, graph_h):
-    """
-    Intersection detector combining graph branching + path diversity.
-    Returns (is_intersection, branch_count).
-    """
-    if not paths or graph.number_of_nodes() < 3:
-        return False, 0
-
-    # Branching must occur in a forward region, not directly under the ego.
-    y_min = int(graph_h * 0.18)
-    y_max = int(graph_h * 0.75)
-    branch_nodes = [
-        n for n in graph.nodes
-        if graph.degree[n] >= 3 and y_min <= n[1] <= y_max
-    ]
-
-    # Count directional diversity among candidate paths.
-    categories = set()
-    for path_pts, _ in paths:
-        h = compute_heading(path_pts)
-        if h <= -MANEUVER_TURN_THRESH:
-            categories.add("LEFT")
-        elif h >= MANEUVER_TURN_THRESH:
-            categories.add("RIGHT")
-        elif abs(h) < MANEUVER_STRAIGHT_THRESH:
-            categories.add("STRAIGHT")
-        else:
-            categories.add("BEND")
-
-    branch_count = len(categories)
-    is_intersection = bool(branch_nodes) and branch_count >= 2
-    return is_intersection, branch_count
-
-
-def choose_path_for_maneuver(paths, maneuver, center_x):
-    """
-    Select a path that best matches route maneuver intent.
-    Returns (idx, heading_deg) or (-1, 0.0) if no suitable match.
-    """
-    if not paths:
-        return -1, 0.0
-
-    best_idx = -1
-    best_score = float("inf")
-    best_heading = 0.0
-
-    for idx, (path_pts, _) in enumerate(paths):
-        if len(path_pts) < 2:
-            continue
-        heading = compute_heading(path_pts)
-        end_x = path_pts[-1][0]
-        center_penalty = abs(end_x - center_x) / max(1.0, center_x)
-
-        if maneuver == "RIGHT":
-            target = TURN_COMMIT_HEADING_DEG
-            sign_penalty = 0.0 if heading > 6.0 else 35.0
-        elif maneuver == "LEFT":
-            target = -TURN_COMMIT_HEADING_DEG
-            sign_penalty = 0.0 if heading < -6.0 else 35.0
-        elif maneuver == "STRAIGHT":
-            target = 0.0
-            sign_penalty = 0.0
-        else:
-            target = 0.0
-            sign_penalty = 0.0
-
-        score = abs(heading - target) + 18.0 * center_penalty + sign_penalty
-        if score < best_score:
-            best_score = score
-            best_idx = idx
-            best_heading = heading
-
-    return best_idx, float(best_heading)
-
-
-def choose_random_maneuver_from_paths(paths):
-    """
-    Pick a random maneuver from what the current path candidates can support.
-    Preference order keeps realistic behavior: straight if available, otherwise turns.
-    """
-    options = []
-    for path_pts, _ in paths:
-        h = compute_heading(path_pts)
-        if h <= -MANEUVER_TURN_THRESH:
-            options.append("LEFT")
-        elif h >= MANEUVER_TURN_THRESH:
-            options.append("RIGHT")
-        elif abs(h) < MANEUVER_STRAIGHT_THRESH:
-            options.append("STRAIGHT")
-
-    unique = sorted(set(options))
-    if not unique:
-        return None
-    return random.choice(unique)
-
-
-def heading_to_command(angle_deg):
-    """Convert heading angle to command string and color."""
-    abs_angle = abs(angle_deg)
-    if abs_angle < HEADING_STRAIGHT_THRESH:
-        return "STRAIGHT", COLOR_STRAIGHT
-    elif abs_angle < HEADING_TURN_THRESH:
-        if angle_deg < 0:
-            return "LEFT", COLOR_LEFT
-        else:
-            return "RIGHT", COLOR_RIGHT
-    else:
-        if angle_deg < 0:
-            return "SHARP LEFT", COLOR_SHARP
-        else:
-            return "SHARP RIGHT", COLOR_SHARP
-
-
-def compute_speed(angle_deg, min_obstacle_dist, has_path):
-    """
-    Compute target speed based on heading angle and nearest obstacle distance.
-    Returns speed in m/s.
-    """
-    if not has_path:
-        # Don't fully stop -- slow crawl forward while path is temporarily lost
-        return SPEED_OBSTACLE_NEAR
-
-    # Obstacle override
-    if min_obstacle_dist is not None:
-        if min_obstacle_dist < OBSTACLE_STOP_M:
-            return SPEED_STOP
-        elif min_obstacle_dist < OBSTACLE_CLOSE_M:
-            return SPEED_OBSTACLE_NEAR
-
-    # Speed from heading
-    abs_angle = abs(angle_deg)
-    if abs_angle < HEADING_STRAIGHT_THRESH:
-        return SPEED_MAX
-    elif abs_angle < HEADING_TURN_THRESH:
-        # Linear interpolation between SPEED_TURN and SPEED_MAX
-        t = (abs_angle - HEADING_STRAIGHT_THRESH) / (HEADING_TURN_THRESH - HEADING_STRAIGHT_THRESH)
-        return SPEED_MAX - t * (SPEED_MAX - SPEED_TURN)
-    else:
-        return SPEED_SHARP_TURN
-
-
-# =============================================================================
-# HUD drawing
-# =============================================================================
-def draw_heading_hud(img, command, angle_deg, speed_mps, color, fps, pipeline_ms,
-                     detections=None, gps_info=None):
-    """Draw heading, speed, obstacles, and GPS on the camera view."""
-    h, w = img.shape[:2]
-    font = cv2.FONT_HERSHEY_SIMPLEX
-
-    # ---- Large command text at top center ----
-    text = command
-    (tw, th), baseline = cv2.getTextSize(text, font, 1.8, 4)
-    tx = (w - tw) // 2
-    ty = 60
-    cv2.rectangle(img, (tx - 15, ty - th - 15), (tx + tw + 15, ty + baseline + 15),
-                  (0, 0, 0), -1)
-    cv2.putText(img, text, (tx, ty), font, 1.8, color, 4, cv2.LINE_AA)
-
-    # ---- Angle + speed below command ----
-    cmd_line = f"Steer: {angle_deg:+.1f} deg | Speed: {speed_mps:.2f} m/s"
-    (cw, ch), _ = cv2.getTextSize(cmd_line, font, 0.7, 2)
-    cx = (w - cw) // 2
-    cy = ty + 40
-    cv2.rectangle(img, (cx - 8, cy - ch - 5), (cx + cw + 8, cy + 8), (0, 0, 0), -1)
-    cv2.putText(img, cmd_line, (cx, cy), font, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-
-    # ---- Serial command format ----
-    serial_cmd = f"CMD,{angle_deg:+.1f},{speed_mps:.2f}"
-    (sw, sh), _ = cv2.getTextSize(serial_cmd, font, 0.55, 1)
-    sx = (w - sw) // 2
-    sy = cy + 30
-    cv2.putText(img, serial_cmd, (sx, sy), font, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
-
-    # ---- Direction arrow (with dark outline for visibility) ----
-    arrow_cx = w // 2
-    arrow_cy = h // 2
-    arrow_len = 140
-    arrow_angle_rad = math.radians(-angle_deg)
-    arrow_ex = int(arrow_cx + arrow_len * math.sin(arrow_angle_rad))
-    arrow_ey = int(arrow_cy - arrow_len * math.cos(arrow_angle_rad))
-    cv2.arrowedLine(img, (arrow_cx, arrow_cy + 30), (arrow_ex, arrow_ey - 30),
-                    (0, 0, 0), 10, cv2.LINE_AA, tipLength=0.3)
-    cv2.arrowedLine(img, (arrow_cx, arrow_cy + 30), (arrow_ex, arrow_ey - 30),
-                    color, 6, cv2.LINE_AA, tipLength=0.3)
-
-    # ---- Object detection boxes ----
-    if detections:
-        for det in detections:
-            x1, y1, x2, y2 = det["bbox"]
-            dist = det.get("distance_m", None)
-            label = f"{det['class_name']} {det['conf']:.0%}"
-            if dist is not None:
-                label += f" ~{dist:.1f}m"
-            box_color = COLOR_OBJ_WARN if (dist and dist < OBSTACLE_CLOSE_M) else COLOR_OBJ_BOX
-            cv2.rectangle(img, (x1, y1), (x2, y2), box_color, 2)
-            cv2.putText(img, label, (x1, y1 - 8), font, 0.5, box_color, 1, cv2.LINE_AA)
-
-    # ---- GPS info (top-right) ----
-    if gps_info:
-        gps_lines = gps_info if isinstance(gps_info, list) else [gps_info]
-        for i, line in enumerate(gps_lines):
-            cv2.putText(img, line, (w - 350, 30 + i * 22),
-                        font, 0.5, (0, 200, 255), 1, cv2.LINE_AA)
-
-    # ---- FPS / latency at bottom left ----
-    info_lines = [
-        f"FPS: {fps:.1f}",
-        f"Pipeline: {pipeline_ms:.0f} ms",
-    ]
-    for i, line in enumerate(info_lines):
-        cv2.putText(img, line, (10, h - 20 - i * 25),
-                    font, 0.55, (200, 200, 200), 1, cv2.LINE_AA)
-
-    return img
-
-
-def draw_bev_hud(bev_rgb, paths, best_idx, skel, bev_sidewalk, command, angle_deg,
-                 speed_mps=0.0):
-    """Draw BEV visualization with paths, heading, and speed."""
-    h_bev, w_bev = bev_sidewalk.shape
-    # Dark background so sidewalk and paths pop
-    vis = np.full((h_bev, w_bev, 3), (40, 40, 40), dtype=np.uint8)
-    # Sidewalk in visible teal/green
-    vis[bev_sidewalk > 0] = (80, 160, 80)
-
-    # Skeleton in bright white, thicker for visibility
-    skel_thick = cv2.dilate(skel, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
-    vis[skel_thick > 0] = (200, 200, 200)
-
-    # Draw all candidate paths
-    for idx, (path_pts, plen) in enumerate(paths):
-        color = PATH_COLORS[idx % len(PATH_COLORS)]
-        thickness = 6 if idx == best_idx else 3
-        path_np = np.int32(path_pts).reshape(-1, 1, 2)
-        cv2.polylines(vis, [path_np], False, color, thickness, cv2.LINE_AA)
-
-    # Draw best path thick and bright green
-    if paths and best_idx >= 0:
-        best_path = paths[best_idx][0]
-        path_np = np.int32(best_path).reshape(-1, 1, 2)
-        cv2.polylines(vis, [path_np], False, (0, 255, 0), 10, cv2.LINE_AA)
-        # Draw start/end circles
-        cv2.circle(vis, tuple(np.int32(best_path[0])), 10, (0, 255, 255), -1)
-        cv2.circle(vis, tuple(np.int32(best_path[-1])), 10, (0, 0, 255), -1)
-
-    # Ego indicator at bottom center
-    ego_x, ego_y = w_bev // 2, h_bev - 15
-    cv2.circle(vis, (ego_x, ego_y), 12, (0, 200, 255), -1)
-    cv2.circle(vis, (ego_x, ego_y), 12, (255, 255, 255), 2)
-
-    # Direction arrow from ego
-    arrow_len = 60
-    arrow_rad = math.radians(-angle_deg)
-    ax = int(ego_x + arrow_len * math.sin(arrow_rad))
-    ay = int(ego_y - arrow_len * math.cos(arrow_rad))
-    cv2.arrowedLine(vis, (ego_x, ego_y), (ax, ay), (0, 200, 255), 4,
-                    cv2.LINE_AA, tipLength=0.35)
-
-    # Semi-transparent black bar for text
-    cv2.rectangle(vis, (0, 0), (w_bev, 65), (0, 0, 0), -1)
-
-    # Command + speed text
-    cv2.putText(vis, f"{command} ({angle_deg:+.1f} deg)", (10, 25),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-    cv2.putText(vis, f"Speed: {speed_mps:.2f} m/s", (10, 52),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
-
-    return vis
-
-
-# =============================================================================
-# Mask splitting
-# =============================================================================
-def split_masks(model_output):
-    m = model_output.astype(np.uint8)
-    if set(np.unique(m).tolist()) <= {0, 255}:
-        sidewalk = (m > 0).astype(np.uint8) * 255
-        road = np.zeros_like(sidewalk)
-    else:
-        sidewalk = (m == SIDEWALK_ID).astype(np.uint8) * 255
-        road = (m == ROAD_ID).astype(np.uint8) * 255
-    return sidewalk, road
+        try:
+            start_frame = int(item.get("start_frame"))
+            end_frame = int(item.get("end_frame", start_frame))
+        except Exception as exc:
+            raise ValueError(f"Invalid frame bounds in schedule item {idx}: {item}") from exc
+        if end_frame < start_frame:
+            start_frame, end_frame = end_frame, start_frame
+        intent_raw = item.get("intent", None)
+        intent = None if intent_raw is None else str(intent_raw).strip().lower()
+        if intent in {"", "clear", "none", "null"}:
+            intent = None
+        if intent not in {None, "straight", "left", "right"}:
+            raise ValueError(f"Invalid intent '{intent_raw}' in schedule item {idx}")
+        schedule.append(
+            {
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "intent": intent,
+                "label": str(item.get("label", "")).strip(),
+            }
+        )
+    schedule.sort(key=lambda item: (item["start_frame"], item["end_frame"]))
+    return schedule
+
+
+def _intent_event_for_frame(schedule: list[dict], frame_id: int, start_idx: int = 0) -> tuple[dict | None, int]:
+    """Return the active schedule event for a frame, advancing a rolling index."""
+    idx = max(0, int(start_idx))
+    while idx < len(schedule) and frame_id > int(schedule[idx]["end_frame"]):
+        idx += 1
+    if idx < len(schedule):
+        event = schedule[idx]
+        if int(event["start_frame"]) <= frame_id <= int(event["end_frame"]):
+            return event, idx
+    return None, idx
 
 
 # =============================================================================
@@ -1344,7 +153,12 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
              headless=False, stab_radius=STAB_SMOOTHING_RADIUS,
              mask_alpha=MASK_SMOOTH_ALPHA, bev_alpha=BEV_SMOOTH_ALPHA,
              low_power=False, seg_input_res=SEG_INPUT_RES, path_scale=1.0,
-             detection_stride=1):
+             detection_stride=1, enable_predict=PREDICT_ENABLED,
+             planner_mode="dijkstra", template_planner_enabled=True,
+             use_dt_planner=True, planner_family=None,
+             max_frames=None, initial_intent=None, bev_clean_mode="auto",
+             model_dir=None, output_video_path=None, seg_conf_thresh=0.5,
+             intent_schedule_path=None):
     print("\n=== LIVE HEADING + OBJECT DETECTION + GPS DEMO ===")
     stab_radius = max(1, int(stab_radius))
     stride = max(1, int(stride))
@@ -1366,27 +180,51 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             min(seg_input_res[1], LOW_POWER_SEG_INPUT_RES[1]),
         )
         print("[Perf] Low-power mode enabled.")
+    bev_clean_mode = str(bev_clean_mode or "auto").strip().lower()
+    if bev_clean_mode not in {"auto", "enhanced", "legacy"}:
+        bev_clean_mode = "auto"
+    use_enhanced_bev = bool(MORPH_ENHANCED)
+    if bev_clean_mode == "enhanced":
+        use_enhanced_bev = True
+    elif bev_clean_mode == "legacy":
+        use_enhanced_bev = False
+    elif low_power:
+        use_enhanced_bev = False
     print(f"[Perf] stride={stride}, det_stride={detection_stride}, "
           f"seg={seg_input_res[0]}x{seg_input_res[1]}, path_scale={path_scale:.2f}")
+    print(f"[Perf] bev_clean={'enhanced' if use_enhanced_bev else 'legacy'}")
+    planner_mode = str(planner_mode).strip().lower()
+    if planner_mode not in {"dijkstra", "dfs"}:
+        planner_mode = "dijkstra"
+    print(f"[Planner] mode={planner_mode}")
+    print(f"[Planner] template_planner={'on' if template_planner_enabled else 'off'}")
+    planner_family = str(planner_family or "").strip().lower()
+    valid_planner_families = {"dt_ridge", *ALL_PLANNERS.keys()}
+    if planner_family and planner_family not in valid_planner_families:
+        planner_family = ""
+    if not planner_family:
+        planner_family = "potential_field" if not use_dt_planner else "dt_ridge"
+    print(f"[Planner] family={planner_family}")
+    effective_model_dir = str(model_dir).strip() if model_dir else MODEL_DIR
 
     # Initialize data logger
     logger = None
     if enable_logging:
         logger = DataLogger(log_dir=log_dir)
 
-    # Load BEV calibration
-    H_mat, Hinv, src_pts = load_bev_params()
-
     # Initialize segmentation model
     print("Loading SegFormer model...")
     cfg = Config(
-        model_dir=MODEL_DIR,
-        conf_thresh=0.5,
+        model_dir=effective_model_dir,
+        conf_thresh=float(seg_conf_thresh),
         road_id=ROAD_ID,
         inference_resize=seg_input_res,
+        enable_logging=False,
     )
     seg_model = FastRoadDetector(cfg)
     print("SegFormer ready.")
+    print(f"[Seg] model_dir={effective_model_dir}")
+    print(f"[Seg] conf_thresh={float(seg_conf_thresh):.3f}")
 
     # Initialize object detector (YOLOv8-nano)
     obj_detector = None
@@ -1425,12 +263,79 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
     )
     print(f"Temporal mask smoothing ENABLED (seg={mask_alpha:.2f}, bev={bev_alpha:.2f}).")
 
+    # Initialize real-time BEV navigation stack
+    work_grid = max(120, int(round(NAV_WORK_GRID_BASE * path_scale)))
+    use_fast_planner = planner_family in ALL_PLANNERS
+    path_extractor = None
+    fast_planner = None
+    if use_fast_planner:
+        fast_planner = ALL_PLANNERS[planner_family](
+            bev_forward_m=NAV_BEV_FORWARD_M,
+            bev_lateral_m=NAV_BEV_LATERAL_M,
+            work_size=(work_grid, work_grid),
+        )
+        print(f"Fast BEV planner ENABLED ({planner_family}, work grid {work_grid}x{work_grid}).")
+    else:
+        path_cfg = PathExtractorConfig(
+            bev_forward_m=NAV_BEV_FORWARD_M,
+            bev_lateral_m=NAV_BEV_LATERAL_M,
+            work_size=(work_grid, work_grid),
+            planner_mode=planner_mode,
+            template_planner_enabled=bool(template_planner_enabled),
+            use_dt_planner=bool(use_dt_planner),
+        )
+        if low_power:
+            path_cfg.search_max_depth = 5
+            path_cfg.search_top_k = 4
+        path_extractor = BEVPathExtractor(path_cfg)
+        print(f"Legacy BEV planner ENABLED (dt_ridge, work grid {work_grid}x{work_grid}).")
+    pp_controller = AdaptivePurePursuitController(PurePursuitConfig(dt_s=1.0 / 8.0))
+    obstacle_ema = ObstacleEMAGrid(bev_h=BEV_SIZE[1], bev_w=BEV_SIZE[0])
+
+    # Initialize BEV predictive frame reuse
+    predictor = BEVPredictiveTracker()
+    if enable_predict:
+        print("BEV predictive frame reuse ENABLED.")
+    else:
+        print("BEV predictive frame reuse DISABLED.")
+
     # Open camera or video
     if video_path:
-        # Try MSMF first (Windows Media Foundation), fall back to default
-        cap = cv2.VideoCapture(video_path, cv2.CAP_MSMF)
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(video_path)
+        # On Windows, iPhone .MOV is often HEVC and may "open" but fail to decode frames.
+        # Try a few backends and validate by actually reading one frame.
+        candidate_backends = []
+        if hasattr(cv2, "CAP_FFMPEG"):
+            candidate_backends.append(("FFMPEG", cv2.CAP_FFMPEG))
+        if hasattr(cv2, "CAP_MSMF"):
+            candidate_backends.append(("MSMF", cv2.CAP_MSMF))
+        candidate_backends.append(("DEFAULT", None))
+
+        cap = None
+        for name, backend in candidate_backends:
+            try:
+                cap_try = (
+                    cv2.VideoCapture(video_path, backend)
+                    if backend is not None
+                    else cv2.VideoCapture(video_path)
+                )
+            except Exception as e:
+                print(f"[Video] Backend {name} failed: {e}")
+                continue
+            if not cap_try.isOpened():
+                cap_try.release()
+                continue
+            ok, _ = cap_try.read()
+            if not ok:
+                cap_try.release()
+                continue
+            # Rewind so processing starts from frame 0.
+            cap_try.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            cap = cap_try
+            break
+
+        if cap is None:
+            # Final attempt (keeps prior behavior) to preserve any edge cases.
+            cap = cv2.VideoCapture(video_path, cv2.CAP_MSMF) if hasattr(cv2, "CAP_MSMF") else cv2.VideoCapture(video_path)
         print(f"Playing video: {video_path}")
     else:
         cap = cv2.VideoCapture(camera_id)
@@ -1443,43 +348,83 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
         print("ERROR: Cannot open camera/video.")
         return
 
-    # Smoothing buffers (increased from 5 to 8 for shake resilience)
-    heading_buffer = deque(maxlen=8)
+    cal_frame_w = int(round(float(cap.get(cv2.CAP_PROP_FRAME_WIDTH))))
+    cal_frame_h = int(round(float(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))))
+    if cal_frame_w <= 0 or cal_frame_h <= 0:
+        ok_probe, probe = cap.read()
+        if ok_probe and probe is not None:
+            cal_frame_h, cal_frame_w = probe.shape[:2]
+            if video_path:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    # Load BEV calibration after opening the source so saved points can be
+    # rescaled when the runtime video resolution differs from calibration.
+    H_mat, Hinv, src_pts = load_bev_params(current_frame_size=(cal_frame_w, cal_frame_h))
+
+    # Control smoothing buffers
+    heading_buffer = deque(maxlen=3)
     speed_buffer = deque(maxlen=8)
     last_mask = None
-    last_heading_raw = 0.0       # fallback heading when path is lost
-    last_best_path = None        # fallback path for camera overlay
-    last_best_idx = -1
-    last_paths = []
     seg_iou = 1.0
     seg_unstable_frames = 0
     stability_mode = "NORMAL"
     last_detections = []
     last_min_obstacle_dist = None
-    nav_state = NAV_FOLLOW_LANE
-    desired_maneuver = None
-    committed_turn_heading = 0.0
-    commit_frames_left = 0
-    recover_frames_left = 0
-    intersection_seen_frames = 0
-    intersection_clear_frames = 0
-    nav_heading_prev = 0.0
     frame_id = 0
     fps_counter = deque(maxlen=30)
+    compute_counter = deque(maxlen=30)
+    fps = 0.0
+    compute_hz = 0.0
     vw = None
+    cached_frame_state = None
 
-    print("Running... Press 'q' or ESC to quit.\n")
+    gps_intent_family: str | None = str(initial_intent or "").strip().lower() or None
+    if gps_intent_family not in {"straight", "left", "right"}:
+        gps_intent_family = None
+    manual_intent_family = gps_intent_family
+    intent_schedule = _load_intent_schedule(intent_schedule_path)
+    intent_schedule_idx = 0
+    last_schedule_intent = "__unset__"
+    turn_lock_family: str | None = None
+    turn_lock_frames = 0
+    turn_lock_release_streak = 0
+    TURN_LOCK_ENTRY_DEG = 12.0
+    TURN_LOCK_RELEASE_DEG = 9.0
+    TURN_LOCK_MIN_FRAMES = 6
+    TURN_LOCK_MAX_FRAMES = 22
+    TURN_LOCK_RELEASE_STREAK = 2
+    print(
+        "Running... Press q/ESC to quit | Up/s straight | Left/l left | "
+        "Right/r right | Down/c clear intent\n"
+    )
+    if gps_intent_family is not None:
+        print(f"[Intent] initial={gps_intent_family}")
+    if intent_schedule:
+        print(f"[IntentSchedule] loaded {len(intent_schedule)} event(s) from {intent_schedule_path}")
     print(f"{'Frame':>6} | {'Command':>12} | {'Steer':>8} | {'Speed':>7} | "
           f"{'Obst':>5} | {'ms':>5} | {'FPS':>5} | {'IoU':>5} | {'Mode':>7}")
     print("-" * 92)
 
     try:
         while True:
+            if max_frames is not None and frame_id >= int(max_frames):
+                break
             t0 = time.time()
 
             ret, frame = cap.read()
             if not ret:
                 if video_path:
+                    if frame_id == 0:
+                        print(
+                            "ERROR: Video opened but no frames could be decoded.\n"
+                            "This is usually a codec issue (common with iPhone .MOV/HEVC on Windows).\n"
+                            "Fix options:\n"
+                            "  - Convert to H.264 MP4 (recommended), e.g. with ffmpeg:\n"
+                            "      ffmpeg -i input.MOV -c:v libx264 -pix_fmt yuv420p -c:a aac output.mp4\n"
+                            "  - Or install Windows HEVC Video Extensions.\n"
+                            "  - Or record/export as 'Most Compatible' (H.264) instead of HEVC."
+                        )
+                    else:
+                        print("End of video reached.")
                     break
                 print("Frame lost, retrying...")
                 continue
@@ -1488,210 +433,334 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             stab_corr_px = 0.0
             stab_corr_deg = 0.0
 
+            scheduled_event, intent_schedule_idx = _intent_event_for_frame(
+                intent_schedule,
+                frame_id,
+                intent_schedule_idx,
+            )
+            if scheduled_event is None:
+                gps_intent_family = manual_intent_family
+                schedule_intent = None
+            else:
+                gps_intent_family = scheduled_event["intent"]
+                schedule_intent = gps_intent_family
+            schedule_token = "clear" if schedule_intent is None else schedule_intent
+            if intent_schedule and schedule_token != last_schedule_intent:
+                print(f"[IntentSchedule] frame={frame_id} intent={schedule_token}")
+                last_schedule_intent = schedule_token
+
             # --- 0) Frame stabilization (camera shake compensation) ---
+            raw_flow_dy = 0.0
             if stabilizer is not None:
                 frame = stabilizer.stabilize(frame)
                 stab_corr_px = stabilizer.last_correction_px
                 stab_corr_deg = stabilizer.last_correction_deg
+                raw_flow_dy = stabilizer.last_raw_dy
 
-            run_net = (frame_id % stride == 0)
+            # --- Adaptive prediction vs. full pipeline decision ---
+            dt_frame = 1.0 / fps if fps > 0.5 else 0.13
+            speed_est = speed_buffer[-1] if speed_buffer else 0.0
+            heading_est = heading_buffer[-1] if heading_buffer else 0.0
+            obstacle_zones: list = []  # populated in compute branch; empty on skip frames
+            planner_intent_family = turn_lock_family if turn_lock_family in {"left", "right"} else gps_intent_family
+            turning_intent_active = planner_intent_family in {"left", "right"}
+            turn_lock_active = bool(
+                turn_lock_family in {"left", "right"}
+                and predictor is not None
+                and predictor.last_bev_mask is not None
+                and predictor.last_path_model is not None
+            )
+            predict_skip = bool(
+                not turning_intent_active
+                and (
+                    turn_lock_active
+                    or (
+                        enable_predict
+                        and predictor is not None
+                        and predictor.should_skip(speed=speed_est, dt=dt_frame)
+                    )
+                )
+            )
+            # During active turn intent, force fresh segmentation/planning every frame.
+            run_net = bool(turning_intent_active or ((not predict_skip) and (frame_id % stride == 0 or last_mask is None)))
+            if predict_skip:
+                run_net = False
+            hold_cached_frame = bool(
+                video_path
+                and stride > 1
+                and not enable_predict
+                and not turning_intent_active
+                and not run_net
+                and not predict_skip
+                and cached_frame_state is not None
+            )
 
-            # --- 1) Segmentation ---
-            t_seg_start = time.time()
-            if run_net or last_mask is None:
-                seg, _ = seg_model.process_frame(frame)
-                if seg.shape != frame.shape[:2]:
-                    seg = cv2.resize(seg, (frame.shape[1], frame.shape[0]),
-                                     interpolation=cv2.INTER_NEAREST)
-                last_mask = seg
-            seg = last_mask
-            sidewalk_mask, road_mask = split_masks(seg)
-            # Temporal smoothing: reject flickering segmentation from shake
-            sidewalk_mask, seg_iou = seg_smoother.smooth(sidewalk_mask, return_iou=True)
-            if seg_iou < SEG_IOU_FAIL:
-                seg_unstable_frames += 1
-            elif seg_iou < SEG_IOU_WARN:
-                # Hold counter during borderline instability.
-                pass
-            else:
-                seg_unstable_frames = max(0, seg_unstable_frames - 1)
-            t_seg = (time.time() - t_seg_start) * 1000
+            if hold_cached_frame:
+                # Aggressive video playback mode: hold the previous pipeline result
+                # on skipped frames instead of rerunning BEV/path extraction.
+                seg = last_mask
+                if seg is not None:
+                    if seg.ndim == 2 and seg.dtype == np.uint8:
+                        sidewalk_mask = (seg > 0).astype(np.uint8) * 255
+                        road_mask = np.zeros_like(sidewalk_mask)
+                    else:
+                        sidewalk_mask, road_mask = split_masks(seg)
+                else:
+                    sidewalk_mask = np.zeros((frame_h, frame_w), dtype=np.uint8)
+                    road_mask = np.zeros_like(sidewalk_mask)
 
-            # --- 2) Object detection ---
-            t_det_start = time.time()
-            run_detection = bool(obj_detector and run_net and (frame_id % detection_stride == 0))
-            if run_detection:
-                detections = obj_detector.detect(frame)
-                for det in detections:
-                    det["distance_m"] = estimate_obstacle_distance(det, frame_h)
-                min_obstacle_dist = min((d["distance_m"] for d in detections), default=None)
-                last_detections = detections
-                last_min_obstacle_dist = min_obstacle_dist
-            else:
                 detections = last_detections
                 min_obstacle_dist = last_min_obstacle_dist
-            t_det = (time.time() - t_det_start) * 1000
+                t_seg = 0.0
+                t_det = 0.0
+                t_bev = 0.0
+                t_skel = 0.0
+                t_path = 0.0
 
-            # --- 3) BEV projection + cleaning ---
-            t_bev_start = time.time()
-            bev_sidewalk = cv2.warpPerspective(sidewalk_mask, H_mat, BEV_SIZE)
-            if TRIM_BOTTOM > 0:
-                bev_sidewalk = bev_sidewalk[:-TRIM_BOTTOM, :]
-            bev_sidewalk = clean_sidewalk_mask(bev_sidewalk, DT_CORE_THRESH)
-            bev_sidewalk = select_main_component(bev_sidewalk)
-            bev_sidewalk = enforce_ego_front_segmentation(bev_sidewalk)
-            # Temporal smoothing on BEV mask (second layer of stabilization)
-            bev_sidewalk = bev_smoother.smooth(bev_sidewalk)
-            bev_sidewalk = enforce_ego_front_segmentation(bev_sidewalk)
-            t_bev = (time.time() - t_bev_start) * 1000
-
-            # --- 4) Skeleton + graph (optionally downscaled for speed) ---
-            t_skel_start = time.time()
-            if path_scale < 0.999:
-                work_w = max(64, int(round(bev_sidewalk.shape[1] * path_scale)))
-                work_h = max(64, int(round(bev_sidewalk.shape[0] * path_scale)))
-                bev_work = cv2.resize(bev_sidewalk, (work_w, work_h),
-                                      interpolation=cv2.INTER_NEAREST)
-            else:
-                bev_work = bev_sidewalk
-
-            scale_ratio = bev_work.shape[0] / max(1, bev_sidewalk.shape[0])
-            trim_work = max(2, int(round(5 * scale_ratio)))
-            prune_work = max(3, int(round(PRUNE_BRANCH_LEN * scale_ratio)))
-            skel_work = extract_skeleton(bev_work, trim_px=trim_work)
-            skel_work = prune_small_branches(skel_work, prune_work)
-
-            Hm, Wm = skel_work.shape
-            G = nx.Graph()
-            diag_weight = 1.41421356237
-            for y in range(Hm):
-                xs = np.where(skel_work[y] > 0)[0]
-                for x in xs:
-                    # Only add "forward" neighbors to avoid duplicate checks.
-                    if x + 1 < Wm and skel_work[y, x + 1] > 0:
-                        G.add_edge((x, y), (x + 1, y), weight=1.0)
-                    if y + 1 < Hm:
-                        if skel_work[y + 1, x] > 0:
-                            G.add_edge((x, y), (x, y + 1), weight=1.0)
-                        if x + 1 < Wm and skel_work[y + 1, x + 1] > 0:
-                            G.add_edge((x, y), (x + 1, y + 1), weight=diag_weight)
-                        if x - 1 >= 0 and skel_work[y + 1, x - 1] > 0:
-                            G.add_edge((x, y), (x - 1, y + 1), weight=diag_weight)
-
-            prune_graph_len = max(8, int(round((PRUNE_BRANCH_LEN * 3) * scale_ratio)))
-            G = prune_graph_branches(G, min_branch_length=prune_graph_len)
-
-            if (Hm, Wm) != bev_sidewalk.shape:
-                skel = cv2.resize(skel_work, (bev_sidewalk.shape[1], bev_sidewalk.shape[0]),
-                                  interpolation=cv2.INTER_NEAREST)
-            else:
-                skel = skel_work
-            t_skel = (time.time() - t_skel_start) * 1000
-
-            # --- 5) Path finding ---
-            t_path_start = time.time()
-            paths = []
-            best_idx = -1
-            lane_best_idx = -1
-            lane_heading = 0.0
-            heading_raw = 0.0
-            command = "STOP"
-            cmd_color = COLOR_STOP
-            has_path = False
-            best_path_len = 0.0
-            intersection_detected = False
-            intersection_branch_count = 0
-            center_x_full = bev_sidewalk.shape[1] // 2
-
-            if G.number_of_nodes() > 1:
-                endpoints = [n for n in G.nodes if G.degree[n] == 1]
-                center_x_scaled = Wm // 2
-
-                bottom_band_scaled = max(8, int(round(BOTTOM_BAND_PX * scale_ratio)))
-                band_nodes = [n for n in G.nodes if n[1] >= Hm - bottom_band_scaled]
-                band_eps = [n for n in endpoints if n[1] >= Hm - bottom_band_scaled]
-
-                def start_key(p):
-                    return (p[1], -abs(p[0] - center_x_scaled))
-
-                if band_eps:
-                    start = max(band_eps, key=start_key)
-                elif band_nodes:
-                    start = max(band_nodes, key=start_key)
-                elif endpoints:
-                    start = max(endpoints, key=lambda p: p[1])
+                bev_sidewalk = cached_frame_state["bev_sidewalk"]
+                obstacle_zones = cached_frame_state["obstacle_zones"]
+                nav_out = cached_frame_state["nav_out"]
+                skel = cached_frame_state["skel"]
+                paths = cached_frame_state["paths"]
+                best_idx = cached_frame_state["best_idx"]
+                best_path_len = cached_frame_state["best_path_len"]
+                has_model_path = cached_frame_state["has_model_path"]
+                graph_nodes = cached_frame_state["graph_nodes"]
+                graph_edges = cached_frame_state["graph_edges"]
+            elif predict_skip:
+                # --- SKIP FRAME: predict BEV mask + path, no seg/path extraction ---
+                t_seg_start = time.time()
+                # Reuse last seg mask for visualization (no new segmentation)
+                seg = last_mask
+                if seg is not None:
+                    if seg.ndim == 2 and seg.dtype == np.uint8:
+                        sidewalk_mask = (seg > 0).astype(np.uint8) * 255
+                        road_mask = np.zeros_like(sidewalk_mask)
+                    else:
+                        sidewalk_mask, road_mask = split_masks(seg)
                 else:
-                    start = max(G.nodes, key=lambda p: p[1])
+                    sidewalk_mask = np.zeros((frame_h, frame_w), dtype=np.uint8)
+                    road_mask = np.zeros_like(sidewalk_mask)
+                t_seg = (time.time() - t_seg_start) * 1000
 
-                for end in endpoints:
-                    if end == start:
-                        continue
-                    try:
-                        path_scaled = nx.dijkstra_path(G, start, end, weight="weight")
-                        plen_scaled = nx.path_weight(G, path_scaled, weight="weight")
-                        if (Hm, Wm) != bev_sidewalk.shape:
-                            sx = bev_sidewalk.shape[1] / float(Wm)
-                            sy = bev_sidewalk.shape[0] / float(Hm)
-                            path = [
-                                (
-                                    int(np.clip(round(px * sx), 0, bev_sidewalk.shape[1] - 1)),
-                                    int(np.clip(round(py * sy), 0, bev_sidewalk.shape[0] - 1)),
-                                )
-                                for (px, py) in path_scaled
-                            ]
-                            plen = plen_scaled * ((sx + sy) * 0.5)
-                        else:
-                            path = path_scaled
-                            plen = plen_scaled
-                        paths.append((path, plen))
-                    except nx.NetworkXNoPath:
-                        continue
+                # Object detection still runs on skip frames for safety
+                t_det_start = time.time()
+                run_detection = bool(obj_detector and (frame_id % detection_stride == 0))
+                if run_detection:
+                    detections = obj_detector.detect(frame)
+                    for det in detections:
+                        det["distance_m"] = estimate_obstacle_distance(det, frame_h)
+                    min_obstacle_dist = min((d["distance_m"] for d in detections), default=None)
+                    last_detections = detections
+                    last_min_obstacle_dist = min_obstacle_dist
+                else:
+                    detections = last_detections
+                    min_obstacle_dist = last_min_obstacle_dist
+                t_det = (time.time() - t_det_start) * 1000
 
-                paths.sort(key=lambda x: x[1], reverse=True)
+                # Predict BEV mask + path via affine warp (~1ms vs ~180ms)
+                t_bev_start = time.time()
+                predicted_mask_255, predicted_path_m = predictor.on_skip_frame(
+                    speed=speed_est, dt=dt_frame, steer_deg=heading_est
+                )
+                bev_shift = speed_est * dt_frame * BEV_PIXELS_PER_METER_FORWARD
+                bev_sidewalk = bev_smoother.smooth(predicted_mask_255, flow_dy=bev_shift)
+                t_bev = (time.time() - t_bev_start) * 1000
 
-                if paths:
-                    best_score = float('inf')
-                    for idx, (path_pts, plen) in enumerate(paths):
-                        if len(path_pts) < 2:
-                            continue
-                        h_angle = abs(compute_heading(path_pts))
-                        end_x = path_pts[-1][0]
-                        lat_shift = abs(end_x - center_x_full) / max(1.0, bev_sidewalk.shape[1] / 2.0)
-                        score = 0.6 * h_angle + 0.4 * lat_shift * 45.0
-                        if score < best_score:
-                            best_score = score
-                            lane_best_idx = idx
+                # Run planner on predicted BEV too so path stays active on skip frames
+                if fast_planner is not None:
+                    work_mask = cv2.resize(
+                        bev_sidewalk, (work_grid, work_grid),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    planner_result = fast_planner.plan(work_mask, intent=planner_intent_family)
+                    nav_out = planner_result_to_path_plan_result(
+                        planner_result,
+                        bev_shape_hw=bev_sidewalk.shape[:2],
+                    )
+                else:
+                    nav_out = path_extractor.process(
+                        bev_sidewalk,
+                        obstacle_zones_m=obstacle_zones if obstacle_zones else None,
+                        gps_intent_family=planner_intent_family,
+                    )
+                t_skel = nav_out.t_skeleton_ms
+                t_path = nav_out.t_path_ms
 
-                    if lane_best_idx >= 0:
-                        lane_heading = compute_heading(paths[lane_best_idx][0])
-                        heading_raw = lane_heading
-                        best_idx = lane_best_idx
-                        best_path_len = paths[lane_best_idx][1]
-                        has_path = True
-                        # Save for fallback
-                        last_heading_raw = lane_heading
-                        last_best_path = paths[lane_best_idx][0]
-                        last_best_idx = lane_best_idx
-                        last_paths = paths
+                # Keep predictor state aligned with planner output when available.
+                if nav_out.has_path and nav_out.path_model is not None and nav_out.best_path_m is not None:
+                    predictor.last_path_points_m = nav_out.best_path_m.copy()
+                    predictor.last_path_model = nav_out.path_model
+                    predictor.last_curvature = (
+                        nav_out.path_model.curvature_of_x(1.0)
+                        if nav_out.path_model.x_max_m >= 1.0
+                        else 0.0
+                    )
 
-                    intersection_detected, intersection_branch_count = detect_intersection(paths, G, Hm)
+                paths = [(p, l) for p, l in zip(nav_out.candidate_paths_px, nav_out.candidate_lengths_m)]
+                best_idx = nav_out.best_idx
+                best_path_len_m = (
+                    nav_out.candidate_lengths_m[best_idx]
+                    if 0 <= best_idx < len(nav_out.candidate_lengths_m)
+                    else 0.0
+                )
+                best_path_len = best_path_len_m * (bev_sidewalk.shape[0] / max(1e-6, NAV_BEV_FORWARD_M))
+                graph_nodes = nav_out.graph_nodes
+                graph_edges = nav_out.graph_edges
 
-            # Fallback: use last-known heading when path is temporarily lost
-            if not has_path and last_heading_raw != 0.0:
-                heading_raw = last_heading_raw * 0.5  # fade toward center
-                paths = last_paths
-                best_idx = last_best_idx
-                lane_heading = heading_raw
+            else:
+                # --- COMPUTE FRAME: full pipeline ---
 
-            t_path = (time.time() - t_path_start) * 1000
+                # --- 1) Segmentation ---
+                t_seg_start = time.time()
+                ran_fresh_seg = False
+                if run_net or last_mask is None:
+                    seg, _ = seg_model.process_frame(frame, return_overlay=False)
+                    if seg.shape != frame.shape[:2]:
+                        seg = cv2.resize(seg, (frame.shape[1], frame.shape[0]),
+                                         interpolation=cv2.INTER_NEAREST)
+                    last_mask = seg
+                    ran_fresh_seg = True
+                seg = last_mask
+                if seg.ndim == 2 and seg.dtype == np.uint8:
+                    sidewalk_mask = (seg > 0).astype(np.uint8) * 255
+                    road_mask = np.zeros_like(sidewalk_mask)
+                else:
+                    sidewalk_mask, road_mask = split_masks(seg)
+                sidewalk_mask = suppress_grass_in_mask(frame, sidewalk_mask)
+                sidewalk_mask, seg_iou = seg_smoother.smooth(sidewalk_mask, return_iou=True)
+                if seg_iou < SEG_IOU_FAIL:
+                    seg_unstable_frames += 1
+                elif seg_iou < SEG_IOU_WARN:
+                    pass
+                else:
+                    seg_unstable_frames = max(0, seg_unstable_frames - 1)
+                t_seg = (time.time() - t_seg_start) * 1000
+
+                # --- 2) Object detection ---
+                t_det_start = time.time()
+                run_detection = bool(obj_detector and (frame_id % detection_stride == 0))
+                if run_detection:
+                    detections = obj_detector.detect(frame)
+                    for det in detections:
+                        det["distance_m"] = estimate_obstacle_distance(det, frame_h)
+                    min_obstacle_dist = min((d["distance_m"] for d in detections), default=None)
+                    last_detections = detections
+                    last_min_obstacle_dist = min_obstacle_dist
+                    # --- Obstacle BEV projection + EMA update ---
+                    foot_bev_pts = [project_foot_to_bev(d, H_mat, bev_h=BEV_SIZE[1], bev_w=BEV_SIZE[0])
+                                    for d in detections]
+                    obstacle_ema.update(foot_bev_pts)
+                else:
+                    detections = last_detections
+                    min_obstacle_dist = last_min_obstacle_dist
+                    obstacle_ema.update([])  # decay EMA on skipped detection frames
+                t_det = (time.time() - t_det_start) * 1000
+
+                # --- 3) BEV projection + cleaning ---
+                t_bev_start = time.time()
+                bev_sidewalk = cv2.warpPerspective(sidewalk_mask, H_mat, BEV_SIZE)
+                if TRIM_BOTTOM > 0:
+                    bev_sidewalk = bev_sidewalk[:-TRIM_BOTTOM, :]
+                m_per_px = 0.5 * (
+                    NAV_BEV_FORWARD_M / max(1.0, float(bev_sidewalk.shape[0] - 1))
+                    + NAV_BEV_LATERAL_M / max(1.0, float(bev_sidewalk.shape[1] - 1))
+                )
+                if use_enhanced_bev:
+                    bev_sidewalk = clean_bev_mask_enhanced(
+                        bev_sidewalk,
+                        m_per_px,
+                        enhanced=True,
+                    )
+                else:
+                    bev_sidewalk = clean_sidewalk_mask(bev_sidewalk, DT_CORE_THRESH)
+                bev_sidewalk = anchor_ego_to_mask(bev_sidewalk, bev_size=BEV_SIZE)
+                bev_sidewalk = ego_connected_mask(bev_sidewalk, bev_size=BEV_SIZE)
+
+                # Predictor: blend predicted + real on compute frames
+                if predictor is not None:
+                    # We need nav_out for the predictor, so extract path first
+                    pass  # predictor blend happens after path extraction
+
+                bev_shift = speed_est * dt_frame * BEV_PIXELS_PER_METER_FORWARD
+                bev_sidewalk = bev_smoother.smooth(bev_sidewalk, flow_dy=bev_shift)
+                t_bev = (time.time() - t_bev_start) * 1000
+
+                # --- 4) Path extraction (medial axis + graph + spline) ---
+                # Hard-block: paint stop-zone obstacles black in BEV mask; build metric zones
+                obstacle_zones: list = []
+                for _d in detections:
+                    _bx, _by = project_foot_to_bev(_d, H_mat, bev_h=BEV_SIZE[1], bev_w=BEV_SIZE[0])
+                    if _d.get("distance_m", 999.0) < BEV_HARD_BLOCK_DIST_M:
+                        _r_px = int(BEV_HARD_BLOCK_DIST_M * 50)
+                        cv2.circle(bev_sidewalk, (int(_bx), int(_by)), _r_px, 0, -1)
+                    _fwd, _lat = detection_to_metric(_d, H_mat, bev_sidewalk.shape)
+                    _r_m = BEV_OBSTACLE_RADIUS_PX.get(_d.get("class_name", "default"),
+                                                       BEV_OBSTACLE_RADIUS_PX["default"]) / 50.0
+                    obstacle_zones.append((_fwd, _lat, _r_m))
+                if fast_planner is not None:
+                    work_mask = cv2.resize(
+                        bev_sidewalk, (work_grid, work_grid),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    planner_result = fast_planner.plan(work_mask, intent=planner_intent_family)
+                    nav_out = planner_result_to_path_plan_result(
+                        planner_result,
+                        bev_shape_hw=bev_sidewalk.shape[:2],
+                    )
+                else:
+                    nav_out = path_extractor.process(
+                        bev_sidewalk,
+                        obstacle_zones_m=obstacle_zones if obstacle_zones else None,
+                        gps_intent_family=planner_intent_family,
+                    )
+                t_skel = nav_out.t_skeleton_ms
+                t_path = nav_out.t_path_ms
+
+                # Update predictor with real results
+                if predictor is not None:
+                    predictor.on_compute_frame(
+                        real_bev_mask=bev_sidewalk,
+                        path_result=nav_out,
+                        speed=speed_est,
+                        dt=dt_frame,
+                        steer_deg=heading_est,
+                    )
+
+                skel = nav_out.skeleton_px
+                paths = [(p, l) for p, l in zip(nav_out.candidate_paths_px, nav_out.candidate_lengths_m)]
+                best_idx = nav_out.best_idx
+                best_path_len_m = (
+                    nav_out.candidate_lengths_m[best_idx]
+                    if 0 <= best_idx < len(nav_out.candidate_lengths_m)
+                    else 0.0
+                )
+                best_path_len = best_path_len_m * (bev_sidewalk.shape[0] / max(1e-6, NAV_BEV_FORWARD_M))
+                has_model_path = bool(nav_out.has_path)
+                graph_nodes = nav_out.graph_nodes
+                graph_edges = nav_out.graph_edges
+                if ran_fresh_seg:
+                    compute_counter.append(time.time())
+
+            if not hold_cached_frame:
+                cached_frame_state = {
+                    "bev_sidewalk": bev_sidewalk.copy(),
+                    "obstacle_zones": list(obstacle_zones) if obstacle_zones else [],
+                    "nav_out": nav_out,
+                    "skel": skel.copy() if isinstance(skel, np.ndarray) else skel,
+                    "paths": list(paths),
+                    "best_idx": best_idx,
+                    "best_path_len": best_path_len,
+                    "has_model_path": has_model_path,
+                    "graph_nodes": graph_nodes,
+                    "graph_edges": graph_edges,
+                }
 
             # --- 6) GPS correction ---
             t_gps_start = time.time()
             gps_info = None
             gps_lat, gps_lon, gps_fix = None, None, 0
             gps_wp_name, gps_wp_dist, gps_correction = None, None, 0.0
-            maneuver_intent = None
-            heading_angle = heading_raw
 
             if gps_nav:
                 gps_correction, gps_wp_dist, gps_wp_name = gps_nav.get_gps_heading_correction()
@@ -1704,102 +773,76 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 if gps_wp_name:
                     gps_info.append(f"WP: {gps_wp_name} ({gps_wp_dist:.0f}m)" if gps_wp_dist else f"WP: {gps_wp_name}")
                     gps_info.append(f"GPS correction: {gps_correction:+.1f} deg")
-                maneuver_intent = infer_maneuver_from_waypoint_name(gps_wp_name)
-                if maneuver_intent is None:
-                    maneuver_intent = infer_maneuver_from_gps_correction(gps_correction)
-
-            # State machine: lane-follow by default, GPS selects turn only at intersections.
-            if intersection_detected:
-                intersection_seen_frames += 1
-                intersection_clear_frames = 0
-            else:
-                intersection_seen_frames = max(0, intersection_seen_frames - 1)
-                intersection_clear_frames += 1
-
-            nav_current = nav_heading_prev if frame_id > 0 else heading_raw
-
-            if nav_state == NAV_FOLLOW_LANE:
-                heading_angle = lane_heading
-                best_idx = lane_best_idx if lane_best_idx >= 0 else best_idx
-                desired_maneuver = None
-                intent_candidate = maneuver_intent
-                if (
-                    intent_candidate is None
-                    and gps_nav is None
-                    and RANDOM_DECISION_NO_GPS
-                    and intersection_seen_frames >= INTERSECTION_CONFIRM_FRAMES
-                ):
-                    intent_candidate = choose_random_maneuver_from_paths(paths)
-                if (
-                    intersection_seen_frames >= INTERSECTION_CONFIRM_FRAMES
-                    and intent_candidate in ("LEFT", "RIGHT", "STRAIGHT")
-                    and has_path
-                ):
-                    nav_state = NAV_APPROACH_INTERSECTION
-                    desired_maneuver = intent_candidate
-
-            elif nav_state == NAV_APPROACH_INTERSECTION:
-                if desired_maneuver is None:
-                    desired_maneuver = maneuver_intent
-                turn_idx, turn_heading = choose_path_for_maneuver(paths, desired_maneuver, center_x_full)
-                if turn_idx >= 0:
-                    best_idx = turn_idx
-                    heading_angle = turn_heading
-                    best_path_len = paths[turn_idx][1]
-                    if abs(turn_heading) >= MANEUVER_TURN_THRESH:
-                        commit_sign = 1.0 if turn_heading >= 0 else -1.0
-                        committed_turn_heading = commit_sign * TURN_COMMIT_HEADING_DEG
-                        commit_frames_left = TURN_COMMIT_FRAMES
-                        nav_state = NAV_COMMIT_TURN
-                else:
-                    heading_angle = lane_heading
-
-                if intersection_clear_frames >= INTERSECTION_CLEAR_FRAMES:
-                    nav_state = NAV_FOLLOW_LANE
-                    desired_maneuver = None
-
-            elif nav_state == NAV_COMMIT_TURN:
-                heading_angle = clamp_delta(
-                    nav_current,
-                    committed_turn_heading,
-                    STEER_RATE_LIMIT_DEG_PER_FRAME,
-                )
-                commit_frames_left -= 1
-                if commit_frames_left <= 0:
-                    nav_state = NAV_RECOVER
-                    recover_frames_left = RECOVER_FRAMES
-
-            elif nav_state == NAV_RECOVER:
-                heading_angle = clamp_delta(
-                    nav_current,
-                    lane_heading,
-                    STEER_RATE_LIMIT_DEG_PER_FRAME,
-                )
-                recover_frames_left -= 1
-                if recover_frames_left <= 0 or intersection_clear_frames >= INTERSECTION_CLEAR_FRAMES:
-                    nav_state = NAV_FOLLOW_LANE
-                    desired_maneuver = None
-
-            nav_heading_prev = heading_angle
-
-            if gps_info is None:
-                gps_info = []
-            gps_info.append(f"NavState: {nav_state}")
-            if desired_maneuver:
-                gps_info.append(f"Intent: {desired_maneuver}")
-            gps_info.append(f"Intersection: {'Y' if intersection_detected else 'N'} ({intersection_branch_count})")
             t_gps = (time.time() - t_gps_start) * 1000
 
-            # --- 7) Smooth heading + compute speed ---
+            # --- 7) Adaptive pure pursuit + speed ---
             t_cmd_start = time.time()
-            heading_buffer.append(heading_angle)
-            # Median is more outlier-resistant than mean during shake
+            speed_for_control = speed_buffer[-1] if speed_buffer else SPEED_TURN
+            ctrl_out = pp_controller.update(
+                nav_out.path_model if nav_out.has_path else None,
+                speed_for_control,
+            )
+
+            heading_raw = ctrl_out.steer_deg
+            if gps_nav and gps_wp_name and gps_wp_name != "ARRIVED" and gps_correction is not None:
+                gps_bias = float(np.clip(
+                    gps_correction * GPS_STEER_GAIN,
+                    -GPS_STEER_BIAS_MAX_DEG,
+                    GPS_STEER_BIAS_MAX_DEG
+                ))
+                heading_raw = 0.8 * heading_raw + 0.2 * gps_bias
+
+            heading_buffer.append(heading_raw)
             heading_smoothed = float(np.median(heading_buffer))
             command, cmd_color = heading_to_command(heading_smoothed)
 
-            speed_raw = compute_speed(heading_smoothed, min_obstacle_dist, has_path)
+            if turn_lock_family in {"left", "right"}:
+                turn_lock_frames += 1
+                if turn_lock_frames >= TURN_LOCK_MIN_FRAMES:
+                    if abs(heading_smoothed) <= TURN_LOCK_RELEASE_DEG:
+                        turn_lock_release_streak += 1
+                    else:
+                        turn_lock_release_streak = 0
+                if (
+                    turn_lock_release_streak >= TURN_LOCK_RELEASE_STREAK
+                    or turn_lock_frames >= TURN_LOCK_MAX_FRAMES
+                ):
+                    print(f"[TurnLock] released={turn_lock_family} frames={turn_lock_frames}")
+                    turn_lock_family = None
+                    turn_lock_frames = 0
+                    turn_lock_release_streak = 0
+            elif gps_intent_family in {"left", "right"} and nav_out.has_path:
+                desired_sign = -1.0 if gps_intent_family == "left" else 1.0
+                if desired_sign * heading_smoothed >= TURN_LOCK_ENTRY_DEG:
+                    turn_lock_family = gps_intent_family
+                    turn_lock_frames = 0
+                    turn_lock_release_streak = 0
+                    print(f"[TurnLock] engaged={turn_lock_family}")
+
+            has_candidate_path = bool(len(paths) > 0)
+            has_model_path = bool(nav_out.has_path)
+            has_control_path = bool(ctrl_out.valid_path)
+            path_valid_for_speed = bool(has_model_path or has_control_path)
+            speed_raw = compute_speed(heading_smoothed, min_obstacle_dist, path_valid_for_speed)
+
+            # Phase 11.1: waypoint-turn low-confidence speed gating
+            _nav_slowdown = float(getattr(nav_out, "suggested_slowdown", 0.0))
+            _nav_low_conf = bool(getattr(nav_out, "is_low_confidence", False))
+            _nav_path_source = str(getattr(nav_out, "path_source", ""))
+            if _nav_path_source in ("waypoint_turn_hold",) and _nav_low_conf:
+                # Explicit low-confidence hold from unsupported commanded turn:
+                # enforce the planner's recommended slowdown as minimum
+                _nav_slowdown = max(_nav_slowdown, 0.5)
+
+            speed_raw = apply_planner_speed_limit(
+                speed_raw,
+                _nav_slowdown,
+                _nav_low_conf,
+                cautious_speed_mps=SPEED_TURN,
+            )
             speed_buffer.append(speed_raw)
             speed_smoothed = float(np.mean(speed_buffer))
+
             if seg_unstable_frames >= SEG_FAIL_HOLD_FRAMES:
                 speed_smoothed = min(speed_smoothed, SPEED_SEG_UNSTABLE)
                 stability_mode = "LIMITED"
@@ -1818,6 +861,12 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 fps = (len(fps_counter) - 1) / (fps_counter[-1] - fps_counter[0])
             else:
                 fps = 0.0
+            if len(compute_counter) > 1:
+                compute_hz = (len(compute_counter) - 1) / (compute_counter[-1] - compute_counter[0])
+            elif len(compute_counter) == 1:
+                compute_hz = fps
+            else:
+                compute_hz = 0.0
 
             # --- 8) Log frame data ---
             if logger:
@@ -1835,24 +884,50 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                     t_command=round(t_cmd, 2),
                     t_total_pipeline=round(t_total, 2),
                     fps=round(fps, 2),
+                    compute_hz=round(compute_hz, 2),
                     # Heading & control
                     heading_raw_deg=round(heading_raw, 3),
                     heading_smoothed_deg=round(heading_smoothed, 3),
                     command=command,
+                    gps_intent_family=gps_intent_family or "",
+                    planner_intent_family=planner_intent_family or "",
+                    turn_lock_family=turn_lock_family or "",
                     speed_raw_mps=round(speed_raw, 3),
                     speed_smoothed_mps=round(speed_smoothed, 3),
                     serial_cmd=serial_str,
+                    pp_lookahead_m=round(ctrl_out.lookahead_m, 3),
+                    pp_kappa_cmd_m_inv=round(ctrl_out.kappa_cmd_m_inv, 4),
+                    pp_target_x_m=round(ctrl_out.target_x_m, 3),
+                    pp_target_y_m=round(ctrl_out.target_y_m, 3),
+                    pp_valid_path=int(ctrl_out.valid_path),
                     seg_iou=round(seg_iou, 4),
                     seg_unstable_frames=seg_unstable_frames,
                     stability_mode=stability_mode,
                     stab_corr_px=round(stab_corr_px, 3),
                     stab_corr_deg=round(stab_corr_deg, 3),
                     # Path info
-                    has_path=int(has_path),
+                    has_candidate_path=int(has_candidate_path),
+                    has_model_path=int(has_model_path),
+                    has_control_path=int(has_control_path),
+                    has_path=int(path_valid_for_speed),
                     num_paths=len(paths),
                     best_path_length_px=round(best_path_len, 1),
-                    num_graph_nodes=G.number_of_nodes(),
-                    num_graph_edges=G.number_of_edges(),
+                    num_graph_nodes=graph_nodes,
+                    num_graph_edges=graph_edges,
+                    planner_mode=planner_mode,
+                    planner_family=planner_family,
+                    path_source=getattr(nav_out, "path_source", ""),
+                    bev_mask_occ_ratio=round(float(getattr(nav_out, "mask_occ_ratio", 0.0)), 5),
+                    approval_confidence=round(float(getattr(nav_out, "approval_confidence", 0.0)), 4),
+                    approval_margin=round(float(getattr(nav_out, "approval_margin", 0.0)), 4),
+                    planner_low_confidence=int(bool(getattr(nav_out, "is_low_confidence", False))),
+                    planner_slowdown=round(float(getattr(nav_out, "suggested_slowdown", 0.0)), 4),
+                    selected_template_id=getattr(nav_out, "selected_template_id", ""),
+                    selected_template_family=getattr(nav_out, "selected_template_family", ""),
+                    corridor_confidence=round(float(getattr(nav_out, "corridor_confidence", 0.0)), 4),
+                    corridor_valid_ratio=round(float(getattr(nav_out, "corridor_valid_ratio", 0.0)), 4),
+                    corridor_forward_span_m=round(float(getattr(nav_out, "corridor_forward_span_m", 0.0)), 4),
+                    corridor_width_cv=round(float(getattr(nav_out, "corridor_width_cv", 0.0)), 4),
                     # Detections
                     num_detections=len(detections),
                     min_obstacle_dist_m=round(min_obstacle_dist, 2) if min_obstacle_dist else "",
@@ -1872,60 +947,162 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
                 )
 
             # --- 9) Visualization ---
-            cam_vis = frame.copy()
-            seg_overlay = np.zeros_like(cam_vis)
-            seg_overlay[sidewalk_mask > 0] = (0, 220, 0)
-            seg_overlay[road_mask > 0] = (255, 140, 0)
-            cam_vis = cv2.addWeighted(seg_overlay, 0.50, cam_vis, 0.85, 0)
+            render_visuals = (not headless) or save_video
+            if render_visuals:
+                sidewalk_mask_display = sidewalk_mask
+                if sidewalk_mask_display is not None and int(np.count_nonzero(sidewalk_mask_display)) > 0:
+                    sidewalk_mask_display = select_main_component(
+                        sidewalk_mask_display,
+                        bottom_band_px=max(35, frame_h // 16),
+                        center_weight=0.45,
+                    )
+                bev_sidewalk_display = bev_sidewalk
+                if bev_sidewalk_display is not None and int(np.count_nonzero(bev_sidewalk_display)) > 0:
+                    bev_sidewalk_display = select_main_component(
+                        bev_sidewalk_display,
+                        bottom_band_px=max(45, bev_sidewalk_display.shape[0] // 8),
+                        center_weight=0.45,
+                    )
+                cam_vis = frame.copy()
+                seg_overlay = np.zeros_like(cam_vis)
+                seg_overlay[sidewalk_mask_display > 0] = (0, 220, 0)
+                if road_mask is not None:
+                    seg_overlay[road_mask > 0] = (255, 140, 0)
+                cam_vis = cv2.addWeighted(seg_overlay, 0.50, cam_vis, 0.85, 0)
 
-            if paths and best_idx >= 0:
-                best_path = paths[best_idx][0]
-                pts = np.array(best_path, dtype=np.float32).reshape(-1, 1, 2)
-                cam_pts = cv2.perspectiveTransform(pts, Hinv).reshape(-1, 2)
-                cam_pts_int = np.int32(cam_pts).reshape(-1, 1, 2)
-                # Draw path with glow effect (thick dark outline + bright inner)
-                cv2.polylines(cam_vis, [cam_pts_int], False, (0, 0, 0), 14, cv2.LINE_AA)
-                cv2.polylines(cam_vis, [cam_pts_int], False, cmd_color, 8, cv2.LINE_AA)
+                controller_target_bev_px = None
+                controller_ray_bev_px = None
+                controller_target_cam_px = None
+                controller_ray_cam_px = None
 
-            cam_vis = draw_heading_hud(cam_vis, command, heading_smoothed, speed_smoothed,
-                                       cmd_color, fps, t_total,
-                                       detections=detections, gps_info=gps_info)
+                if ctrl_out.valid_path:
+                    controller_target_bev_px = _metric_point_to_bev_px(
+                        ctrl_out.target_x_m,
+                        ctrl_out.target_y_m,
+                        bev_sidewalk.shape[:2],
+                    )
+                    ego_bev_px = _metric_point_to_bev_px(0.0, 0.0, bev_sidewalk.shape[:2])
+                    controller_ray_bev_px = np.stack(
+                        [ego_bev_px, controller_target_bev_px], axis=0
+                    ).astype(np.float32)
 
-            bev_vis = draw_bev_hud(None, paths, best_idx, skel, bev_sidewalk,
-                                   command, heading_smoothed, speed_smoothed)
+                    target_cam = cv2.perspectiveTransform(
+                        controller_target_bev_px.reshape(-1, 1, 2),
+                        Hinv,
+                    ).reshape(-1, 2)
+                    ego_cam = cv2.perspectiveTransform(
+                        ego_bev_px.reshape(-1, 1, 2),
+                        Hinv,
+                    ).reshape(-1, 2)
+                    controller_target_cam_px = np.int32(target_cam).reshape(-1, 2)[0]
+                    controller_ray_cam_px = np.int32(
+                        np.vstack([ego_cam, target_cam])
+                    ).reshape(-1, 1, 2)
 
-            display_h = 540
-            cam_display = cv2.resize(cam_vis,
-                (int(display_h * cam_vis.shape[1] / cam_vis.shape[0]), display_h))
-            bev_display = cv2.resize(bev_vis,
-                (int(display_h * bev_vis.shape[1] / bev_vis.shape[0]), display_h))
+                if paths and best_idx >= 0:
+                    best_path = paths[best_idx][0]
+                    pts = np.array(best_path, dtype=np.float32).reshape(-1, 1, 2)
+                    cam_pts = cv2.perspectiveTransform(pts, Hinv).reshape(-1, 2)
+                    cam_pts_int = np.int32(cam_pts).reshape(-1, 1, 2)
+                    overlay = cam_vis.copy()
+                    cv2.polylines(overlay, [cam_pts_int], False, cmd_color, 8, cv2.LINE_AA)
+                    cam_vis = cv2.addWeighted(overlay, 0.28, cam_vis, 0.72, 0)
 
-            combined = np.hstack((cam_display, bev_display))
+                if controller_ray_cam_px is not None:
+                    cv2.polylines(cam_vis, [controller_ray_cam_px], False, (0, 0, 0), 12, cv2.LINE_AA)
+                    cv2.polylines(cam_vis, [controller_ray_cam_px], False, (0, 220, 255), 6, cv2.LINE_AA)
+                if controller_target_cam_px is not None:
+                    cv2.circle(cam_vis, tuple(controller_target_cam_px), 9, (0, 0, 0), -1, cv2.LINE_AA)
+                    cv2.circle(cam_vis, tuple(controller_target_cam_px), 6, (255, 255, 0), -1, cv2.LINE_AA)
 
-            if not headless:
-                cv2.imshow("Live Heading + Detection + GPS", combined)
+                cam_vis = draw_heading_hud(cam_vis, command, heading_smoothed, speed_smoothed,
+                                           cmd_color, fps, t_total,
+                                           detections=detections, gps_info=gps_info,
+                                           active_intent=gps_intent_family,
+                                           compute_hz=compute_hz)
 
-            if save_video and vw is None:
-                # Use actual processing FPS (estimate ~5) so playback matches real speed
-                actual_fps = fps if fps > 1 else 5.0
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                vw = cv2.VideoWriter("heading_demo_output.mp4", fourcc, actual_fps,
-                                     (combined.shape[1], combined.shape[0]))
-            if vw:
-                vw.write(combined)
+                bev_vis = draw_bev_hud(None, paths, best_idx, skel, bev_sidewalk_display,
+                                       command, heading_smoothed, speed_smoothed,
+                                       path_source=getattr(nav_out, "path_source", None),
+                                       mask_occ_ratio=getattr(nav_out, "mask_occ_ratio", None),
+                                       approval_confidence=getattr(nav_out, "approval_confidence", None),
+                                       selected_template_family=getattr(nav_out, "selected_template_family", None),
+                                       suggested_slowdown=getattr(nav_out, "suggested_slowdown", None),
+                                       obstacle_zones_m=obstacle_zones if obstacle_zones else None,
+                                       active_intent=gps_intent_family,
+                                       controller_target_px=controller_target_bev_px,
+                                       controller_ray_px=controller_ray_bev_px)
+
+                display_h = 540
+                cam_display = cv2.resize(cam_vis,
+                    (int(display_h * cam_vis.shape[1] / cam_vis.shape[0]), display_h))
+                bev_display = cv2.resize(bev_vis,
+                    (int(display_h * bev_vis.shape[1] / bev_vis.shape[0]), display_h))
+
+                combined = np.hstack((cam_display, bev_display))
+
+                if not headless:
+                    cv2.imshow("Live Heading + Detection + GPS", combined)
+
+                if save_video and vw is None:
+                    # Use actual processing FPS (estimate ~5) so playback matches real speed
+                    actual_fps = fps if fps > 1 else 5.0
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    video_out = output_video_path or "heading_demo_output.mp4"
+                    out_dir = os.path.dirname(video_out)
+                    if out_dir:
+                        os.makedirs(out_dir, exist_ok=True)
+                    vw = cv2.VideoWriter(video_out, fourcc, actual_fps,
+                                         (combined.shape[1], combined.shape[0]))
+                    print(f"Saving output to {video_out}")
+                if vw:
+                    vw.write(combined)
 
             # Console output (every 10 frames)
             if frame_id % 10 == 0:
                 obs_str = f"{min_obstacle_dist:.1f}m" if min_obstacle_dist else "none"
                 print(f"{frame_id:6d} | {command:>12s} | {heading_smoothed:+7.1f}d | "
                       f"{speed_smoothed:5.2f}ms | {obs_str:>5s} | {t_total:5.0f} | {fps:5.1f} | "
-                      f"{seg_iou:5.2f} | {stability_mode:>7s}",
+                      f"{seg_iou:5.2f} | {stability_mode:>7s} | segHz={compute_hz:4.1f}",
                       flush=True)
 
             if not headless:
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q') or key == 27:
+                key = cv2.waitKeyEx(1)
+                key_low = key & 0xFF
+                if key_low == ord('q') or key == 27:
                     break
+                elif key_low == ord('s') or key == 2490368:
+                    manual_intent_family = 'straight'
+                    gps_intent_family = manual_intent_family
+                    if turn_lock_family is not None:
+                        turn_lock_family = None
+                        turn_lock_frames = 0
+                        turn_lock_release_streak = 0
+                    print(f"[Intent] straight")
+                elif key_low == ord('l') or key == 2424832:
+                    manual_intent_family = 'left'
+                    gps_intent_family = manual_intent_family
+                    if turn_lock_family not in {None, 'left'}:
+                        turn_lock_family = None
+                        turn_lock_frames = 0
+                        turn_lock_release_streak = 0
+                    print(f"[Intent] left")
+                elif key_low == ord('r') or key == 2555904:
+                    manual_intent_family = 'right'
+                    gps_intent_family = manual_intent_family
+                    if turn_lock_family not in {None, 'right'}:
+                        turn_lock_family = None
+                        turn_lock_frames = 0
+                        turn_lock_release_streak = 0
+                    print(f"[Intent] right")
+                elif key_low == ord('c') or key == 2621440:
+                    manual_intent_family = None
+                    gps_intent_family = manual_intent_family
+                    if turn_lock_family is not None:
+                        turn_lock_family = None
+                        turn_lock_frames = 0
+                        turn_lock_release_streak = 0
+                    print(f"[Intent] cleared")
 
             frame_id += 1
 
@@ -1937,12 +1114,21 @@ def run_live(camera_id=0, video_path=None, save_video=False, stride=1,
             logger.save_metadata(
                 camera_id=camera_id, video_path=video_path,
                 stride=stride, detection_enabled=enable_detection,
-                    detection_stride=detection_stride,
+                detection_stride=detection_stride,
                 gps_device=gps_device, gps_waypoints=gps_waypoints,
                 serial_port=serial_port, total_frames=frame_id,
-                    model_dir=MODEL_DIR, seg_resolution=seg_input_res,
-                    low_power=low_power, path_scale=path_scale,
+                model_dir=effective_model_dir, seg_resolution=seg_input_res,
+                seg_conf_thresh=float(seg_conf_thresh),
+                low_power=low_power, path_scale=path_scale,
+                nav_work_grid=work_grid,
+                nav_bev_forward_m=NAV_BEV_FORWARD_M,
+                nav_bev_lateral_m=NAV_BEV_LATERAL_M,
+                planner_mode=planner_mode,
+                planner_family=planner_family,
+                template_planner_enabled=bool(template_planner_enabled),
+                max_frames=int(max_frames) if max_frames is not None else None,
                 yolo_model=YOLO_MODEL_NAME if enable_detection else "disabled",
+                output_video_path=output_video_path if save_video else None,
             )
             logger.close()
         # Cleanup
@@ -1970,12 +1156,20 @@ if __name__ == "__main__":
                         help="Video file path (instead of live camera)")
     parser.add_argument("--calibrate", action="store_true",
                         help="Run BEV calibration mode")
+    parser.add_argument("--calib-frame", type=int, default=0,
+                        help="Frame number to start calibration on (default: 0)")
     parser.add_argument("--stride", type=int, default=1,
                         help="Process every Nth frame (1=all)")
     parser.add_argument("--save", action="store_true",
                         help="Save output video")
+    parser.add_argument("--output-video", type=str, default=None,
+                        help="Optional explicit path for saved output video")
     parser.add_argument("--low-power", action="store_true",
                         help="Enable small-computer profile (lower load, higher FPS)")
+    parser.add_argument("--model-dir", type=str, default=None,
+                        help="Optional segmentation checkpoint directory or Hugging Face model id")
+    parser.add_argument("--seg-conf-thresh", type=float, default=0.5,
+                        help="Segmentation probability threshold for the drivable class")
     parser.add_argument("--seg-width", type=int, default=SEG_INPUT_RES[0],
                         help="Segmentation input width")
     parser.add_argument("--seg-height", type=int, default=SEG_INPUT_RES[1],
@@ -2015,6 +1209,30 @@ if __name__ == "__main__":
     parser.add_argument("--log-dir", type=str, default="logs",
                         help="Directory for log files (default: logs/)")
 
+    # BEV prediction
+    parser.add_argument("--no-predict", action="store_true",
+                        help="Disable BEV predictive frame reuse (run full pipeline every frame)")
+    parser.add_argument("--planner-mode", type=str, default="dijkstra",
+                        choices=["dijkstra", "dfs"],
+                        help="Graph candidate search mode for path planner")
+    parser.add_argument("--no-template-planner", action="store_true",
+                        help="Disable Phase 11 template approval and use graph/fallback baseline only")
+    parser.add_argument("--legacy-planner", action="store_true",
+                        help="Backwards-compatible alias for --planner-family potential_field")
+    parser.add_argument("--planner-family", type=str, default=None,
+                        choices=["dt_ridge", "vectorized_dt", "weighted_centroid", "potential_field", "skeleton_hybrid"],
+                        help="Planner backend: dt_ridge uses the original BEV DT stack, others use the fast modular planners")
+    parser.add_argument("--max-frames", type=int, default=None,
+                        help="Optional maximum number of processed frames")
+    parser.add_argument("--intent", type=str, default=None,
+                        choices=["straight", "left", "right"],
+                        help="Initial persistent manual intent")
+    parser.add_argument("--intent-schedule", type=str, default=None,
+                        help="Optional JSON file with frame-range intent events")
+    parser.add_argument("--bev-clean", type=str, default="auto",
+                        choices=["auto", "enhanced", "legacy"],
+                        help="BEV cleaning mode: auto uses enhanced except in low-power")
+
     # Display
     parser.add_argument("--headless", action="store_true",
                         help="No GUI window (for background/server runs). Use with --save.")
@@ -2022,7 +1240,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.calibrate:
-        run_calibration(camera_id=args.camera, video_path=args.video)
+        run_calibration(camera_id=args.camera, video_path=args.video, start_frame=args.calib_frame)
     else:
         run_live(
             camera_id=args.camera,
@@ -2043,4 +1261,18 @@ if __name__ == "__main__":
             seg_input_res=(args.seg_width, args.seg_height),
             path_scale=args.path_scale,
             detection_stride=args.detection_stride,
+            enable_predict=not args.no_predict,
+            planner_mode=args.planner_mode,
+            template_planner_enabled=not args.no_template_planner,
+            use_dt_planner=not args.legacy_planner,
+            planner_family=("potential_field" if args.legacy_planner and not args.planner_family else args.planner_family),
+            max_frames=args.max_frames,
+            initial_intent=args.intent,
+            bev_clean_mode=args.bev_clean,
+            model_dir=args.model_dir,
+            output_video_path=args.output_video,
+            seg_conf_thresh=args.seg_conf_thresh,
+            intent_schedule_path=args.intent_schedule,
         )
+
+
