@@ -212,8 +212,23 @@ def project_points_bev_to_cam(points_bev):
     cam = cv2.perspectiveTransform(pts, Hinv).reshape(-1,2)
     return [(float(x),float(y)) for x,y in cam]
 
+def generate_directed_waypoints(start, end, spacing_px=8):
+    """L-shaped waypoint path from start to end with pixel-distance spacing."""
+    start = np.array(start, dtype=np.float32)
+    end = np.array(end, dtype=np.float32)
+    corner = np.array([start[0], end[1]], dtype=np.float32)
+
+    def sample_segment(p0, p1):
+        dist = float(np.linalg.norm(p1 - p0))
+        n = max(2, int(dist / spacing_px))
+        return [tuple(p0 + (p1 - p0) * (i / n)) for i in range(n)]
+
+    vertical = sample_segment(start, corner)
+    horizontal = sample_segment(corner, end)
+    return vertical + horizontal[1:]
+
 # =============================================================================
-# Model init - 
+# Model init
 # =============================================================================
 def initialize_model():
     cfg = Config(model_dir="models/my-segformer-road_new", conf_thresh=0.5, road_id=ROAD_ID)
@@ -295,8 +310,10 @@ def process_camera(
         endpoints = skeleton_endpoints(graph)
 
         start = None
+        other_endpoints = []
         if endpoints:
             start = max(endpoints, key=lambda p: p[1])
+            other_endpoints = [e for e in endpoints if e != start]
 
         H_bev,W_bev = skeleton_mask.shape
         bev_color = np.zeros((H_bev,W_bev,3),dtype=np.uint8)
@@ -308,7 +325,6 @@ def process_camera(
         cam_paths = cam_overlay.copy()
 
         if start:
-            other_endpoints = [e for e in endpoints if e != start]
             for idx, end in enumerate(other_endpoints):
                 try:
                     path = nx.dijkstra_path(graph, start, end, weight="weight")
@@ -328,29 +344,42 @@ def process_camera(
 
         # Save (optional)
         if save_video:
-            cv2.imwrite(os.path.join(output_dir,f"bev_paths_{frame_id:04d}.png"),bev_color)
-            cv2.imwrite(os.path.join(output_dir,f"cam_paths_{frame_id:04d}.png"),cam_paths)
-        if vw: vw.write(cam_paths)
+            cv2.imwrite(os.path.join(output_dir, f"bev_paths_{frame_id:04d}.png"), bev_color)
+            cv2.imwrite(os.path.join(output_dir, f"cam_paths_{frame_id:04d}.png"), cam_paths)
+        if vw:
+            vw.write(cam_paths)
 
-        # Real-time display (optional)
+        # FPS tracking
+        fps_count += 1
+        now = time.time()
+        elapsed = now - fps_start
+        current_fps = fps_count / elapsed if elapsed > 0 else 0.0
+        if elapsed >= fps_log_interval:
+            print(f"FPS: {current_fps:.2f} | frame={frame_id} | start={start} | num_paths={len(other_endpoints)}")
+            fps_start = now
+            fps_count = 0
+
+        # Real-time display
         if show_window:
             bev_display = cv2.resize(bev_color, (int(DISPLAY_HEIGHT * bev_color.shape[1] / bev_color.shape[0]), DISPLAY_HEIGHT))
             cam_display = cv2.resize(cam_paths, (int(DISPLAY_HEIGHT * cam_paths.shape[1] / cam_paths.shape[0]), DISPLAY_HEIGHT))
             combined = np.hstack((cam_display, bev_display))
-
+            cv2.putText(
+                combined,
+                f"FPS: {current_fps:.1f}  paths: {len(other_endpoints)}",
+                (8, 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
             cv2.imshow("Real-time Path Planning (Camera | BEV)", combined)
             key = cv2.waitKey(1) & 0xFF
-            if key == ord('q') or key == 27:  # 'q' or ESC to quit
+            if key == ord('q') or key == 27:
                 print("Stopping camera processing...")
                 break
 
-        fps_count += 1
-        now = time.time()
-        if now - fps_start >= fps_log_interval:
-            fps = fps_count / (now - fps_start)
-            print(f"FPS: {fps:.2f} | frame={frame_id} | start={start} | num_paths={len(other_endpoints) if start else 0}")
-            fps_start = now
-            fps_count = 0
         frame_id += 1
 
     cap.release()
