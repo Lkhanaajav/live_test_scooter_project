@@ -230,13 +230,17 @@ def generate_directed_waypoints(start, end, spacing_px=8):
 # =============================================================================
 # Model init
 # =============================================================================
-def initialize_model():
-    cfg = Config(model_dir="models/my-segformer-road_new", conf_thresh=0.5, road_id=ROAD_ID)
+def initialize_model(conf_thresh=0.5):
+    cfg = Config(model_dir="models/my-segformer-road_new", conf_thresh=conf_thresh, road_id=ROAD_ID)
     return FastRoadDetector(cfg)
 
 # =============================================================================
 # Main (adapted for camera)
 # =============================================================================
+KEYBOARD_HELP = (
+    "Keys: Q/ESC=quit  P=pause  B=toggle BEV  S=snapshot  W=export waypoints  +/-=ribbon width"
+)
+
 def process_camera(
     output_dir,
     stride=1,
@@ -245,10 +249,14 @@ def process_camera(
     resize_w=None,
     resize_h=None,
     show_window=True,
-    fps_log_interval=2.0
+    fps_log_interval=2.0,
+    waypoint_spacing=8,
+    conf_thresh=0.5,
 ):
     print("🔧 Initializing FastRoadDetector...")
-    model = initialize_model(); print("✅ Model ready!")
+    model = initialize_model(conf_thresh=conf_thresh)
+    print("✅ Model ready!")
+    print(KEYBOARD_HELP)
 
     os.makedirs(output_dir, exist_ok=True)
     
@@ -275,6 +283,13 @@ def process_camera(
     frame_id = 0
     fps_count = 0
     fps_start = time.time()
+
+    # Interactive state
+    paused = False
+    show_bev = True
+    ribbon_width = 18
+    last_waypoints: list = []
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -331,16 +346,15 @@ def process_camera(
                 except nx.NetworkXNoPath:
                     continue
                 color = PATH_COLORS[idx % len(PATH_COLORS)]
-                # draw on BEV
                 for i in range(len(path)-1):
-                    x1,y1 = path[i]; x2,y2 = path[i+1]
-                    cv2.line(bev_color, (int(x1),int(y1)), (int(x2),int(y2)), color, 2, cv2.LINE_AA)
-                cv2.circle(bev_color,(int(start[0]),int(start[1])),6,(0,0,255),-1)
-                cv2.circle(bev_color,(int(end[0]),int(end[1])),4,color,-1)
-
-                # draw on cam
+                    x1, y1 = path[i]; x2, y2 = path[i+1]
+                    cv2.line(bev_color, (int(x1), int(y1)), (int(x2), int(y2)), color, 2, cv2.LINE_AA)
+                cv2.circle(bev_color, (int(start[0]), int(start[1])), 6, (0, 0, 255), -1)
+                cv2.circle(bev_color, (int(end[0]), int(end[1])), 4, color, -1)
                 cam_pts = project_points_bev_to_cam(path)
-                cam_paths = draw_ribbon(cam_paths, cam_pts, color=color, width=18, glow=6)
+                cam_paths = draw_ribbon(cam_paths, cam_pts, color=color, width=ribbon_width, glow=6)
+                # Cache waypoints for export
+                last_waypoints = generate_directed_waypoints(start, end, spacing_px=waypoint_spacing)
 
         # Save (optional)
         if save_video:
@@ -355,30 +369,62 @@ def process_camera(
         elapsed = now - fps_start
         current_fps = fps_count / elapsed if elapsed > 0 else 0.0
         if elapsed >= fps_log_interval:
-            print(f"FPS: {current_fps:.2f} | frame={frame_id} | start={start} | num_paths={len(other_endpoints)}")
+            print(f"FPS: {current_fps:.2f} | frame={frame_id} | paths={len(other_endpoints)}")
             fps_start = now
             fps_count = 0
 
         # Real-time display
         if show_window:
-            bev_display = cv2.resize(bev_color, (int(DISPLAY_HEIGHT * bev_color.shape[1] / bev_color.shape[0]), DISPLAY_HEIGHT))
             cam_display = cv2.resize(cam_paths, (int(DISPLAY_HEIGHT * cam_paths.shape[1] / cam_paths.shape[0]), DISPLAY_HEIGHT))
-            combined = np.hstack((cam_display, bev_display))
-            cv2.putText(
-                combined,
-                f"FPS: {current_fps:.1f}  paths: {len(other_endpoints)}",
-                (8, 22),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
+            if show_bev:
+                bev_display = cv2.resize(bev_color, (int(DISPLAY_HEIGHT * bev_color.shape[1] / bev_color.shape[0]), DISPLAY_HEIGHT))
+                combined = np.hstack((cam_display, bev_display))
+            else:
+                combined = cam_display
+
+            status = "PAUSED" if paused else f"FPS:{current_fps:.1f}"
+            overlay_text = f"{status}  paths:{len(other_endpoints)}  ribbon:{ribbon_width}  BEV:{'on' if show_bev else 'off'}"
+            cv2.putText(combined, overlay_text, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
+            cv2.putText(combined, "Q=quit P=pause B=BEV S=snap W=wpts +/-=width", (8, combined.shape[0] - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1, cv2.LINE_AA)
+
             cv2.imshow("Real-time Path Planning (Camera | BEV)", combined)
+
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q') or key == 27:
                 print("Stopping camera processing...")
                 break
+            elif key == ord('p'):
+                paused = not paused
+                print(f"{'⏸ Paused' if paused else '▶ Resumed'}")
+            elif key == ord('b'):
+                show_bev = not show_bev
+                print(f"BEV view {'enabled' if show_bev else 'disabled'}")
+            elif key == ord('s'):
+                snap_path = os.path.join(output_dir, f"snapshot_{frame_id:04d}.png")
+                cv2.imwrite(snap_path, combined)
+                print(f"📸 Snapshot saved: {snap_path}")
+            elif key == ord('w'):
+                import json
+                wp_path = os.path.join(output_dir, f"waypoints_{frame_id:04d}.json")
+                data = {
+                    "frame": frame_id,
+                    "start": list(start) if start else None,
+                    "waypoints": [list(pt) for pt in last_waypoints],
+                    "spacing_px": waypoint_spacing,
+                }
+                with open(wp_path, "w") as f:
+                    json.dump(data, f, indent=2)
+                print(f"📍 Waypoints exported: {wp_path} ({len(last_waypoints)} pts)")
+            elif key in (ord('+'), ord('=')):
+                ribbon_width = min(32, ribbon_width + 2)
+                print(f"Ribbon width: {ribbon_width}")
+            elif key == ord('-'):
+                ribbon_width = max(4, ribbon_width - 2)
+                print(f"Ribbon width: {ribbon_width}")
+
+        if paused:
+            continue
 
         frame_id += 1
 
@@ -399,6 +445,9 @@ if __name__=="__main__":
     parser.add_argument("--resize-h", type=int, default=None, help="Resize height before inference")
     parser.add_argument("--no-window", action="store_true", help="Disable preview window")
     parser.add_argument("--fps-log-interval", type=float, default=2.0, help="Seconds between FPS logs")
+    parser.add_argument("--waypoint-spacing", type=int, default=8, help="Pixel spacing for L-shaped waypoint generation")
+    parser.add_argument("--conf-thresh", type=float, default=0.5, help="Segmentation confidence threshold (0.0-1.0)")
+    parser.add_argument("--output-dir", type=str, default="camera_results", help="Directory for saved outputs")
     parser.add_argument("--gps-device", type=str, default=None, help="GPS serial device (e.g., /dev/ttyUSB0)")
     parser.add_argument("--gps-baud", type=int, default=9600, help="GPS serial baud rate")
     parser.add_argument("--gps-test", action="store_true", help="Only read GPS and print lat/lon")
@@ -410,12 +459,14 @@ if __name__=="__main__":
         gps_test(args.gps_device, args.gps_baud)
 
     process_camera(
-        "camera_results",
+        args.output_dir,
         stride=args.stride,
         save_video=args.save_video,
         camera_id=args.camera_id,
         resize_w=args.resize_w,
         resize_h=args.resize_h,
         show_window=not args.no_window,
-        fps_log_interval=args.fps_log_interval
+        fps_log_interval=args.fps_log_interval,
+        waypoint_spacing=args.waypoint_spacing,
+        conf_thresh=args.conf_thresh,
     )
